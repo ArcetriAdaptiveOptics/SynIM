@@ -1067,7 +1067,7 @@ def extract_source_info(config, wfs_name):
                 source = config[source_name]
                 source_info['type'] = 'lgs' if 'lgs' in source_name else 'ngs'
                 source_info['name'] = source_name
-                if 'polar_coordinate' in source_config or 'polar_coordinates' in source:
+                if 'polar_coordinate' in source or 'polar_coordinates' in source:
                     source_info['pol_coords'] = source.get(
                         'polar_coordinate', source.get('polar_coordinates')
                     )
@@ -1230,14 +1230,11 @@ def generate_im_filename(params_file, wfs_type=None,
     # Load configuration if needed
     if isinstance(params_file, str):
         params = parse_params_file(params_file)
-        config_basename = os.path.splitext(os.path.basename(params_file))[0]
     else:
         params = params_file
-        config_basename = "config"
 
     # Get main parameters
     main_params = params.get('main', {})
-    pixel_pupil = main_params.get('pixel_pupil', 256)
 
     # Find the WFS configuration
     wfs_key = None
@@ -1442,7 +1439,7 @@ def generate_pm_filename(config_file, opt_index=None,
     component_config = selected_component['config']
     component_height = component_config.get('height', 0)
 
-    # *** NEW: Extract nmodes and start_mode ***
+    # *** Extract nmodes and start_mode ***
     component_nmodes = component_config.get('nmodes', None)
     component_start_mode = component_config.get('start_mode', 0)
 
@@ -1465,7 +1462,7 @@ def generate_pm_filename(config_file, opt_index=None,
     # Component height
     parts.append(f"dmH{component_height:.1f}")
 
-    # *** NEW: Add modes information ***
+    # *** Add modes information ***
     if component_nmodes is not None:
         if component_start_mode > 0:
             # Format: mn{nmodes}s{start_mode}
@@ -1525,7 +1522,9 @@ def generate_pm_filenames(config_file, timestamp=False):
     # Generate filenames for all optical source and DM combinations
     for source in opt_sources:
         source_config = source['config']
-        source_coords = source_config.get('polar_coordinate', source_config.get('polar_coordinates', [0.0, 0.0]))
+        source_coords = source_config.get('polar_coordinate',
+                                          source_config.get('polar_coordinates',
+                                                            [0.0, 0.0]))
         source_height = source_config.get('height', float('inf'))
 
         for dm in dm_list:
@@ -1592,7 +1591,10 @@ def generate_cov_filename(component_config, pup_diam_m, r0, L0):
     return filename, base_tag
 
 
-def compute_layer_weights_from_turbulence(params, component_indices, component_type='layer', verbose=False):
+def compute_layer_weights_from_turbulence(params,
+                                          component_indices,
+                                          component_type='layer',
+                                          verbose=False):
     """
     Compute layer weights from atmospheric turbulence profile.
     
