@@ -38,7 +38,7 @@ def init(device_idx=-1, precision=1):
     global xp, cp, gpuEnabled, default_target_device_idx, default_target_device
     global global_precision, float_dtype, complex_dtype
     global gpu_float_dtype_list, gpu_complex_dtype_list
-    # *** NEW: Declare scipy globals ***
+    # *** Declare scipy globals ***
     global affine_transform, binary_dilation
 
     default_target_device_idx = device_idx
@@ -108,7 +108,7 @@ def init(device_idx=-1, precision=1):
         float_dtype_list = [np.float64, np.float32]
         complex_dtype_list = [np.complex128, np.complex64]
 
-        # *** NEW: Use scipy for CPU ***
+        # *** Use scipy for CPU ***
         from scipy.ndimage import affine_transform as cpu_affine
         from scipy.ndimage import binary_dilation as cpu_dilation
         from scipy.ndimage import rotate as cpu_rotate

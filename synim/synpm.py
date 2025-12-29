@@ -476,7 +476,7 @@ def projection_matrix(pup_diam_m, pup_mask,
         valid_mask_cpu = cpuArray(valid_mask)
         trans_dm_array_cpu = cpuArray(trans_dm_array)
         projection_cpu = cpuArray(projection)
-        
+
         plt.figure(figsize=(8, 6))
         plt.imshow(valid_mask_cpu, cmap='gray')
         plt.title(f'Valid Pixels Mask ({n_valid_pixels} pixels)')
@@ -493,9 +493,25 @@ def projection_matrix(pup_diam_m, pup_mask,
         plt.title('Transformed DM Mode 1')
         plt.colorbar()
 
+        # Display a couple of Base modes
+        plt.figure(figsize=(12, 5))
+        if base_inv_array.ndim == 3:
+            base_inv_array_cpu = cpuArray(base_inv_array)
+            plt.subplot(1, 2, 1)
+            plt.imshow(base_inv_array_cpu[:, :, 0], cmap='seismic')
+            plt.title('Base Mode 0')
+            plt.colorbar()
+            plt.subplot(1, 2, 2)
+            plt.imshow(base_inv_array_cpu[:, :, 1], cmap='seismic')
+            plt.title('Base Mode 1')
+            plt.colorbar()
+        else:
+            plt.text(0.1, 0.5, 'Base modes not in 3D format', fontsize=12)
+            plt.axis('off')
+
         # Display projection coefficients
         plt.figure(figsize=(10, 6))
-        x = np.arange(projection.shape[0])+1
+        x = xp.arange(projection.shape[0])+1
         for i in range(min(5, projection.shape[1])):
             plt.plot(x, projection_cpu[:, i], label=f'Basis mode {i}', marker='o', markersize=3)
         plt.xscale('log')

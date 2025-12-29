@@ -174,7 +174,11 @@ class ParamsManager:
         else:
             # Priority 2: Try IDL-style 'modalrec1.proj_regFactor'
             modalrec1 = self.params.get('modalrec1', {})
-            self.proj_reg_factor = float(modalrec1.get('proj_regFactor', None))
+            proj_reg_factor_val = modalrec1.get('proj_regFactor', None)
+            if proj_reg_factor_val is not None:
+                self.proj_reg_factor = float(proj_reg_factor_val)
+            else:
+                self.proj_reg_factor = None
 
             if self.proj_reg_factor is None:
                 # Priority 3: Default

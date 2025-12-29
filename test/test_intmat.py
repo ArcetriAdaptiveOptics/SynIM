@@ -35,32 +35,38 @@ def update_dm_pup(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotatio
     pixel_pitch = pup_diam_m/pup_diam_pix
 
     if dm_mask.shape[0] != dm_array.shape[0]:
-        raise ValueError('Error in input data, the dm and mask array must have the same dimensions.')
+        raise ValueError('Error in input data,'
+                         ' the dm and mask array must have the same dimensions.')
 
     pixel_pitch = pup_diam_m / pup_diam_pix
 
-    dm_translation, dm_magnification = shiftzoom_from_source_dm_params(gs_pol_coo, gs_height, dm_height, pixel_pitch)
+    dm_translation, dm_magnification = shiftzoom_from_source_dm_params(
+        gs_pol_coo, gs_height, dm_height, pixel_pitch
+    )
     output_size = (pup_diam_pix,pup_diam_pix)
 
     trans_dm_array = rotshiftzoom_array(
-        dm_array, dm_translation=dm_translation, dm_rotation=dm_rotation, dm_magnification=dm_magnification,
-        wfs_translation=wfs_translation, wfs_rotation=wfs_rotation, wfs_magnification=wfs_magnification,
-        output_size=output_size
+        dm_array, dm_translation=dm_translation,
+        dm_rotation=dm_rotation, dm_magnification=dm_magnification,
+        wfs_translation=wfs_translation, wfs_rotation=wfs_rotation,
+        wfs_magnification=wfs_magnification, output_size=output_size
     )
-    
+
     trans_dm_mask  = rotshiftzoom_array(
-        dm_mask, dm_translation=dm_translation, dm_rotation=dm_rotation, dm_magnification=dm_magnification,
-        wfs_translation=(0,0), wfs_rotation=0, wfs_magnification=(1,1),
-        output_size=output_size
+        dm_mask, dm_translation=dm_translation,
+        dm_rotation=dm_rotation, dm_magnification=dm_magnification,
+        wfs_translation=(0,0), wfs_rotation=0,
+        wfs_magnification=(1,1), output_size=output_size
     )
     trans_dm_mask[trans_dm_mask<0.5] = 0
     if np.max(trans_dm_mask) <= 0:
         raise ValueError('Error in input data, the rotated dm mask is empty.')
 
     trans_pup_mask  = rotshiftzoom_array(
-        pup_mask, dm_translation=(0,0), dm_rotation=0, dm_magnification=(1,1),
-        wfs_translation=wfs_translation, wfs_rotation=wfs_rotation, wfs_magnification=wfs_magnification,
-        output_size=output_size
+        pup_mask, dm_translation=(0,0),
+        dm_rotation=0, dm_magnification=(1,1),
+        wfs_translation=wfs_translation, wfs_rotation=wfs_rotation,
+        wfs_magnification=wfs_magnification, output_size=output_size
     )
     trans_pup_mask[trans_pup_mask<0.5] = 0
 
@@ -385,7 +391,8 @@ class TestIntmat(unittest.TestCase):
                 plt.plot(im_new_list[idx_gs][:, mode] - im_former_list[idx_gs][:, mode])
                 plt.subplot(1, 2, 2)
                 plt.title("Multi-WFS - Former")
-                plt.plot(list(im_multi_dict.values())[idx_gs][:, mode] - im_former_list[idx_gs][:, mode])
+                plt.plot(list(im_multi_dict.values())[idx_gs][:, mode] \
+                    - im_former_list[idx_gs][:, mode])
                 plt.tight_layout()
                 plt.show()
 
@@ -443,10 +450,61 @@ class TestIntmat(unittest.TestCase):
             verbose=False, display=False, specula_convention=True
         )
 
-        # Usa tolleranze più rilassate per il caso LGS (trasformazioni geometriche complesse)
+        # Uses more relaxed tolerances for the LGS case (complex geometric transformations)
         np.testing.assert_allclose(im_former, im_new, rtol=1e-6, atol=1e-8,
                                    err_msg="Former and new methods differ for LGS case")
 
+    def test_consistency_separated_vs_combined_workflow(self):
+        """Verify that separated and combined workflows
+        produce identical results without transformations"""
+        # Identical configuration for 2 WFS
+        wfs_configs = []
+        for i in range(2):
+            wfs_configs.append({
+                'nsubaps': self.wfs_nsubaps,
+                'rotation': 0.0,
+                'translation': (0.0, 0.0),
+                'magnification': (1.0, 1.0),
+                'fov_arcsec': self.wfs_fov_arcsec,
+                'idx_valid_sa': self.idx_valid_sa,
+                'gs_pol_coo': (0.0, 0.0),
+                'gs_height': np.inf,
+                'name': f'wfs_{i}'
+            })
 
-if __name__ == '__main__':
-    unittest.main()
+        # Separate calculation
+        im_separated = []
+        for wfs_config in wfs_configs:
+            im = interaction_matrix(
+                self.pup_diam_m, self.pup_mask,
+                self.dm_array, self.dm_mask,
+                self.dm_height, self.dm_rotation,
+                wfs_config['nsubaps'],
+                wfs_config['rotation'],
+                wfs_config['translation'],
+                wfs_config['magnification'],
+                wfs_config['fov_arcsec'],
+                wfs_config['gs_pol_coo'],
+                wfs_config['gs_height'],
+                idx_valid_sa=self.idx_valid_sa,
+                verbose=False, display=False, specula_convention=True
+            )
+            im_separated.append(im)
+
+        # Combined calculation
+        im_multi_dict, info = interaction_matrices_multi_wfs(
+            self.pup_diam_m, self.pup_mask,
+            self.dm_array, self.dm_mask,
+            self.dm_height, self.dm_rotation,
+            wfs_configs,
+            verbose=False, specula_convention=True
+        )
+
+        # Comparison
+        for i, wfs_config in enumerate(wfs_configs):
+            im_sep = im_separated[i]
+            im_comb = im_multi_dict[wfs_config['name']]
+            np.testing.assert_allclose(
+                im_sep, im_comb, rtol=1e-6, atol=1e-8,
+                err_msg=f"Separated and combined workflow differ for WFS {i}"
+            )
