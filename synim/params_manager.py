@@ -216,7 +216,7 @@ class ParamsManager:
                 'reg_factor': recon_section.get('reg_factor', 1e-8),
                 'wfs_type': recon_section.get('wfs_type', 'lgs'),
                 'component_type': recon_section.get('component_type', 'layer'),
-                'sigma2inNm2': self.sigma2_in_nm2,
+                'sigma2_in_nm2': self.sigma2_in_nm2,
                 'ngs_n_modes_dm': self.ngs_n_modes_dm,
                 'ngs_n_modes_layer': self.ngs_n_modes_layer,
                 'ref_n_modes_dm': self.ref_n_modes_dm,
@@ -233,7 +233,7 @@ class ParamsManager:
                 print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
 
             self.reconstructor_params = {
-                'sigma2inNm2': self.sigma2_in_nm2
+                'sigma2_in_nm2': self.sigma2_in_nm2
             }
 
             self.ngs_n_modes_dm = []
@@ -253,7 +253,7 @@ class ParamsManager:
                 print(f"  Using default sigma2_in_nm2: {self.sigma2_in_nm2}")
 
             self.reconstructor_params = {
-                'sigma2inNm2': self.sigma2_in_nm2
+                'sigma2_in_nm2': self.sigma2_in_nm2
             }
 
 
@@ -2073,11 +2073,11 @@ class ParamsManager:
                 # *** Use extracted sigma2_in_nm2 ***
                 sigma2_in_nm2 = self.sigma2_in_nm2
 
-                sigma2inArcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
-                sigma2inSlope = sigma2inArcsec2 * 1./(sensor_fov/2.)**2.
+                sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
+                sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2.
 
                 # *** This is the BASE noise variance (for fully illuminated subaperture) ***
-                base_noise_variance = sigma2inSlope
+                base_noise_variance = sigma2_in_slope
 
                 if verbose_flag:
                     print(f"  Base noise variance (fully illuminated): {base_noise_variance:.2e}")
