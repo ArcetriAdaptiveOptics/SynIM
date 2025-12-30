@@ -761,7 +761,7 @@ class ParamsManager:
                 print(f"Loading {comp_type.upper()} {comp_name} (index {comp_idx})")
                 print(f"{'='*60}")
 
-            # Load all modes (LGS or no mode config)
+            # Load component parameters once
             component_params = self.get_component_params(
                 comp_idx,
                 is_layer=(comp_type == 'layer'),
