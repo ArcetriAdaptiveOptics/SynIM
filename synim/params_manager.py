@@ -198,11 +198,17 @@ class ParamsManager:
         # Try YAML format first (reconstruction section)
         if 'reconstruction' in self.params:
             recon_section = self.params['reconstruction']
-            self.sigma2inNm2 = float(recon_section.get('sigma2inNm2', 2e4))
+            self.sigma2_in_nm2 = float(recon_section.get('sigma2inNm2', 2e4))
+
+            # Extract NGS and REF mode configurations ***
+            self.ngs_n_modes_dm = recon_section.get('ngs_n_modes_dm', [])
+            self.ngs_n_modes_layer = recon_section.get('ngs_n_modes_layer', [])
+            self.ref_n_modes_dm = recon_section.get('ref_n_modes_dm', [])
+            self.ref_n_modes_layer = recon_section.get('ref_n_modes_layer', [])
 
             if self.verbose:
                 print(f"  Using YAML 'reconstruction' section")
-                print(f"  sigma2inNm2: {self.sigma2inNm2}")
+                print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
 
             self.reconstructor_params = {
                 'r0': recon_section.get('r0', None),
@@ -210,30 +216,44 @@ class ParamsManager:
                 'reg_factor': recon_section.get('reg_factor', 1e-8),
                 'wfs_type': recon_section.get('wfs_type', 'lgs'),
                 'component_type': recon_section.get('component_type', 'layer'),
-                'sigma2inNm2': self.sigma2inNm2
+                'sigma2_in_nm2': self.sigma2_in_nm2,
+                'ngs_n_modes_dm': self.ngs_n_modes_dm,
+                'ngs_n_modes_layer': self.ngs_n_modes_layer,
+                'ref_n_modes_dm': self.ref_n_modes_dm,
+                'ref_n_modes_layer': self.ref_n_modes_layer
             }
 
         # Fallback to IDL-style modalrec1
         elif 'modalrec1' in self.params:
             modalrec1 = self.params['modalrec1']
-            self.sigma2inNm2 = float(modalrec1.get('sigma2innm2', 2e4))
+            self.sigma2_in_nm2 = float(modalrec1.get('sigma2inNm2', 2e4))
 
             if self.verbose:
                 print(f"  Using IDL 'modalrec1' section")
-                print(f"  sigma2inNm2: {self.sigma2inNm2}")
+                print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
 
             self.reconstructor_params = {
-                'sigma2inNm2': self.sigma2inNm2
+                'sigma2_in_nm2': self.sigma2_in_nm2
             }
+
+            self.ngs_n_modes_dm = []
+            self.ngs_n_modes_layer = []
+            self.ref_n_modes_dm = []
+            self.ref_n_modes_layer = []
 
         # Default fallback
         else:
-            self.sigma2inNm2 = 2e4
+            self.sigma2_in_nm2 = 2e4
+            self.ngs_n_modes_dm = []
+            self.ngs_n_modes_layer = []
+            self.ref_n_modes_dm = []
+            self.ref_n_modes_layer = []
+
             if self.verbose:
-                print(f"  Using default sigma2inNm2: {self.sigma2inNm2}")
+                print(f"  Using default sigma2_in_nm2: {self.sigma2_in_nm2}")
 
             self.reconstructor_params = {
-                'sigma2inNm2': self.sigma2inNm2
+                'sigma2_in_nm2': self.sigma2_in_nm2
             }
 
 
@@ -281,24 +301,34 @@ class ParamsManager:
 
         return out
 
-    def get_component_params(self, component_idx, is_layer=False, cut_start_mode=False):
+    def get_component_params(self,
+                             component_idx,
+                             is_layer=False,
+                             cut_start_mode=False,
+                             n_modes_to_use=None):
         """
         Get DM or layer parameters, loading from cache if available.
 
         Args:
             component_idx (int): Index of the DM or layer to load
             is_layer (bool): Whether to load a layer instead of a DM
-            cut_start_mode (bool): Whether to remove modes before start_mode
+            cut_start_mode (bool): Whether to select modes from start_mode to start_mode+n_modes
+            n_modes_to_use (int, optional): Number of modes to use starting from start_mode.
+                                        If None, uses all available modes after start_mode.
 
         Returns:
             dict: DM or layer parameters
         """
         component_type = "layer" if is_layer else "dm"
-        # Base cache key without cut
+
+        # Create cache key that includes n_modes_to_use
         cache_key_base = f"{component_type}_{component_idx}"
-        # If cut_start_mode=False, use base key
-        # If cut_start_mode=True, use separate key for cut version
-        cache_key = f"{cache_key_base}_cut" if cut_start_mode else cache_key_base
+        if cut_start_mode:
+            cache_key = f"{cache_key_base}_cut"
+        else:
+            cache_key = cache_key_base
+        if n_modes_to_use is not None:
+            cache_key += f"_{n_modes_to_use}"
 
         if cache_key in self.dm_cache:
             return self.dm_cache[cache_key]
@@ -306,7 +336,6 @@ class ParamsManager:
         # Try with index first (dm1, dm2, layer1, layer2...)
         component_key = f"{component_type}{component_idx}"
 
-        # If not found and it's a DM with index 1, try without index (simple SCAO case)
         if component_key not in self.params:
             if component_type == "dm" and component_idx == 1 and "dm" in self.params:
                 component_key = "dm"
@@ -318,14 +347,38 @@ class ParamsManager:
             self.cm, component_params, self.pixel_pupil, verbose=self.verbose
         )
 
-        # *** Apply cut BEFORE converting to xp ***
-        if cut_start_mode and 'start_mode' in component_params:
-            start_mode = component_params['start_mode']
-            dm_array = dm_array[:, :, start_mode:]
-            if self.verbose:
-                print(f"  Cut modes before {start_mode}, remaining: {dm_array.shape[2]}")
+        # *** Select modes from start_mode to start_mode+n_modes ***
+        if cut_start_mode or n_modes_to_use is not None:
+            if 'start_mode' in component_params:
+                start_mode = component_params['start_mode']
+            else:
+                start_mode = 0
+            total_modes = dm_array.shape[2]
 
-        # *** Convert to xp with float_dtype ***
+            if n_modes_to_use is not None:
+                # Use specified number of modes starting from start_mode
+                end_mode = start_mode + n_modes_to_use
+                if end_mode > total_modes:
+                    end_mode = total_modes
+                    if self.verbose:
+                        print(f"  Warning: Requested {n_modes_to_use} modes from {start_mode},"
+                            f" but only {total_modes - start_mode} available")
+
+                dm_array = dm_array[:, :, start_mode:end_mode]
+
+                if self.verbose:
+                    print(f"  *** AFTER CUT: dm_array.shape = {dm_array.shape} ***")
+                    print(f"  Selected modes [{start_mode}:{end_mode}] "
+                        f"({end_mode - start_mode} modes out of {total_modes})")
+            else:
+                # Use all modes after start_mode (old behavior)
+                dm_array = dm_array[:, :, start_mode:]
+
+                if self.verbose:
+                    print(f"  Selected modes from {start_mode} onwards "
+                        f"({total_modes - start_mode} modes)")
+
+        # Convert to xp with float_dtype
         dm_array = to_xp(xp, dm_array, dtype=float_dtype)
         dm_mask = to_xp(xp, dm_mask, dtype=float_dtype)
 
@@ -711,7 +764,8 @@ class ParamsManager:
             # Load component parameters once
             component_params = self.get_component_params(
                 comp_idx,
-                is_layer=(comp_type == 'layer')
+                is_layer=(comp_type == 'layer'),
+                cut_start_mode=False
             )
 
             if verbose_flag:
@@ -913,17 +967,73 @@ class ParamsManager:
         mode_indices = []
         total_modes = 0
 
+        # Check for reconstruction section based on WFS type ***
+        use_reconstruction_modes = False
+        reconstruction_n_modes = []
+
+        if wfs_type in ['ngs', 'ref']:
+            # Try to get modes from reconstruction section
+            if wfs_type == 'ngs':
+                if component_type == 'dm':
+                    reconstruction_n_modes = self.ngs_n_modes_dm
+                else:  # layer
+                    reconstruction_n_modes = self.ngs_n_modes_layer
+            else:  # ref
+                if component_type == 'dm':
+                    reconstruction_n_modes = self.ref_n_modes_dm
+                else:  # layer
+                    reconstruction_n_modes = self.ref_n_modes_layer
+
+            if reconstruction_n_modes:
+                use_reconstruction_modes = True
+                if self.verbose:
+                    print(f"Using {wfs_type.upper()} mode configuration"
+                          f" from reconstruction section")
+                    print(f"  {component_type.upper()} modes: {reconstruction_n_modes}")
+
         # Check if modal_combination exists for this WFS type and component type
         modal_key = f'modes_{wfs_type}_{component_type}'
         has_modal_combination = ('modal_combination' in self.params and
                                 modal_key in self.params['modal_combination'])
 
-        if has_modal_combination:
+        if use_reconstruction_modes:
+            # Use reconstruction section for NGS/REF
+            for i, n_modes in enumerate(reconstruction_n_modes):
+                # *** SKIP components with 0 modes ***
+                if n_modes == 0:
+                    if self.verbose:
+                        print(f"  Skipping component {i+1}: 0 modes requested")
+                    continue
+
+                if i < len(component_list):
+                    comp = component_list[i]
+                    comp_idx = int(comp['index'])
+
+                    comp_config = self.params[comp['name']]
+                    start_mode = comp_config.get('start_mode', 0)
+                    component_start_modes.append(start_mode)
+                    component_indices.append(comp_idx)
+
+                    # Modes from start_mode to n_modes
+                    modes = list(range(start_mode, start_mode + n_modes))
+                    mode_indices.append(modes)
+                    total_modes += len(modes)
+
+                    if self.verbose:
+                        print(f"  Component {comp_idx}: {n_modes} modes from {start_mode}")
+
+        elif has_modal_combination:
             if self.verbose:
                 print(f"Using modal_combination for {component_type}s")
 
             modes_config = self.params['modal_combination'][modal_key]
             for i, n_modes in enumerate(modes_config):
+                # *** SKIP components with 0 modes ***
+                if n_modes == 0:
+                    if self.verbose:
+                        print(f"  Skipping component {i+1}: 0 modes in modal_combination")
+                    continue
+
                 if n_modes > 0:
                     # Check for start_mode in component config
                     comp_key = f'{component_type}{i+1}'
@@ -946,16 +1056,21 @@ class ParamsManager:
 
             for comp in component_list:
                 comp_idx = int(comp['index'])
-                comp_params = self.get_component_params(
-                    comp_idx,
-                    is_layer=(component_type == 'layer')
-                )
-                n_modes = comp_params['dm_array'].shape[2]
+
+                comp_key = f'{component_type}{comp_idx}'
+                if comp_key not in self.params:
+                    raise ValueError(f"Component {comp_key} not found in configuration")
+
+                comp_config = self.params[comp_key]
+
+                # Get total modes from config
+                n_modes = comp_config.get('nmodes', None)
+                if n_modes is None:
+                    raise ValueError(f"nmodes not specified for {comp_key}")
 
                 # Check for start_mode
-                comp_key = f'{component_type}{comp_idx}'
-                if comp_key in self.params and 'start_mode' in self.params[comp_key]:
-                    comp_start_mode = self.params[comp_key]['start_mode']
+                if 'start_mode' in comp_config:
+                    comp_start_mode = comp_config['start_mode']
                 else:
                     comp_start_mode = 0
 
@@ -993,6 +1108,7 @@ class ParamsManager:
         # Create the full interaction matrix
         im_full = np.zeros((n_tot_slopes, n_tot_modes), dtype=im_dtype)
 
+        # ==================== ASSEMBLE MATRICES ====================
         # Load and assemble the interaction matrices
         for ii in range(n_wfs):
             for jj, comp_ind in enumerate(component_indices):
@@ -1011,6 +1127,7 @@ class ParamsManager:
                 im_path = os.path.join(output_im_dir, im_filename)
 
                 if self.verbose:
+                    print(f"--> Indices: WFS {ii+1}, Component {comp_ind}")
                     print(f"--> Loading IM: {im_filename}")
 
                 # Load the interaction matrix
@@ -1050,7 +1167,7 @@ class ParamsManager:
                 # but extract from im using relative indices
                 start_col_in_full = sum(len(mode_indices[k]) for k in range(jj))
                 n_modes_this_comp = len(relative_mode_idx)
-    
+
                 # Fill the appropriate section of the full interaction matrix
                 if ii == 0:
                     idx_start = 0
@@ -1310,9 +1427,13 @@ class ParamsManager:
         # ==================== GET COMPONENTS ====================
         components = []
         for dm in self.dm_list:
-            components.append({'type': 'dm', 'index': int(dm['index']), 'name': dm['name']})
+            components.append({'type': 'dm',
+                               'index': int(dm['index']),
+                               'name': dm['name']})
         for layer in extract_layer_list(self.params):
-            components.append({'type': 'layer', 'index': int(layer['index']), 'name': layer['name']})
+            components.append({'type': 'layer',
+                               'index': int(layer['index']),
+                               'name': layer['name']})
 
         # ==================== GET OPTICAL SOURCES ====================
         opt_sources = extract_opt_list(self.params)
@@ -1922,7 +2043,7 @@ class ParamsManager:
 
             # Compute noise variance if not provided
             if noise_variance is None:
-                # ***  Use sigma2inNm2 from params ***
+                # ***  Use sigma2_in_nm2 from params ***
                 params = self.params
                 wfs_params = params[f'sh_{wfs_type}1']
                 sa_side_in_m = (params['main']['pixel_pupil'] *
@@ -1936,18 +2057,18 @@ class ParamsManager:
 
                 rad2arcsec = 3600. * 180. / np.pi
 
-                # *** Use extracted sigma2inNm2 ***
-                sigma2inNm2 = self.sigma2inNm2
+                # *** Use extracted sigma2_in_nm2 ***
+                sigma2_in_nm2 = self.sigma2_in_nm2
 
-                sigma2inArcsec2 = sigma2inNm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
-                sigma2inSlope = sigma2inArcsec2 * 1./(sensor_fov/2.)**2.
+                sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
+                sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2.
 
                 # *** This is the BASE noise variance (for fully illuminated subaperture) ***
-                base_noise_variance = sigma2inSlope
+                base_noise_variance = sigma2_in_slope
 
                 if verbose_flag:
                     print(f"  Base noise variance (fully illuminated): {base_noise_variance:.2e}")
-                    print(f"  (from sigma2inNm2 = {sigma2inNm2:.2e})")
+                    print(f"  (from sigma2_in_nm2 = {sigma2_in_nm2:.2e})")
 
                 # *** Compute illumination for each WFS ***
                 n_slopes_total = im_full.shape[0]
@@ -1967,7 +2088,7 @@ class ParamsManager:
                     n_slopes_list.append(n_slopes_this_wfs)
 
                     # *** Compute subaperture illumination for this WFS ***
-                    if n_slopes_this_wfs > 0:                    
+                    if n_slopes_this_wfs > 0:       
                         illumination = synim.compute_subaperture_illumination(
                             pup_mask=self.pup_mask,
                             wfs_nsubaps=wfs_params['wfs_nsubaps'],
@@ -2466,7 +2587,9 @@ class ParamsManager:
                 print(f"  Computing for: {n_modes} modes")
 
             # ========== GENERATE FILENAME (EXACTLY LIKE IDL) ==========
-            cov_filename, base_tag = generate_cov_filename(self.params[comp_key], self.pup_diam_m, r0, L0)
+            cov_filename, base_tag = generate_cov_filename(
+                self.params[comp_key], self.pup_diam_m, r0, L0
+            )
             cov_path = os.path.join(output_dir, cov_filename)
             cov_files.append(cov_path)
 
