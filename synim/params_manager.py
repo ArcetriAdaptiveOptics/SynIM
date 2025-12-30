@@ -1056,7 +1056,6 @@ class ParamsManager:
 
             for comp in component_list:
                 comp_idx = int(comp['index'])
-                component_indices.append(comp_idx)
 
                 comp_key = f'{component_type}{comp_idx}'
                 if comp_key not in self.params:
@@ -1128,6 +1127,7 @@ class ParamsManager:
                 im_path = os.path.join(output_im_dir, im_filename)
 
                 if self.verbose:
+                    print(f"--> Indices: WFS {ii+1}, Component {comp_ind}")
                     print(f"--> Loading IM: {im_filename}")
 
                 # Load the interaction matrix
@@ -2088,7 +2088,7 @@ class ParamsManager:
                     n_slopes_list.append(n_slopes_this_wfs)
 
                     # *** Compute subaperture illumination for this WFS ***
-                    if n_slopes_this_wfs > 0:                    
+                    if n_slopes_this_wfs > 0:       
                         illumination = synim.compute_subaperture_illumination(
                             pup_mask=self.pup_mask,
                             wfs_nsubaps=wfs_params['wfs_nsubaps'],
