@@ -192,35 +192,34 @@ plt.tight_layout()
 plt.savefig(os.path.join(output_rec_dir, "interaction_matrix_log.png"), dpi=150)
 print(f"  ✓ Saved interaction_matrix_log.png")
 
-# 3. Atmospheric covariance (log scale)
+# 3. Atmospheric PRECISION matrix (log scale)
 vmin, vmax = v_min_max(C_atm_full)
 plt.figure(figsize=(10, 8))
 plt.imshow(np.abs(C_atm_full), cmap='viridis',
-           norm=LogNorm(vmin=vmin,
-                        vmax=vmax))
-plt.colorbar(label='|Covariance| [rad²] (log scale)')
-plt.title(f"Atmospheric Covariance Matrix\n"
+           norm=LogNorm(vmin=vmin, vmax=vmax))
+plt.colorbar(label='|Precision| [rad⁻²] (log scale)')
+plt.title(f"Atmospheric Precision Matrix (Inverse Covariance)\n"
           f"r0={r0}m, L0={L0}m")
 plt.xlabel("Mode Index")
 plt.ylabel("Mode Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "covariance_atmospheric_log.png"), dpi=150)
-print(f"  ✓ Saved covariance_atmospheric_log.png")
+plt.savefig(os.path.join(output_rec_dir, "atmospheric_precision_log.png"), dpi=150)
+print(f"  ✓ Saved atmospheric_precision_log.png")
 
-# 4. Noise covariance (zoomed on first WFS, log scale)
+# 4. Noise PRECISION matrix (zoomed on first WFS, log scale)
 n_slopes_per_wfs = result['n_slopes_per_wfs']
 vmin, vmax = v_min_max(C_noise)
 plt.figure(figsize=(10, 8))
-plt.imshow(np.abs(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs]), cmap='viridis',
-           norm=LogNorm(vmin=vmin,
-                        vmax=vmax))
-plt.colorbar(label='|Noise variance| [rad²] (log scale)')
-plt.title(f"Noise Covariance Matrix (first WFS)")
+plt.imshow(np.abs(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs]), 
+           cmap='viridis',
+           norm=LogNorm(vmin=vmin, vmax=vmax))
+plt.colorbar(label='|Noise precision| [rad⁻²] (log scale)')
+plt.title(f"Noise Precision Matrix (Inverse Covariance) - First WFS")
 plt.xlabel("Slope Index")
 plt.ylabel("Slope Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "covariance_noise_log.png"), dpi=150)
-print(f"  ✓ Saved covariance_noise_log.png")
+plt.savefig(os.path.join(output_rec_dir, "noise_precision_log.png"), dpi=150)
+print(f"  ✓ Saved noise_precision_log.png")
 
 # 5. Diagonal of IM @ Reconstructor
 plt.figure(figsize=(10, 6))
@@ -234,17 +233,17 @@ plt.tight_layout()
 plt.savefig(os.path.join(output_rec_dir, "diag_reconstructor_im.png"), dpi=150)
 print(f"  ✓ Saved diag_reconstructor_im.png")
 
-# 6. Diagonal of atmospheric covariance
+# 6. Diagonal of the inverse atmospheric covariance
 plt.figure(figsize=(10, 6))
 diag_cov = np.diag(C_atm_full)
 plt.plot(diag_cov, '.-')
 plt.xlabel('Mode Index')
-plt.ylabel('Covariance')
-plt.title('Diagonal of Atmospheric Covariance Matrix')
+plt.ylabel('Precision [rad⁻²]')
+plt.title('Diagonal of the Inverse Atmospheric Covariance Matrix')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "diag_covariance_atmospheric.png"), dpi=150)
-print(f"  ✓ Saved diag_covariance_atmospheric.png")
+plt.savefig(os.path.join(output_rec_dir, "diag_precision_atmospheric.png"), dpi=150)
+print(f"  ✓ Saved diag_precision_atmospheric.png")
 
 # Show all plots
 plt.show()
@@ -269,15 +268,16 @@ u, s, vh = svd(im_full, full_matrices=False)
 print(f"  Singular values: min={s.min():.2e}, max={s.max():.2e}")
 print(f"  Rank: {np.sum(s > s.max() * 1e-10)}/{len(s)}")
 
-print(f"\nAtmospheric Covariance:")
+print(f"\nAtmospheric Precision Matrix (Cx^(-1)):")
 print(f"  Condition number: {cond(C_atm_full):.2e}")
 eigenvalues = np.linalg.eigvalsh(C_atm_full)
 print(f"  Eigenvalues: min={eigenvalues.min():.2e}, max={eigenvalues.max():.2e}")
 
-print(f"\nNoise Covariance:")
+print(f"\nNoise Precision Matrix (Cz^(-1)):")
 noise_diag = np.diag(C_noise)
-print(f"  Mean variance: {noise_diag.mean():.2e} rad²")
-print(f"  Std variance: {noise_diag.std():.2e} rad²")
+print(f"  Mean precision: {noise_diag.mean():.2e} rad⁻²")
+print(f"  Std precision: {noise_diag.std():.2e} rad⁻²")
+print(f"  Equivalent noise variance: {1.0/noise_diag.mean():.2e} rad²")
 
 print(f"\nReconstructor Statistics:")
 print(f"  Mean: {reconstructor.mean():.2e}")
