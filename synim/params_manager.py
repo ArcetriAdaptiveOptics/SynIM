@@ -1008,11 +1008,11 @@ class ParamsManager:
                 if i < len(component_list):
                     comp = component_list[i]
                     comp_idx = int(comp['index'])
-                    component_indices.append(comp_idx)
 
                     comp_config = self.params[comp['name']]
                     start_mode = comp_config.get('start_mode', 0)
                     component_start_modes.append(start_mode)
+                    component_indices.append(comp_idx)
 
                     # Modes from start_mode to n_modes
                     modes = list(range(start_mode, start_mode + n_modes))
