@@ -382,9 +382,6 @@ class ParamsManager:
         dm_array = to_xp(xp, dm_array, dtype=float_dtype)
         dm_mask = to_xp(xp, dm_mask, dtype=float_dtype)
 
-        if self.verbose:
-            print(f"  *** BEFORE CACHE: dm_array.shape = {dm_array.shape} ***")
-
         self.dm_cache[cache_key] = {
             'dm_array': dm_array,
             'dm_mask': dm_mask,
@@ -393,8 +390,6 @@ class ParamsManager:
             'component_key': component_key
         }
 
-        if self.verbose:
-            print(f"  *** CACHED with key: {cache_key} ***")
         return self.dm_cache[cache_key]
 
     def get_wfs_params(self, wfs_type=None, wfs_index=None):
