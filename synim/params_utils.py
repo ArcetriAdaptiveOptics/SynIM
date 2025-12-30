@@ -544,7 +544,8 @@ def build_wfs_filename_part(wfs_config, wfs_type=None):
     return "_".join(parts) if parts else "wfs"
 
 
-def build_component_filename_part(component_config, component_type='dm', include_height=True):
+def build_component_filename_part(component_config, component_type='dm', 
+                                  include_height=True, n_modes_override=None):
     """
     Build the DM/Layer-specific part of the filename.
     
@@ -552,6 +553,8 @@ def build_component_filename_part(component_config, component_type='dm', include
         component_config (dict): DM or Layer configuration parameters
         component_type (str): Type of component ('dm' or 'layer')
         include_height (bool): Whether to include height in the output
+        n_modes_override (int, optional): Number of modes ACTUALLY USED.
+                                         Only adds suffix if < total nmodes.
         
     Returns:
         str: DM or Layer filename component
@@ -569,7 +572,47 @@ def build_component_filename_part(component_config, component_type='dm', include
 
     m2c_tag = get_tag_or_object(component_config, 'm2c')
     if m2c_tag is not None:
-        parts.append(f"m2c_{m2c_tag}")
+        # *** Check if m2c_tag already contains "modes" ***
+        if 'modes' in m2c_tag.lower():
+            # Tag already has modes info (e.g., "base_162px_41acts_1260modes")
+
+            if n_modes_override is not None:
+                # Need to add override info
+                # Extract total modes from tag if possible
+                import re
+                match = re.search(r'(\d+)modes', m2c_tag, re.IGNORECASE)
+                if match:
+                    nmodes_in_tag = int(match.group(1))
+
+                    # Only add suffix if using fewer modes
+                    if n_modes_override < nmodes_in_tag:
+                        parts.append(f"m2c_{m2c_tag}_{n_modes_override}modes")
+                    else:
+                        # Using all modes from tag
+                        parts.append(f"m2c_{m2c_tag}")
+                else:
+                    # Can't parse, just add the tag with override
+                    parts.append(f"m2c_{m2c_tag}_{n_modes_override}modes")
+            else:
+                # No override, just use the tag as-is
+                parts.append(f"m2c_{m2c_tag}")
+        else:
+            # Tag doesn't contain "modes", add it from config
+            nmodes_total = component_config.get('nmodes', None)
+
+            if n_modes_override is not None and nmodes_total is not None:
+                # Only add suffix if using fewer modes
+                if n_modes_override < nmodes_total:
+                    parts.append(f"m2c_{m2c_tag}_{n_modes_override}modes")
+                else:
+                    # Using all modes
+                    parts.append(f"m2c_{m2c_tag}_{nmodes_total}modes")
+            elif nmodes_total is not None:
+                # No override, use total
+                parts.append(f"m2c_{m2c_tag}_{nmodes_total}modes")
+            else:
+                # No modes info
+                parts.append(f"m2c_{m2c_tag}")
 
     return "_".join(parts) if parts else component_type
 
@@ -1203,8 +1246,8 @@ def validate_opt_sources(params, verbose=False):
 
 def generate_im_filename(params_file, wfs_type=None,
                          wfs_index=None, dm_index=None,
-                         layer_index=None, timestamp=False,
-                         verbose=False):
+                         layer_index=None, n_modes=None,
+                         timestamp=False, verbose=False):
     """
     Generate the interaction matrix filename for a given WFS-DM/Layer combination.
     
@@ -1214,6 +1257,7 @@ def generate_im_filename(params_file, wfs_type=None,
         wfs_index (int, optional): Index of the WFS (1-based)
         dm_index (int, optional): Index of the DM (1-based)
         layer_index (int, optional): Index of the Layer (1-based)
+        n_modes (int, optional): Number of modes used (if limited)
         timestamp (bool): Whether to include a timestamp in the filename
         verbose (bool): Whether to print detailed information
         
@@ -1270,12 +1314,20 @@ def generate_im_filename(params_file, wfs_type=None,
     if dm_index is not None:
         dm_key = f"dm{dm_index}"
         if dm_key in params:
-            dm_info = build_component_filename_part(params[dm_key], 'dm')
+            dm_info = build_component_filename_part(
+                params[dm_key],
+                'dm',
+                n_modes_override=n_modes
+            )
             filename_parts.append(dm_info)
     else:
         layer_key = f"layer{layer_index}"
         if layer_key in params:
-            layer_info = build_component_filename_part(params[layer_key], 'layer')
+            layer_info = build_component_filename_part(
+                params[layer_key],
+                'layer',
+                n_modes_override=n_modes
+            )
             filename_parts.append(layer_info)
 
     # Add timestamp if requested
