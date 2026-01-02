@@ -79,39 +79,6 @@ print(f"\n{'='*70}\n")
 # ===================================================================
 # Step 4: Visualizations
 # ===================================================================
-plt.figure(figsize=(12, 8))
-plt.imshow(p_opt, cmap='seismic', aspect='auto', vmin=-0.1, vmax=0.1)
-plt.colorbar(label='Projection coefficient')
-plt.title(f"Tomographic Projection Matrix (p_opt)\n"
-          f"DM modes → Layer modes (reg_factor={info['reg_factor']})")
-plt.xlabel("Layer Mode Index")
-plt.ylabel("DM Mode Index")
-plt.tight_layout()
-plt.savefig(os.path.join(output_pm_dir, "p_opt_tomographic.png"), dpi=150)
-print(f"✓ Saved p_opt visualization")
-
-if pm_full_dm is not None:
-    plt.figure(figsize=(10, 6))
-    plt.imshow(pm_full_dm[0, :, :], cmap='viridis', aspect='auto')
-    plt.colorbar(label='Projection value')
-    plt.title("DM Projection Matrix - First Optical Source (opt1)")
-    plt.xlabel("Pupil Mode Index")
-    plt.ylabel("DM Mode Index")
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_pm_dir, "pm_dm_opt1.png"), dpi=150)
-    print(f"✓ Saved DM projection visualization")
-
-if pm_full_layer is not None:
-    plt.figure(figsize=(10, 6))
-    plt.imshow(pm_full_layer[0, :, :], cmap='viridis', aspect='auto')
-    plt.colorbar(label='Projection value')
-    plt.title("Layer Projection Matrix - First Optical Source (opt1)")
-    plt.xlabel("Pupil Mode Index")
-    plt.ylabel("Layer Mode Index")
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_pm_dir, "pm_layer_opt1.png"), dpi=150)
-    print(f"✓ Saved Layer projection visualization")
-
 if pm_full_dm is not None and info['n_opt_sources'] > 1:
     plt.figure(figsize=(12, 6))
     for i in range(min(info['n_opt_sources'], 17)):

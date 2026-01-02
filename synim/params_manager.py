@@ -516,6 +516,8 @@ class ParamsManager:
         wfs_rotation = wfs_params.get('rotation', 0.0)
         wfs_translation = wfs_params.get('translation', [0.0, 0.0])
         wfs_magnification = wfs_params.get('magnification', 1.0)
+        wfs_anamorphosis_90 = wfs_params.get('anamorph90', 1.0)
+        wfs_anamorphosis_45 = wfs_params.get('anamorph45', 1.0)
         wfs_fov_arcsec = wfs_fov_from_config(wfs_params)
 
         if wfs_type_detected == 'sh':
@@ -565,6 +567,8 @@ class ParamsManager:
             'wfs_rotation': wfs_rotation,
             'wfs_translation': wfs_translation,
             'wfs_magnification': wfs_magnification,
+            'wfs_anamorphosis_90': wfs_anamorphosis_90,
+            'wfs_anamorphosis_45': wfs_anamorphosis_45,
             'wfs_fov_arcsec': wfs_fov_arcsec,
             'gs_pol_coo': gs_pol_coo,
             'gs_height': gs_height,
@@ -1863,7 +1867,8 @@ class ParamsManager:
         config_name = (os.path.basename(self.params_file).split('.')[0]
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
-        output_filename = f"im_full_{config_name}_{wfs_type}_{component_type}{filter_suffix}.fits"
+        output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
+                          f"{filter_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
 
         # Check if file exists
