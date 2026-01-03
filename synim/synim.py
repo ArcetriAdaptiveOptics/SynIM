@@ -28,7 +28,8 @@ def compute_derivatives_with_extrapolation(data,mask=None):
         # mask must be binary, set to 0 value below 0.999999 and 1 above
         # the threshold is to avoid numerical issues due to interpolations
         if mask.max() < 0.999999:
-            raise ValueError(f'Mask max value is {mask.max()}, expected binary mask with values 0 and 1.')
+            raise ValueError(f'Mask max value is {mask.max()},'
+                             f' expected binary mask with values 0 and 1.')
         mask = xp.where(mask >= 0.999999, 1, 0)
         # set to 0 values outside the mask
         data = apply_mask(data, mask, fill_value=0)
@@ -163,11 +164,11 @@ def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
 
 def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
                                       dm_height, dm_rotation,
+                                      gs_pol_coo, gs_height,
                                       wfs_rotation, wfs_translation,
                                       wfs_mag_global=1.0,
                                       wfs_anamorphosis_90=1.0,
                                       wfs_anamorphosis_45=1.0,
-                                      gs_pol_coo, gs_height,
                                       verbose=False, specula_convention=True):
     """
     Apply DM and WFS transformations COMBINED (single interpolation step).
@@ -213,7 +214,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_translation=dm_translation,
         dm_rotation=dm_rotation,
         dm_magnification=dm_magnification,
-        wfs_translation=wfs_translation,  # Include WFS
+        wfs_translation=wfs_translation,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         wfs_anamorphosis_45=wfs_anamorphosis_45,
@@ -267,11 +268,11 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
 
 def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
                                         pup_mask, dm_mask,
-                                        wfs_nsubaps, wfs_rotation,
+                                        wfs_nsubaps, wfs_fov_arcsec,
+                                        pup_diam_m, wfs_rotation,
                                         wfs_translation, wfs_mag_global,
                                         wfs_anamorphosis_90=1.0,
                                         wfs_anamorphosis_45=1.0,
-                                        wfs_fov_arcsec, pup_diam_m,
                                         idx_valid_sa=None, verbose=False,
                                         specula_convention=True):
     """
@@ -279,7 +280,7 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
     """
 
     output_size = pup_mask.shape
-    
+
     # *** Compute WFS magnification including anamorphosis at 90° ***
     wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
 
@@ -452,9 +453,10 @@ def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_
 
 
 def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
-                       wfs_nsubaps, wfs_rotation, wfs_translation, wfs_mag_global,
+                       wfs_nsubaps, wfs_fov_arcsec, gs_pol_coo, gs_height,
+                       wfs_rotation, wfs_translation, wfs_mag_global,
                        wfs_anamorphosis_90=1.0, wfs_anamorphosis_45=1.0,
-                       wfs_fov_arcsec, gs_pol_coo, gs_height, idx_valid_sa=None,
+                       idx_valid_sa=None,
                        verbose=False, display=False, specula_convention=True):
     """
     Computes interaction matrix using intelligent workflow selection.
@@ -492,13 +494,21 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
         # Combined workflow: single interpolation
         trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
             apply_dm_transformations_combined(
-                pup_diam_m, pup_mask, dm_array, dm_mask,
-                dm_height, dm_rotation,
-                wfs_rotation, wfs_translation, wfs_mag_global,
+                pup_diam_m=pup_diam_m,
+                pup_mask=pup_mask,
+                dm_array=dm_array,
+                dm_mask=dm_mask,
+                gs_pol_coo=gs_pol_coo,
+                gs_height=gs_height,
+                dm_height=dm_height,
+                dm_rotation=dm_rotation,
+                wfs_rotation=wfs_rotation,
+                wfs_translation=wfs_translation,
+                wfs_mag_global=wfs_mag_global,
                 wfs_anamorphosis_90=wfs_anamorphosis_90,
                 wfs_anamorphosis_45=wfs_anamorphosis_45,
-                gs_pol_coo, gs_height,
-                verbose=verbose, specula_convention=specula_convention
+                verbose=verbose,
+                specula_convention=specula_convention
             )
 
         im = apply_wfs_transformations_combined(
@@ -517,11 +527,19 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
             )
 
         im = apply_wfs_transformations_separated(
-            derivatives_x, derivatives_y, pup_mask_conv, trans_dm_mask,
-            wfs_nsubaps, wfs_rotation, wfs_translation, wfs_mag_global,
+            derivatives_x=derivatives_x,
+            derivatives_y=derivatives_y,
+            pup_mask=pup_mask_conv,
+            dm_mask=trans_dm_mask,
+            wfs_nsubaps=wfs_nsubaps,
+            wfs_fov_arcsec=wfs_fov_arcsec,
+            pup_diam_m=pup_diam_m,
+            wfs_rotation=wfs_rotation,
+            wfs_translation=wfs_translation,
+            wfs_mag_global=wfs_mag_global,
             wfs_anamorphosis_90=wfs_anamorphosis_90,
             wfs_anamorphosis_45=wfs_anamorphosis_45,
-            wfs_fov_arcsec, pup_diam_m, idx_valid_sa=idx_valid_sa,
+            idx_valid_sa=idx_valid_sa,
             verbose=verbose, specula_convention=specula_convention
         )
 
@@ -710,7 +728,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_magnification = wfs_config.get('magnification', (1.0, 1.0))
             if isinstance(wfs_magnification, (tuple, list)) and len(wfs_magnification) == 2:
                 wfs_mag_global = xp.sqrt(wfs_magnification[0] * wfs_magnification[1])
-                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] if wfs_magnification[0] != 0 else 1.0
+                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] \
+                    if wfs_magnification[0] != 0 else 1.0
             else:
                 wfs_mag_global = float(wfs_magnification)
                 wfs_anamorphosis_90 = 1.0
@@ -724,11 +743,19 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                 print(f"    FOV: {wfs_fov_arcsec}''")
 
             im = apply_wfs_transformations_separated(
-                derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
-                wfs_nsubaps, wfs_rotation, wfs_translation, wfs_mag_global,
+                derivatives_x=derivatives_x,
+                derivatives_y=derivatives_y,
+                pup_mask=trans_pup_mask,
+                dm_mask=trans_dm_mask,
+                wfs_nsubaps=wfs_nsubaps,
+                wfs_fov_arcsec=wfs_fov_arcsec,
+                pup_diam_m=pup_diam_m,
+                wfs_rotation=wfs_rotation,
+                wfs_translation=wfs_translation,
+                wfs_mag_global=wfs_mag_global,
                 wfs_anamorphosis_90=wfs_anamorphosis_90,
                 wfs_anamorphosis_45=wfs_anamorphosis_45,
-                wfs_fov_arcsec, pup_diam_m, idx_valid_sa=idx_valid_sa,
+                idx_valid_sa=idx_valid_sa,
                 verbose=False,  # Suppress inner verbose
                 specula_convention=specula_convention
             )
@@ -757,7 +784,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_magnification = wfs_config.get('magnification', (1.0, 1.0))
             if isinstance(wfs_magnification, (tuple, list)) and len(wfs_magnification) == 2:
                 wfs_mag_global = xp.sqrt(wfs_magnification[0] * wfs_magnification[1])
-                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] if wfs_magnification[0] != 0 else 1.0
+                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] \
+                    if wfs_magnification[0] != 0 else 1.0
             else:
                 wfs_mag_global = float(wfs_magnification)
                 wfs_anamorphosis_90 = 1.0
@@ -794,19 +822,32 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                 # SEPARATED: Two interpolation steps
                 trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
                     apply_dm_transformations_separated(
-                        pup_diam_m, pup_mask, dm_array, dm_mask,
-                        dm_height, dm_rotation,
-                        gs_pol_coo_wfs, gs_height_wfs,
+                        pup_diam_m=pup_diam_m,
+                        pup_mask=pup_mask,
+                        dm_array=dm_array,
+                        dm_mask=dm_mask,
+                        dm_height=dm_height,
+                        dm_rotation=dm_rotation,
+                        gs_pol_coo=gs_pol_coo_wfs,
+                        gs_height=gs_height_wfs,
                         verbose=False,
                         specula_convention=specula_convention
                     )
 
                 im = apply_wfs_transformations_separated(
-                    derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
-                    wfs_nsubaps, wfs_rotation, wfs_translation, wfs_mag_global,
+                    derivatives_x=derivatives_x,
+                    derivatives_y=derivatives_y,
+                    pup_mask=trans_pup_mask,
+                    dm_mask=trans_dm_mask,
+                    wfs_nsubaps=wfs_nsubaps,
+                    wfs_fov_arcsec=wfs_fov_arcsec,
+                    pup_diam_m=pup_diam_m,
+                    wfs_rotation=wfs_rotation,
+                    wfs_translation=wfs_translation,
+                    wfs_mag_global=wfs_mag_global,
                     wfs_anamorphosis_90=wfs_anamorphosis_90,
                     wfs_anamorphosis_45=wfs_anamorphosis_45,
-                    wfs_fov_arcsec, pup_diam_m, idx_valid_sa=idx_valid_sa,
+                    idx_valid_sa=idx_valid_sa,
                     verbose=False,
                     specula_convention=specula_convention
                 )
@@ -814,12 +855,19 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                 # COMBINED: Single interpolation step
                 trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
                     apply_dm_transformations_combined(
-                        pup_diam_m, pup_mask, dm_array, dm_mask,
-                        dm_height, dm_rotation,
-                        wfs_rotation, wfs_translation, wfs_mag_global,
+                        pup_diam_m=pup_diam_m,
+                        pup_mask=pup_mask,
+                        dm_array=dm_array,
+                        dm_mask=dm_mask,
+                        dm_height=dm_height,
+                        dm_rotation=dm_rotation,
+                        gs_pol_coo=gs_pol_coo_wfs,
+                        gs_height=gs_height_wfs,
+                        wfs_rotation=wfs_rotation,
+                        wfs_translation=wfs_translation,
+                        wfs_mag_global=wfs_mag_global,
                         wfs_anamorphosis_90=wfs_anamorphosis_90,
                         wfs_anamorphosis_45=wfs_anamorphosis_45,
-                        gs_pol_coo_wfs, gs_height_wfs,
                         verbose=False,
                         specula_convention=specula_convention
                     )
