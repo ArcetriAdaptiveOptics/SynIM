@@ -125,7 +125,7 @@ path = params_mgr.save_assembled_interaction_matrix(
     wfs_type=wfs_type,
     component_type='dm',
     output_dir=output_im_dir,
-    overwrite=False,
+    overwrite=True,
     apply_filter=True,
     verbose=True)
 
