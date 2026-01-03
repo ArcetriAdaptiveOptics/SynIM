@@ -246,7 +246,8 @@ def shiftzoom_from_source_dm_params(source_pol_coo, source_height, dm_height, pi
         mag_factor = source_height/(source_height-dm_height)
     source_rec_coo_asec = polar_to_xy(source_pol_coo[0],source_pol_coo[1]*xp.pi/180)
     source_rec_coo_m = source_rec_coo_asec*dm_height*arcsec2rad
-    # change sign to get the shift in the right direction considering the convention applied in rotshiftzoom_array
+    # change sign to get the shift in the right direction considering
+    # the convention applied in rotshiftzoom_array
     source_rec_coo_pix = -1 * source_rec_coo_m / pixel_pitch
 
     shift = tuple(source_rec_coo_pix)
@@ -255,8 +256,8 @@ def shiftzoom_from_source_dm_params(source_pol_coo, source_height, dm_height, pi
     return shift, zoom
 
 
-def rotshiftzoom_array_noaffine(input_array, dm_translation=(0.0, 0.0), dm_rotation=0.0, 
-                                dm_magnification=(1.0, 1.0), wfs_translation=(0.0, 0.0), 
+def rotshiftzoom_array_noaffine(input_array, dm_translation=(0.0, 0.0), dm_rotation=0.0,
+                                dm_magnification=(1.0, 1.0), wfs_translation=(0.0, 0.0),
                                 wfs_rotation=0.0, wfs_magnification=(1.0, 1.0), output_size=None):
     """
     Apply magnification, rotation, shift and resize of a 2D or 3D array.
@@ -401,7 +402,9 @@ def rotshiftzoom_array_noaffine(input_array, dm_translation=(0.0, 0.0), dm_rotat
 def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
                        dm_rotation=0.0, dm_magnification=(1.0, 1.0),
                        wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
-                       wfs_magnification=(1.0, 1.0), output_size=None):
+                       wfs_magnification=(1.0, 1.0),
+                       wfs_anamorphosis_45=1.0,
+                       output_size=None):
     """
     This function applies magnification, rotation, shift and resize of a
     2D or 3D numpy/cupy array using affine transformation.
@@ -415,6 +418,9 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     - wfs_translation: tuple, translation for WFS (x, y)
     - wfs_rotation: float, rotation angle for WFS in degrees
     - wfs_magnification: tuple, magnification factors for WFS (x, y)
+    - wfs_anamorphosis_45 (float): Diagonal anamorphosis factor.
+      Values > 1 stretch along +45° diagonal and compress along -45° diagonal.
+      Implemented as a shear transformation.
     - output_size: tuple, desired output size (height, width)
 
     Returns:
@@ -495,7 +501,31 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
         [[xp.cos(wfs_rot_rad), -xp.sin(wfs_rot_rad)],
          [xp.sin(wfs_rot_rad), xp.cos(wfs_rot_rad)]]
     )
-    wfs_matrix = xp.dot(wfs_rot_matrix, wfs_scale_matrix)
+
+    # *** Anamorphosis 45° matrix (shear transformation) ***
+    if wfs_anamorphosis_45 != 1.0:
+        # Shear matrix for 45° anamorphosis
+        # This stretches along (1,1) and compresses along (1,-1)
+        # Mathematical form:
+        #   1. Rotate by -45° to align diagonal with Y axis
+        #   2. Scale Y by anamorphosis_45
+        #   3. Rotate back by +45°
+        # Result: S = R(45°) @ diag(1, k) @ R(-45°)
+
+        k = wfs_anamorphosis_45
+        # Simplified shear matrix (derived from rotation-scale-rotation)
+        # S = [ (1+k)/2,  (1-k)/2 ]
+        #     [ (1-k)/2,  (1+k)/2 ]
+        anam_45_matrix = xp.array([
+            [(1.0 + k) / 2.0, (1.0 - k) / 2.0],
+            [(1.0 - k) / 2.0, (1.0 + k) / 2.0]
+        ])
+
+        # Apply: rotation, then scale, then anamorphosis
+        wfs_matrix = xp.dot(anam_45_matrix, xp.dot(wfs_rot_matrix, wfs_scale_matrix))
+    else:
+        # No anamorphosis, standard transformation
+        wfs_matrix = xp.dot(wfs_rot_matrix, wfs_scale_matrix)
 
     # Combine transformations (first DM, then WFS)
     combined_matrix = xp.dot(wfs_matrix, dm_matrix)

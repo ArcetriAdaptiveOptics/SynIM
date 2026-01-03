@@ -513,9 +513,13 @@ class ParamsManager:
             print(f"     Source type determined: {source_type}")
 
         # Extract WFS parameters
-        wfs_rotation = wfs_params.get('rotation', 0.0)
-        wfs_translation = wfs_params.get('translation', [0.0, 0.0])
+        wfs_rotation = wfs_params.get('rotation', wfs_params.get('rotAnglePhInDeg', 0.0))
+        x_shift = wfs_params.get('xShiftPhInPixel', 0.0)
+        y_shift = wfs_params.get('yShiftPhInPixel', 0.0)
+        wfs_translation = wfs_params.get('translation', [x_shift, y_shift])
         wfs_magnification = wfs_params.get('magnification', 1.0)
+        wfs_anamorphosis_90 = wfs_params.get('anamorph90', 1.0)
+        wfs_anamorphosis_45 = wfs_params.get('anamorph45', 1.0)
         wfs_fov_arcsec = wfs_fov_from_config(wfs_params)
 
         if wfs_type_detected == 'sh':
@@ -565,6 +569,8 @@ class ParamsManager:
             'wfs_rotation': wfs_rotation,
             'wfs_translation': wfs_translation,
             'wfs_magnification': wfs_magnification,
+            'wfs_anamorphosis_90': wfs_anamorphosis_90,
+            'wfs_anamorphosis_45': wfs_anamorphosis_45,
             'wfs_fov_arcsec': wfs_fov_arcsec,
             'gs_pol_coo': gs_pol_coo,
             'gs_height': gs_height,
@@ -679,14 +685,14 @@ class ParamsManager:
             dm_array=to_xp(xp, params['dm_array'], dtype=float_dtype),
             dm_mask=to_xp(xp, params['dm_mask'], dtype=float_dtype),
             dm_height=params['dm_height'],
+            gs_pol_coo=params['gs_pol_coo'],
+            gs_height=params['gs_height'],
             dm_rotation=params['dm_rotation'],
             wfs_nsubaps=params['wfs_nsubaps'],
             wfs_rotation=params['wfs_rotation'],
             wfs_translation=params['wfs_translation'],
-            wfs_magnification=params['wfs_magnification'],
+            wfs_mag_global=params['wfs_magnification'],
             wfs_fov_arcsec=params['wfs_fov_arcsec'],
-            gs_pol_coo=params['gs_pol_coo'],
-            gs_height=params['gs_height'],
             idx_valid_sa=params['idx_valid_sa'],
             verbose=verbose_flag,
             display=display
@@ -1863,7 +1869,8 @@ class ParamsManager:
         config_name = (os.path.basename(self.params_file).split('.')[0]
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
-        output_filename = f"im_full_{config_name}_{wfs_type}_{component_type}{filter_suffix}.fits"
+        output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
+                          f"{filter_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
 
         # Check if file exists
