@@ -195,7 +195,10 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         raise ValueError('DM and mask arrays must have the same dimensions.')
 
     dm_translation, dm_magnification = shiftzoom_from_source_dm_params(
-        gs_pol_coo, gs_height, dm_height, pixel_pitch
+        source_pol_coo=gs_pol_coo,
+        source_height=gs_height,
+        dm_height=dm_height,
+        pixel_pitch=pixel_pitch
     )
     output_size = (pup_diam_pix, pup_diam_pix)
 
@@ -728,7 +731,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_magnification = wfs_config.get('magnification', (1.0, 1.0))
             if isinstance(wfs_magnification, (tuple, list)) and len(wfs_magnification) == 2:
                 wfs_mag_global = xp.sqrt(wfs_magnification[0] * wfs_magnification[1])
-                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] \
+                wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
                     if wfs_magnification[0] != 0 else 1.0
             else:
                 wfs_mag_global = float(wfs_magnification)
@@ -784,7 +787,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_magnification = wfs_config.get('magnification', (1.0, 1.0))
             if isinstance(wfs_magnification, (tuple, list)) and len(wfs_magnification) == 2:
                 wfs_mag_global = xp.sqrt(wfs_magnification[0] * wfs_magnification[1])
-                wfs_anamorphosis_90 = wfs_mag_global[1] / wfs_magnification[0] \
+                wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
                     if wfs_magnification[0] != 0 else 1.0
             else:
                 wfs_mag_global = float(wfs_magnification)

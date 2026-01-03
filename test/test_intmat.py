@@ -229,15 +229,30 @@ class TestIntmat(unittest.TestCase):
             verbose=False, display=False, specula_convention=True
         )
 
+        wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
+        wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
+            if wfs_magnification[0] != 0 else 1.0
+      
         # Compute with new method
         im_new = interaction_matrix(
-            self.pup_diam_m, self.pup_mask,
-            self.dm_array, self.dm_mask,
-            self.dm_height, self.dm_rotation,
-            self.wfs_nsubaps, wfs_rotation, wfs_translation, wfs_magnification,
-            self.wfs_fov_arcsec, gs_pol_coo, gs_height,
+            pup_diam_m=self.pup_diam_m,
+            pup_mask=self.pup_mask,
+            dm_array=self.dm_array,
+            dm_mask=self.dm_mask,
+            dm_height=self.dm_height,
+            wfs_fov_arcsec=self.wfs_fov_arcsec,
+            gs_pol_coo=gs_pol_coo,
+            gs_height=gs_height,
+            dm_rotation=self.dm_rotation,
+            wfs_nsubaps=self.wfs_nsubaps,
+            wfs_rotation=wfs_rotation,
+            wfs_translation=wfs_translation,
+            wfs_mag_global=wfs_mag_global,
+            wfs_anamorphosis_90=wfs_anamorphosis_90,
             idx_valid_sa=self.idx_valid_sa,
-            verbose=False, display=False, specula_convention=True
+            verbose=False,
+            display=False,
+            specula_convention=True
         )
 
         plot_debug = False
@@ -335,22 +350,33 @@ class TestIntmat(unittest.TestCase):
             )
             im_former_list.append(im)
 
+        wfs_magnification = wfs_config['magnification']
+        wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
+        wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
+            if wfs_magnification[0] != 0 else 1.0
+
         # Compute with new method (one at a time)
         im_new_list = []
         for wfs_config in wfs_configs:
             im = interaction_matrix(
-                self.pup_diam_m, self.pup_mask,
-                self.dm_array, self.dm_mask,
-                self.dm_height, self.dm_rotation,
-                wfs_config['nsubaps'],
-                wfs_config['rotation'],
-                wfs_config['translation'],
-                wfs_config['magnification'],
-                wfs_config['fov_arcsec'],
-                wfs_config['gs_pol_coo'],
-                wfs_config['gs_height'],
+                pup_diam_m=self.pup_diam_m,
+                pup_mask=self.pup_mask,
+                dm_array=self.dm_array,
+                dm_mask=self.dm_mask,
+                dm_height=self.dm_height,
+                gs_pol_coo=wfs_config['gs_pol_coo'],
+                gs_height=wfs_config['gs_height'],
                 idx_valid_sa=self.idx_valid_sa,
-                verbose=False, display=False, specula_convention=True
+                dm_rotation=self.dm_rotation,
+                wfs_nsubaps=wfs_config['nsubaps'],
+                wfs_rotation=wfs_config['rotation'],
+                wfs_translation=wfs_config['translation'],
+                wfs_mag_global=wfs_mag_global,
+                wfs_anamorphosis_90=wfs_anamorphosis_90,
+                wfs_fov_arcsec=wfs_config['fov_arcsec'],
+                verbose=False,
+                display=False,
+                specula_convention=True
             )
             im_new_list.append(im)
 
@@ -428,6 +454,9 @@ class TestIntmat(unittest.TestCase):
         wfs_rotation = 15.0
         wfs_translation = (0.2, 0.3)
         wfs_magnification = (1.0, 1.0)
+        wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
+        wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
+            if wfs_magnification[0] != 0 else 1.0
 
         # Compute with both methods
         im_former = interaction_matrix_former(
@@ -441,13 +470,24 @@ class TestIntmat(unittest.TestCase):
         )
 
         im_new = interaction_matrix(
-            self.pup_diam_m, self.pup_mask,
-            self.dm_array, self.dm_mask,
-            self.dm_height, self.dm_rotation,
-            self.wfs_nsubaps, wfs_rotation, wfs_translation, wfs_magnification,
-            self.wfs_fov_arcsec, gs_pol_coo, gs_height,
+            pup_diam_m=self.pup_diam_m,
+            pup_mask=self.pup_mask,
+            dm_array=self.dm_array,
+            dm_mask=self.dm_mask,
+            dm_height=self.dm_height,
+            gs_pol_coo=gs_pol_coo,
+            gs_height=gs_height,
             idx_valid_sa=self.idx_valid_sa,
-            verbose=False, display=False, specula_convention=True
+            dm_rotation=self.dm_rotation,
+            wfs_nsubaps=self.wfs_nsubaps,
+            wfs_rotation=wfs_rotation,
+            wfs_translation=wfs_translation,
+            wfs_mag_global=wfs_mag_global,
+            wfs_anamorphosis_90=wfs_anamorphosis_90,
+            wfs_fov_arcsec=self.wfs_fov_arcsec,
+            verbose=False,
+            display=False,
+            specula_convention=True
         )
 
         # Uses more relaxed tolerances for the LGS case (complex geometric transformations)
@@ -475,19 +515,30 @@ class TestIntmat(unittest.TestCase):
         # Separate calculation
         im_separated = []
         for wfs_config in wfs_configs:
+            wfs_magnification = wfs_config['magnification']
+            wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
+            wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
+                if wfs_magnification[0] != 0 else 1.0
+
             im = interaction_matrix(
-                self.pup_diam_m, self.pup_mask,
-                self.dm_array, self.dm_mask,
-                self.dm_height, self.dm_rotation,
-                wfs_config['nsubaps'],
-                wfs_config['rotation'],
-                wfs_config['translation'],
-                wfs_config['magnification'],
-                wfs_config['fov_arcsec'],
-                wfs_config['gs_pol_coo'],
-                wfs_config['gs_height'],
+                pup_diam_m=self.pup_diam_m,
+                pup_mask=self.pup_mask,
+                dm_array=self.dm_array,
+                dm_mask=self.dm_mask,
+                dm_height=self.dm_height,
+                gs_pol_coo=wfs_config['gs_pol_coo'],
+                gs_height=wfs_config['gs_height'],
                 idx_valid_sa=self.idx_valid_sa,
-                verbose=False, display=False, specula_convention=True
+                dm_rotation=self.dm_rotation,
+                wfs_nsubaps=wfs_config['nsubaps'],
+                wfs_rotation=wfs_config['rotation'],
+                wfs_translation=wfs_config['translation'],
+                wfs_mag_global=wfs_mag_global,
+                wfs_anamorphosis_90=wfs_anamorphosis_90,
+                wfs_fov_arcsec=wfs_config['fov_arcsec'],
+                verbose=False,
+                display=False,
+                specula_convention=True
             )
             im_separated.append(im)
 
