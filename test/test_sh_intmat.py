@@ -19,10 +19,9 @@ class TestShIntmatComparison(unittest.TestCase):
     def setUp(self):
         """Set up test directories and paths"""
         # Test directory (where SPECULA test files are located)
-        self.specula_test_dir = os.path.join(
-            os.path.dirname(__file__), '..', '..', 'SPECULA', 'test'
-        )
-        self.specula_test_dir = os.path.abspath(self.specula_test_dir)
+        self.current_dir = os.path.dirname(__file__)
+        self.specula_dir = os.path.dirname(os.path.abspath(specula.__file__))
+        self.specula_test_dir = os.path.join(self.specula_dir, '../test')
 
         # Calibration directories
         self.specula_calib_dir = os.path.join(self.specula_test_dir, 'calib')
@@ -48,7 +47,6 @@ class TestShIntmatComparison(unittest.TestCase):
         )
 
         # YAML files for SPECULA
-        self.base_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test.yml')
         self.subap_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test_subap.yml')
         self.rec_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test_rec.yml')
 
@@ -56,20 +54,34 @@ class TestShIntmatComparison(unittest.TestCase):
         self.cwd = os.getcwd()
 
         # Clean up old files
-        self._clean_files()
+        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
 
-    def _clean_files(self):
+    def _clean_files(self, subap_path, specula_im_path, specula_rec_path):
         """Remove generated calibration files"""
-        for path in [self.subap_path, self.specula_im_path, self.specula_rec_path, self.synim_im_path]:
+        for path in [subap_path, specula_im_path, specula_rec_path]:
             if os.path.exists(path):
                 os.remove(path)
 
     def tearDown(self):
         """Clean up and restore directory"""
-        self._clean_files()
+        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
         os.chdir(self.cwd)
 
     def test_intmat_specula_vs_synim(self):
+        base_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test.yml')
+        self.function_intmat_specula_vs_synim(base_yml)
+        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        base_yml2 = os.path.join(self.current_dir, 'params_scao_sh_rot_test.yml')
+        self.function_intmat_specula_vs_synim(base_yml2)
+        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        base_yml3 = os.path.join(self.current_dir, 'params_scao_sh_shift_test.yml')
+        self.function_intmat_specula_vs_synim(base_yml3)
+
+    def test_intmat_workflow_selection(self):
+        base_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test.yml')
+        self.function_intmat_workflow_selection(base_yml)
+
+    def function_intmat_specula_vs_synim(self, base_yml):
         """
         Compare interaction matrices computed by SPECULA and SynIM.
         
@@ -90,7 +102,7 @@ class TestShIntmatComparison(unittest.TestCase):
         print("\n[1/3] Generating subapdata with SPECULA...")
         os.chdir(self.specula_test_dir)
 
-        simul_subap = Simul(self.base_yml, self.subap_yml)
+        simul_subap = Simul(base_yml, self.subap_yml)
         simul_subap.run()
 
         self.assertTrue(
@@ -104,7 +116,7 @@ class TestShIntmatComparison(unittest.TestCase):
         # ============================================================
         print("\n[2/3] Computing IM with SPECULA...")
 
-        simul_im = Simul(self.base_yml, self.rec_yml)
+        simul_im = Simul(base_yml, self.rec_yml)
         simul_im.run()
 
         self.assertTrue(
@@ -126,7 +138,7 @@ class TestShIntmatComparison(unittest.TestCase):
 
         # Create ParamsManager with the same YAML file
         params_mgr = ParamsManager(
-            self.base_yml,
+            base_yml,
             root_dir=self.specula_calib_dir,
             verbose=True
         )
@@ -200,9 +212,9 @@ class TestShIntmatComparison(unittest.TestCase):
             plt.figure(figsize=(15, 15))
             for i in range(9):
                 plt.subplot(3, 3, i+1)
-                plt.plot(specula_im[:,i], label='SPECULA (column {i})')
-                plt.plot(synim_im[:,i], label='SynIM (column {i})', linestyle='--')
-                plt.title(f"Column {i} Comparison")
+                plt.plot(specula_im[:,i], label=f'SPECULA (mode {i})')
+                plt.plot(synim_im[:,i], label=f'SynIM (mode {i})', linestyle='--')
+                plt.title(f"mode {i} Comparison")
                 plt.xlabel("Mode Index")
                 plt.ylabel("Value")
                 plt.legend()
@@ -253,7 +265,7 @@ class TestShIntmatComparison(unittest.TestCase):
         print("✓ SPECULA and SynIM interaction matrices match!")
         print("="*60 + "\n")
 
-    def test_intmat_workflow_selection(self):
+    def function_intmat_workflow_selection(self, base_yml):
         """
         Test that SynIM correctly selects separated vs combined workflow.
         
@@ -269,12 +281,12 @@ class TestShIntmatComparison(unittest.TestCase):
 
         # Generate subapdata first
         os.chdir(self.specula_test_dir)
-        simul_subap = Simul(self.base_yml, self.subap_yml)
+        simul_subap = Simul(base_yml, self.subap_yml)
         simul_subap.run()
 
         # Create ParamsManager
         params_mgr = ParamsManager(
-            self.base_yml,
+            base_yml,
             root_dir=self.specula_calib_dir,
             verbose=False
         )
@@ -302,8 +314,3 @@ class TestShIntmatComparison(unittest.TestCase):
 
         print("\n✓ Configuration is standard SCAO (should use SEPARATED workflow)")
         print("="*60 + "\n")
-
-
-if __name__ == '__main__':
-    # Run with verbose output
-    unittest.main(verbosity=2)
