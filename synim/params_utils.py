@@ -541,6 +541,16 @@ def build_wfs_filename_part(wfs_config, wfs_type=None):
     if 'rotAnglePhInDeg' in wfs_config:
         parts.append(f"rot{wfs_config['rotAnglePhInDeg']}")
 
+    # Magnification
+    if 'magnification' in wfs_config:
+        parts.append(f"mag{wfs_config['magnification']:.3f}")
+
+    # Anamorphosis
+    if 'anamorph90' in wfs_config:
+        parts.append(f"an90d{wfs_config['anamorph90']:.3f}")
+    if 'anamorph45' in wfs_config:
+        parts.append(f"an45d{wfs_config['anamorph45']:.3f}")
+
     return "_".join(parts) if parts else "wfs"
 
 
