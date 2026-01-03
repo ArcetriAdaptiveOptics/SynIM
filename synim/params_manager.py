@@ -513,8 +513,10 @@ class ParamsManager:
             print(f"     Source type determined: {source_type}")
 
         # Extract WFS parameters
-        wfs_rotation = wfs_params.get('rotation', 0.0)
-        wfs_translation = wfs_params.get('translation', [0.0, 0.0])
+        wfs_rotation = wfs_params.get('rotation', wfs_params.get('rotAnglePhInDeg', 0.0))
+        x_shift = wfs_params.get('xShiftPhInPixel', 0.0)
+        y_shift = wfs_params.get('yShiftPhInPixel', 0.0)
+        wfs_translation = wfs_params.get('translation', [x_shift, y_shift])
         wfs_magnification = wfs_params.get('magnification', 1.0)
         wfs_anamorphosis_90 = wfs_params.get('anamorph90', 1.0)
         wfs_anamorphosis_45 = wfs_params.get('anamorph45', 1.0)
@@ -683,14 +685,14 @@ class ParamsManager:
             dm_array=to_xp(xp, params['dm_array'], dtype=float_dtype),
             dm_mask=to_xp(xp, params['dm_mask'], dtype=float_dtype),
             dm_height=params['dm_height'],
+            gs_pol_coo=params['gs_pol_coo'],
+            gs_height=params['gs_height'],
             dm_rotation=params['dm_rotation'],
             wfs_nsubaps=params['wfs_nsubaps'],
             wfs_rotation=params['wfs_rotation'],
             wfs_translation=params['wfs_translation'],
-            wfs_magnification=params['wfs_magnification'],
+            wfs_mag_global=params['wfs_magnification'],
             wfs_fov_arcsec=params['wfs_fov_arcsec'],
-            gs_pol_coo=params['gs_pol_coo'],
-            gs_height=params['gs_height'],
             idx_valid_sa=params['idx_valid_sa'],
             verbose=verbose_flag,
             display=display
