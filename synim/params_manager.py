@@ -1065,7 +1065,11 @@ class ParamsManager:
 
                 comp_key = f'{component_type}{comp_idx}'
                 if comp_key not in self.params:
-                    raise ValueError(f"Component {comp_key} not found in configuration")
+                    # Fallback: if dm1 does not exist but dm does and comp_idx==1
+                    if component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                        comp_key = 'dm'
+                    else:
+                        raise ValueError(f"Component {comp_key} not found in configuration")
 
                 comp_config = self.params[comp_key]
 
@@ -2577,6 +2581,8 @@ class ParamsManager:
 
             # Get start_mode
             comp_key = f'{component_type}{comp_idx}'
+            if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                comp_key = 'dm'
             if comp_key in self.params and 'start_mode' in self.params[comp_key]:
                 start_mode = self.params[comp_key]['start_mode']
             else:
@@ -2739,6 +2745,8 @@ class ParamsManager:
                 if n_modes_cfg > 0:
                     # Get start_mode
                     comp_key = f'{component_type}{comp_idx}'
+                    if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                        comp_key = 'dm'
                     if comp_key in self.params and 'start_mode' in self.params[comp_key]:
                         start_mode = self.params[comp_key]['start_mode']
                     else:

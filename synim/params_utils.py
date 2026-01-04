@@ -862,6 +862,14 @@ def prepare_interaction_matrix_params(params, wfs_type=None,
                 selected_dm = dm
                 print(f"DM -- Using specified DM: {dm['name']}")
                 break
+    elif dm_index == 1 and "dm" in params:
+        # Fallback: use 'dm' if 'dm1' not found and index==1
+        dm_info = build_component_filename_part(
+            params["dm"],
+            'dm',
+            n_modes_override=n_modes
+        )
+        filename_parts.append(dm_info)
 
     # If no DM found with specified index or no index specified, use first DM
     if selected_dm is None and dm_list:
@@ -1326,6 +1334,14 @@ def generate_im_filename(params_file, wfs_type=None,
         if dm_key in params:
             dm_info = build_component_filename_part(
                 params[dm_key],
+                'dm',
+                n_modes_override=n_modes
+            )
+            filename_parts.append(dm_info)
+        elif dm_index == 1 and "dm" in params:
+            # Fallback: use 'dm' if 'dm1' not found and index==1
+            dm_info = build_component_filename_part(
+                params["dm"],
                 'dm',
                 n_modes_override=n_modes
             )
