@@ -148,13 +148,25 @@ def extract_source_height(config, wfs_key):
 
 def get_tag_or_object(params, base_key, look_for_tag=False):
     """
-    Looks for and returns the value associated with '{base_key}_tag' or '{base_key}_object' in params.
+    Looks for and returns the value associated with '{base_key}_tag' or
+    '{base_key}_object' or '{base_key}_ref' in params.
     Returns None if neither is present.
     """
     if f"{base_key}_tag" in params:
         return params[f"{base_key}_tag"]
     elif f"{base_key}_object" in params:
         return params[f"{base_key}_object"]
+    elif f"{base_key}_ref" in params:
+        ref_name = params[f"{base_key}_ref"]
+        # Look for referenced section in params
+        if ref_name in params:
+            ref_section = params[ref_name]
+            if 'tag' in ref_section:
+                return ref_section['tag']
+            else:
+                raise ValueError(f"Referenced section '{ref_name}' does not contain a 'tag'")
+        else:
+            raise ValueError(f"Referenced section '{ref_name}' not found in config")
     elif f"tag" in params and look_for_tag:
         return params["tag"]
     return None
@@ -862,6 +874,14 @@ def prepare_interaction_matrix_params(params, wfs_type=None,
                 selected_dm = dm
                 print(f"DM -- Using specified DM: {dm['name']}")
                 break
+    elif dm_index == 1 and "dm" in params:
+        # Fallback: use 'dm' if 'dm1' not found and index==1
+        dm_info = build_component_filename_part(
+            params["dm"],
+            'dm',
+            n_modes_override=n_modes
+        )
+        filename_parts.append(dm_info)
 
     # If no DM found with specified index or no index specified, use first DM
     if selected_dm is None and dm_list:
@@ -1326,6 +1346,14 @@ def generate_im_filename(params_file, wfs_type=None,
         if dm_key in params:
             dm_info = build_component_filename_part(
                 params[dm_key],
+                'dm',
+                n_modes_override=n_modes
+            )
+            filename_parts.append(dm_info)
+        elif dm_index == 1 and "dm" in params:
+            # Fallback: use 'dm' if 'dm1' not found and index==1
+            dm_info = build_component_filename_part(
+                params["dm"],
                 'dm',
                 n_modes_override=n_modes
             )

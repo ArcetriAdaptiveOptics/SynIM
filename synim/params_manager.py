@@ -1065,7 +1065,11 @@ class ParamsManager:
 
                 comp_key = f'{component_type}{comp_idx}'
                 if comp_key not in self.params:
-                    raise ValueError(f"Component {comp_key} not found in configuration")
+                    # Fallback: if dm1 does not exist but dm does and comp_idx==1
+                    if component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                        comp_key = 'dm'
+                    else:
+                        raise ValueError(f"Component {comp_key} not found in configuration")
 
                 comp_config = self.params[comp_key]
 
@@ -2095,7 +2099,7 @@ class ParamsManager:
                     n_slopes_list.append(n_slopes_this_wfs)
 
                     # *** Compute subaperture illumination for this WFS ***
-                    if n_slopes_this_wfs > 0:       
+                    if n_slopes_this_wfs > 0:
                         illumination = synim.compute_subaperture_illumination(
                             pup_mask=self.pup_mask,
                             wfs_nsubaps=wfs_params['wfs_nsubaps'],
@@ -2145,10 +2149,26 @@ class ParamsManager:
                     print(f"  ✓ Noise covariance built with illumination weighting:"
                           f"{C_noise.shape}")
                     print(f"  Condition number: {np.linalg.cond(C_noise):.2e}")
+            else:
+                # User provided noise variance
+                n_slopes_total = im_full.shape[0]
+                if np.isscalar(noise_variance):
+                    C_noise = np.eye(n_slopes_total) * (1.0 / noise_variance)
+                else:
+                    if len(noise_variance) != n_slopes_total:
+                        raise ValueError("Length of noise_variance does not match"
+                                         " number of slopes in IM")
+                    C_noise = np.diag(1.0 / noise_variance)
 
+                if verbose_flag:
+                    print(f"  ✓ Noise covariance built from provided variance:"
+                          f"{C_noise.shape}")
+                    print(f"  Condition number: {np.linalg.cond(C_noise):.2e}")
+            C_noise_from_input = False
         else:
             if verbose_flag:
                 print(f"  Using provided C_noise: {C_noise.shape}")
+            C_noise_from_input = True
 
         print()
 
@@ -2189,7 +2209,15 @@ class ParamsManager:
                         if isinstance(self.params_file, str) else "config")
 
             rec_filename = (f"rec_{config_name}_{wfs_type}_{component_type}_"
-                        f"r0{r0:.3f}_L0{L0:.1f}.fits")
+                        f"r0{r0:.3f}_L0{L0:.1f}")
+            if C_noise_from_input:
+                rec_filename += f"_Cnoise"
+            else:
+                if noise_variance is None:
+                    rec_filename += f"_var{self.sigma2_in_nm2:.3f}nm2"
+                else:
+                    rec_filename += f"_var{noise_variance:.3f}uSl2"
+            rec_filename += ".fits"
             rec_path = os.path.join(output_dir, rec_filename)
 
             # Save as Recmat (SPECULA format)
@@ -2577,6 +2605,8 @@ class ParamsManager:
 
             # Get start_mode
             comp_key = f'{component_type}{comp_idx}'
+            if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                comp_key = 'dm'
             if comp_key in self.params and 'start_mode' in self.params[comp_key]:
                 start_mode = self.params[comp_key]['start_mode']
             else:
@@ -2739,6 +2769,8 @@ class ParamsManager:
                 if n_modes_cfg > 0:
                     # Get start_mode
                     comp_key = f'{component_type}{comp_idx}'
+                    if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                        comp_key = 'dm'
                     if comp_key in self.params and 'start_mode' in self.params[comp_key]:
                         start_mode = self.params[comp_key]['start_mode']
                     else:
