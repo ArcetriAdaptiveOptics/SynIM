@@ -148,13 +148,25 @@ def extract_source_height(config, wfs_key):
 
 def get_tag_or_object(params, base_key, look_for_tag=False):
     """
-    Looks for and returns the value associated with '{base_key}_tag' or '{base_key}_object' in params.
+    Looks for and returns the value associated with '{base_key}_tag' or
+    '{base_key}_object' or '{base_key}_ref' in params.
     Returns None if neither is present.
     """
     if f"{base_key}_tag" in params:
         return params[f"{base_key}_tag"]
     elif f"{base_key}_object" in params:
         return params[f"{base_key}_object"]
+    elif f"{base_key}_ref" in params:
+        ref_name = params[f"{base_key}_ref"]
+        # Look for referenced section in params
+        if ref_name in params:
+            ref_section = params[ref_name]
+            if 'tag' in ref_section:
+                return ref_section['tag']
+            else:
+                raise ValueError(f"Referenced section '{ref_name}' does not contain a 'tag'")
+        else:
+            raise ValueError(f"Referenced section '{ref_name}' not found in config")
     elif f"tag" in params and look_for_tag:
         return params["tag"]
     return None
