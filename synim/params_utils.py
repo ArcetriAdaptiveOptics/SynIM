@@ -6,6 +6,8 @@ import yaml
 import datetime
 import numpy as np
 
+from synim import cpu_float_dtype
+
 # Import all utility functions from utils
 from synim.utils import *
 
@@ -276,7 +278,8 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False, is_inver
         # For normal basis, convert to 3D
         else:
             # Convert influence function from 2D to 3D
-            dm_array = dm2d_to_3d(ifunc.influence_function, ifunc.mask_inf_func)
+            dm_array = dm2d_to_3d(ifunc.influence_function, ifunc.mask_inf_func,
+                                  xp_local=np, float_dtype_local=cpu_float_dtype)
             if verbose:
                 print(f"     DM array shape: {dm_array.shape}")
             dm_mask = ifunc.mask_inf_func.copy()
@@ -311,7 +314,8 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False, is_inver
                                              start_mode=0, mask=mask)
 
         # For Zernike, always return 3D
-        dm_array = dm2d_to_3d(z_ifunc, z_mask)
+        dm_array = dm2d_to_3d(z_ifunc, z_mask,
+                              xp_local=np, float_dtype_local=cpu_float_dtype)
         if verbose:
             print(f"     DM array shape: {dm_array.shape}")
         dm_mask = z_mask

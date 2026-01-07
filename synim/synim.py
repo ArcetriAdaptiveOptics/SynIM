@@ -566,7 +566,9 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                                    dm_height, dm_rotation,
                                    wfs_configs, gs_pol_coo=None,
                                    gs_height=None, verbose=False,
-                                   specula_convention=True):
+                                   specula_convention=True,
+                                   im_on_cpu=False,
+                                   minimize_memory=False):
     """
     Computes interaction matrices for multiple WFS configurations.
     
@@ -584,6 +586,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     - gs_height: float or None (DEPRECATED)
     - verbose: bool, optional
     - specula_convention: bool, optional
+    - im_on_cpu: bool, optional, force output interaction matrices on CPU
+    - minimize_memory: bool, optional, delete intermediate variables to save memory
     
     Returns:
     - im_dict: dict, interaction matrices keyed by WFS name or index
@@ -882,12 +886,22 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                     specula_convention=specula_convention
                 )
 
-            im_dict[wfs_name] = im
+            if minimize_memory:
+                # free as much memory as possible
+                del trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y
+
+            if im_on_cpu:
+                #  move im to CPU
+                im_dict[wfs_name] = cpuArray(im)
+            else:
+                im_dict[wfs_name] = im
 
             if verbose:
                 print(f"    ✓ IM shape: {im.shape}")
 
     display = False  # Disable display for multi-WFS case
+                     # Please note that it is not compatible with minimize_memory=True
+                     # as the variables would be deleted before plotting
     if display:
         idx_plot = [0, 2, 5]
         trans_dm_array_cpu = cpuArray(trans_dm_array)

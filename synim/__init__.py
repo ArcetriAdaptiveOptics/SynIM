@@ -18,6 +18,7 @@ zoom = None
 # *** Precision management ***
 global_precision = None
 float_dtype = None
+cpu_float_dtype = None
 complex_dtype = None
 cpu_float_dtype_list = [np.float64, np.float32]
 cpu_complex_dtype_list = [np.complex128, np.complex64]
@@ -38,6 +39,7 @@ def init(device_idx=-1, precision=1):
     global xp, cp, gpuEnabled, default_target_device_idx, default_target_device
     global global_precision, float_dtype, complex_dtype
     global gpu_float_dtype_list, gpu_complex_dtype_list
+    global cpu_float_dtype
     # *** Declare scipy globals ***
     global affine_transform, binary_dilation
 
@@ -121,6 +123,7 @@ def init(device_idx=-1, precision=1):
         zoom = cpu_zoom
         print('✓ Using scipy.ndimage (CPU)')
 
+    cpu_float_dtype = cpu_float_dtype_list[global_precision]
     float_dtype = float_dtype_list[global_precision]
     complex_dtype = complex_dtype_list[global_precision]
 

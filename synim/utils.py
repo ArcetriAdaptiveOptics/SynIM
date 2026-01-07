@@ -560,12 +560,13 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     return output
 
 
-def dm3d_to_2d(dm_array, mask):
+def dm3d_to_2d(dm_array, mask,
+               xp_local=xp, float_dtype_local=float_dtype):
     """Convert a 3D DM influence function to a 2D array using a mask."""
 
     # *** MODIFIED: Convert inputs to xp with correct dtype ***
-    dm_array = to_xp(xp, dm_array, dtype=float_dtype)
-    mask = to_xp(xp, mask, dtype=float_dtype)
+    dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
+    mask = to_xp(xp_local, mask, dtype=float_dtype_local)
 
     # Check if the mask is 2D
     if mask.ndim != 2:
@@ -574,23 +575,24 @@ def dm3d_to_2d(dm_array, mask):
     if dm_array.ndim != 3:
         raise ValueError("The dm_array must be a 3D array.")
     nmodes = dm_array.shape[2]
-    idx = xp.where(mask > 0)
+    idx = xp_local.where(mask > 0)
     dm_array_2d = dm_array[idx[0], idx[1], :].transpose()
     for i in range(nmodes):
         # *** MODIFIED: Use float_dtype ***
-        dm_array_2d[i,:] = dm_array_2d[i,:].astype(float_dtype)
-        dm_array_2d[i,:] /= xp.sqrt(xp.mean(dm_array_2d[i,:]**2))
-        dm_array_2d[i,:] -= xp.mean(dm_array_2d[i,:])
+        dm_array_2d[i,:] = dm_array_2d[i,:].astype(float_dtype_local)
+        dm_array_2d[i,:] /= xp_local.sqrt(xp_local.mean(dm_array_2d[i,:]**2))
+        dm_array_2d[i,:] -= xp_local.mean(dm_array_2d[i,:])
 
     return dm_array_2d
 
 
-def dm2d_to_3d(dm_array, mask, normalize=True):
+def dm2d_to_3d(dm_array, mask, normalize=True,
+               xp_local=xp, float_dtype_local=float_dtype):
     """Convert a 2D DM influence function to a 3D array using a mask."""
 
-    # *** MODIFIED: Convert inputs to xp with correct dtype ***
-    dm_array = to_xp(xp, dm_array, dtype=float_dtype)
-    mask = to_xp(xp, mask, dtype=float_dtype)
+    # *** Convert inputs to xp with correct dtype ***
+    dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
+    mask = to_xp(xp_local, mask, dtype=float_dtype_local)
 
     # Check if the mask is 2D
     if mask.ndim != 2:
@@ -600,17 +602,17 @@ def dm2d_to_3d(dm_array, mask, normalize=True):
         raise ValueError("The dm_array must be a 2D array.")
     npixels = mask.shape[0]
     nmodes = dm_array.shape[0]
-    # *** MODIFIED: Use xp and float_dtype ***
-    dm_array_3d = xp.zeros((npixels, npixels, nmodes), dtype=float_dtype)
+    # *** Use xp and float_dtype ***
+    dm_array_3d = xp_local.zeros((npixels, npixels, nmodes), dtype=float_dtype_local)
     for i in range(nmodes):
-        idx = xp.where(mask > 0)
+        idx = xp_local.where(mask > 0)
         dm_i = dm_array[i]
         # normalize by the RMS
         if normalize:
-            dm_i /= xp.sqrt(xp.mean(dm_i**2))
-            dm_i -= xp.mean(dm_i)
-        # *** MODIFIED: Use xp and float_dtype ***
-        dm_i_3d = xp.zeros(mask.shape, dtype=float_dtype)
+            dm_i /= xp_local.sqrt(xp_local.mean(dm_i**2))
+            dm_i -= xp_local.mean(dm_i)
+        # *** Use xp and float_dtype ***
+        dm_i_3d = xp_local.zeros(mask.shape, dtype=float_dtype_local)
         dm_i_3d[idx] = dm_i
         dm_array_3d[:, :, i] = dm_i_3d
 
