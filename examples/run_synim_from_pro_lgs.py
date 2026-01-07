@@ -14,11 +14,12 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+os.environ['SPECULA_DISABLE_GPU'] = 'TRUE' # Force CPU usage for Specula
 import specula
 specula.init(device_idx=-1, precision=1)
 
 import synim
-synim.init(device_idx=-1, precision=1)
+synim.init(device_idx=0, precision=1)
 from synim.params_manager import ParamsManager
 
 # ===================================================================
@@ -79,13 +80,8 @@ r0 = 0.2  # Fried parameter [m]
 L0 = 25.0  # Outer scale [m]
 
 # Reconstruction parameters
-reg_factor = 1e-4  # Regularization for pseudoinverse
 wfs_type = 'lgs'  # Which WFSs to use ('lgs', 'ngs', 'ref')
 component_type = 'layer'  # Reconstruct on 'layer' or 'dm'
-
-# Layer weights (if using layers)
-# Typically: ground layer gets full weight, high layers get reduced weight
-weights = [1.0, 0.15]  # [layer1, layer2, ...]
 
 # Noise variance per WFS [rad^2]
 # If None, will be computed from magnitude and detector parameters
@@ -98,14 +94,13 @@ C_noise = None  # If provided, overrides noise_variance
 result = params_mgr.compute_tomographic_reconstructor(
     r0=r0,
     L0=L0,
-    reg_factor=reg_factor,
     wfs_type=wfs_type,
     component_type=component_type,
-    weights=weights,
     noise_variance=noise_variance,
     C_noise=C_noise,
     output_dir=output_rec_dir,
     save=True,  # Save the reconstructor
+    skip_gpu_covariance=True,  # Use CPU for covariance computation
     verbose=True
 )
 

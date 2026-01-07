@@ -6,7 +6,8 @@ from astropy.io import fits
 
 # *** Import xp, cpuArray, to_xp, float_dtype ***
 from synim import (
-    xp, cpuArray, to_xp, float_dtype, default_target_device_idx, global_precision
+    xp, cpuArray, to_xp, float_dtype, cpu_float_dtype,
+    default_target_device_idx, global_precision
 )
 
 import synim.synim as synim
@@ -23,6 +24,8 @@ from specula.calib_manager import CalibManager
 from specula.data_objects.intmat import Intmat
 from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
+
+verbose_gpu_flag = False  # Global flag for verbose GPU memory printing
 
 class ParamsManager:
     """
@@ -257,6 +260,21 @@ class ParamsManager:
             }
 
 
+    def _print_gpu_memory(self, label="", verbose=True):
+        """Print current GPU memory usage."""
+        if not verbose or not hasattr(xp, 'cuda'):
+            return
+
+        try:
+            import cupy as cp
+            mempool = cp.get_default_memory_pool()
+            print(f"\n  --- GPU Memory {label}:")
+            print(f"        Used:  {mempool.used_bytes() / 1024**3:.2f} GB")
+            print(f"        Total: {mempool.total_bytes() / 1024**3:.2f} GB")
+        except:
+            pass
+
+
     def count_mcao_stars(self):
         """
         Count the number of LGS, NGS, reference stars, DMs, optimisation optics,
@@ -305,7 +323,9 @@ class ParamsManager:
                              component_idx,
                              is_layer=False,
                              cut_start_mode=False,
-                             n_modes_to_use=None):
+                             n_modes_to_use=None,
+                             xp_local=xp,
+                             float_dtype_local=float_dtype):
         """
         Get DM or layer parameters, loading from cache if available.
 
@@ -315,6 +335,8 @@ class ParamsManager:
             cut_start_mode (bool): Whether to select modes from start_mode to start_mode+n_modes
             n_modes_to_use (int, optional): Number of modes to use starting from start_mode.
                                         If None, uses all available modes after start_mode.
+            xp_local: array module to use (numpy or cupy)
+            float_dtype_local: data type for arrays (e.g., float_dtype or cpu_float_dtype)
 
         Returns:
             dict: DM or layer parameters
@@ -343,6 +365,7 @@ class ParamsManager:
                 raise ValueError(f"{component_type.capitalize()} {component_idx} not found")
 
         component_params = self.params[component_key]
+
         dm_array, dm_mask = load_influence_functions(
             self.cm, component_params, self.pixel_pupil, verbose=self.verbose
         )
@@ -379,8 +402,8 @@ class ParamsManager:
                         f"({total_modes - start_mode} modes)")
 
         # Convert to xp with float_dtype
-        dm_array = to_xp(xp, dm_array, dtype=float_dtype)
-        dm_mask = to_xp(xp, dm_mask, dtype=float_dtype)
+        dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
+        dm_mask = to_xp(xp_local, dm_mask, dtype=float_dtype_local)
 
         self.dm_cache[cache_key] = {
             'dm_array': dm_array,
@@ -392,13 +415,15 @@ class ParamsManager:
 
         return self.dm_cache[cache_key]
 
-    def get_wfs_params(self, wfs_type=None, wfs_index=None):
+    def get_wfs_params(self, wfs_type=None, wfs_index=None,
+                       xp_local=xp):
         """
         Get WFS parameters for a specific WFS.
         
         Args:
             wfs_type (str, optional): Type of WFS ('sh', 'pyr') or source type ('lgs', 'ngs', 'ref')
             wfs_index (int, optional): Index of the WFS (1-based)
+            xp_local: array module to use (numpy or cupy)
             
         Returns:
             dict: WFS parameters
@@ -536,7 +561,7 @@ class ParamsManager:
 
         # *** Convert to xp if not None ***
         if idx_valid_sa is not None:
-            idx_valid_sa = to_xp(xp, idx_valid_sa)
+            idx_valid_sa = to_xp(xp_local, idx_valid_sa)
 
         # Guide star parameters
         if source_type == 'lgs':
@@ -606,15 +631,19 @@ class ParamsManager:
 
         # Get DM or Layer parameters
         if dm_index is not None:
-            component_params = self.get_component_params(dm_index)
+            component_params = self.get_component_params(dm_index,
+                                                         xp_local=np,
+                                                         float_dtype_local=cpu_float_dtype)
             component_key = component_params['component_key']
         else:
-            component_params = self.get_component_params(layer_index, is_layer=True)
+            component_params = self.get_component_params(layer_index, is_layer=True,
+                                                         xp_local=np,
+                                                         float_dtype_local=cpu_float_dtype)
             component_key = component_params['component_key']
 
         # Get WFS parameters
-        wfs_params = self.get_wfs_params(wfs_type, wfs_index)
-
+        wfs_params = self.get_wfs_params(wfs_type, wfs_index,
+                                         xp_local=np)
         # Combine them into a single dictionary with all needed parameters
         params = {
             'pup_diam_m': self.pup_diam_m,
@@ -693,7 +722,7 @@ class ParamsManager:
             wfs_translation=params['wfs_translation'],
             wfs_mag_global=params['wfs_magnification'],
             wfs_fov_arcsec=params['wfs_fov_arcsec'],
-            idx_valid_sa=params['idx_valid_sa'],
+            idx_valid_sa=to_xp(xp, params['idx_valid_sa'], dtype=float_dtype),
             verbose=verbose_flag,
             display=display
         )
@@ -726,6 +755,8 @@ class ParamsManager:
         os.makedirs(output_rec_dir, exist_ok=True)
 
         verbose_flag = self.verbose if verbose is None else verbose
+
+        self._print_gpu_memory("(initial)", verbose_gpu_flag)
 
         # Filter WFS list by type if specified
         if wfs_type is not None:
@@ -771,7 +802,9 @@ class ParamsManager:
             component_params = self.get_component_params(
                 comp_idx,
                 is_layer=(comp_type == 'layer'),
-                cut_start_mode=False
+                cut_start_mode=False,
+                xp_local=np,
+                float_dtype_local=cpu_float_dtype
             )
 
             if verbose_flag:
@@ -813,7 +846,8 @@ class ParamsManager:
                             print(f"  Will compute and save: {im_filename}")
 
                 # Get WFS parameters
-                wfs_params = self.get_wfs_params(source_type, wfs_idx)
+                wfs_params = self.get_wfs_params(source_type, wfs_idx,
+                                                 xp_local=np)
 
                 # Add to configurations for multi-WFS computation
                 wfs_configs.append({
@@ -843,18 +877,24 @@ class ParamsManager:
                     print(f"\n  Computing {len(wfs_configs)} interaction"
                           f" matrices using multi-WFS...")
 
+                self._print_gpu_memory("(before IM computation)", verbose_gpu_flag)
+
                 # Use multi-WFS computation
                 im_dict, derivatives_info = synim.interaction_matrices_multi_wfs(
                     pup_diam_m=self.pup_diam_m,
-                    pup_mask=self.pup_mask,
-                    dm_array=component_params['dm_array'],
-                    dm_mask=component_params['dm_mask'],
+                    pup_mask=to_xp(xp, self.pup_mask, dtype=float_dtype),
+                    dm_array=to_xp(xp, component_params['dm_array'], dtype=float_dtype),
+                    dm_mask=to_xp(xp, component_params['dm_mask'], dtype=float_dtype),
                     dm_height=component_params['dm_height'],
                     dm_rotation=component_params['dm_rotation'],
                     wfs_configs=wfs_configs,
                     verbose=verbose_flag,
-                    specula_convention=True
+                    specula_convention=True,
+                    im_on_cpu=True,
+                    minimize_memory=True
                 )
+
+                self._print_gpu_memory("(after IM computation)", verbose_gpu_flag)
 
                 if verbose_flag:
                     print(f"  Used {derivatives_info['workflow'].upper()} workflow")
@@ -889,9 +929,7 @@ class ParamsManager:
                     intmat_obj = Intmat(
                         im,
                         pupdata_tag=pupdata_tag,
-                        norm_factor=1.0,
-                        target_device_idx=None,
-                        precision=None
+                        norm_factor=1.0
                     )
                     intmat_obj.save(wfs_info['path'])
 
@@ -945,7 +983,8 @@ class ParamsManager:
         n_tot_slopes = 0
         n_slopes_list = []
         for wfs in wfs_list:
-            wfs_params = self.get_wfs_params(wfs_type, int(wfs['index']))
+            wfs_params = self.get_wfs_params(wfs_type, int(wfs['index']),
+                                             xp_local=np)
             if wfs_params['idx_valid_sa'] is not None:
                 # Each valid subaperture produces X and Y slopes
                 n_slopes_this_wfs = len(wfs_params['idx_valid_sa']) * 2
@@ -1511,7 +1550,8 @@ class ParamsManager:
 
             # Load component ONCE
             component_params = self.get_component_params(
-                comp_idx, is_layer=(comp_type == 'layer'), cut_start_mode=True
+                comp_idx, is_layer=(comp_type == 'layer'), cut_start_mode=True,
+                xp_local=np, float_dtype_local=cpu_float_dtype
             )
 
             # ==================== CHECK ALL SOURCES ====================
@@ -1799,12 +1839,8 @@ class ParamsManager:
             print("\n=== Computing Optimal Projection Matrix ===")
 
         # Weighted combination
-        if float_dtype == xp.float32:
-            dtype_np = np.float32
-        else:
-            dtype_np = np.float64
-        tpdm_pdm = np.zeros((pm_full_dm.shape[1], pm_full_dm.shape[1]), dtype=dtype_np)
-        tpdm_pl = np.zeros((pm_full_dm.shape[1], pm_full_layer.shape[1]), dtype=dtype_np)
+        tpdm_pdm = np.zeros((pm_full_dm.shape[1], pm_full_dm.shape[1]), dtype=cpu_float_dtype)
+        tpdm_pl = np.zeros((pm_full_dm.shape[1], pm_full_layer.shape[1]), dtype=cpu_float_dtype)
 
         total_weight = np.sum(weights_array)
 
@@ -1934,6 +1970,7 @@ class ParamsManager:
                                         noise_variance=None,
                                         C_noise=None, output_dir=None,
                                         save=False, overwrite=False,
+                                        skip_gpu_covariance=False,
                                         verbose=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
@@ -1953,6 +1990,7 @@ class ParamsManager:
             output_dir (str, optional): Directory for saving results
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
+            skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2021,6 +2059,7 @@ class ParamsManager:
             output_dir=self.cov_dir,
             overwrite=overwrite,
             full_modes=True,
+            skip_gpu_covariance=skip_gpu_covariance,
             verbose=verbose_flag
         )
 
@@ -2089,7 +2128,8 @@ class ParamsManager:
                 illumination_list = []
 
                 for i in range(n_wfs):
-                    wfs_params = self.get_wfs_params(wfs_type, i+1)
+                    wfs_params = self.get_wfs_params(wfs_type, i+1,
+                                                     xp_local=np)
 
                     if wfs_params['idx_valid_sa'] is not None:
                         n_slopes_this_wfs = len(wfs_params['idx_valid_sa']) * 2
@@ -2514,7 +2554,8 @@ class ParamsManager:
 
     def compute_covariance_matrices(self, r0, L0, component_type='layer',
                                     output_dir=None, overwrite=False,
-                                    full_modes=True, verbose=None):
+                                    full_modes=True, skip_gpu_covariance=False,
+                                    verbose=None):
         """
         Compute atmospheric covariance matrices for all components (DMs or layers).
         
@@ -2532,6 +2573,7 @@ class ParamsManager:
             overwrite (bool): Whether to overwrite existing files
             full_modes (bool): If True, compute covariance for ALL modes available.
                             If False, use only modes from modal_combination.
+            skip_gpu_covariance (bool): If True, skip GPU-accelerated covariance computation
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2600,7 +2642,8 @@ class ParamsManager:
             comp_params = self.get_component_params(
                 comp_idx,
                 is_layer=(component_type == 'layer'),
-                cut_start_mode=False  # Load ALL modes
+                cut_start_mode=False,  # Load ALL modes
+                xp_local=np
             )
 
             # Get start_mode
@@ -2656,7 +2699,8 @@ class ParamsManager:
                     print(f"  File not found, computing...")
 
             # Convert 3D DM array to 2D
-            dm2d = dm3d_to_2d(comp_params['dm_array'], comp_params['dm_mask'])
+            dm2d = dm3d_to_2d(cpuArray(comp_params['dm_array']), cpuArray(comp_params['dm_mask']),
+                              xp_local=np, float_dtype_local=cpu_float_dtype)
 
             # Select modes
             dm2d_selected = dm2d[modes_to_use, :]
@@ -2666,19 +2710,35 @@ class ParamsManager:
                 print(f"  Computing covariance matrix...")
 
             # Compute covariance matrix
-            C_atm_rad2 = compute_ifs_covmat(
-                to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
-                self.pup_diam_m,
-                to_xp(xp, dm2d_selected , dtype=float_dtype),
-                r0,
-                L0,
-                xp=xp,
-                dtype=float_dtype,
-                oversampling=2,
-                verbose=False
-            )
+            if skip_gpu_covariance:
+                C_atm_rad2 = compute_ifs_covmat(
+                    comp_params['dm_mask'],
+                    self.pup_diam_m,
+                    dm2d_selected,
+                    r0,
+                    L0,
+                    xp=np,
+                    dtype=cpu_float_dtype,
+                    oversampling=2,
+                    verbose=False
+                )
+            else:
+                self._print_gpu_memory(label="Before covariance computation: ",
+                                       verbose=verbose_gpu_flag)
 
-            C_atm_rad2 = cpuArray(C_atm_rad2)
+                C_atm_rad2 = compute_ifs_covmat(
+                    to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
+                    self.pup_diam_m,
+                    to_xp(xp, dm2d_selected , dtype=float_dtype),
+                    r0,
+                    L0,
+                    xp=xp,
+                    dtype=float_dtype,
+                    oversampling=2,
+                    verbose=False
+                )
+
+                C_atm_rad2 = cpuArray(C_atm_rad2)
 
             if verbose_flag:
                 print(f"  ✓ Covariance computed: {C_atm_rad2.shape}")
@@ -2804,11 +2864,7 @@ class ParamsManager:
             print(f"  Weights: {weights}")
 
         # Initialize full covariance matrix
-        if float_dtype == xp.float32:
-            dtype_np = np.float32
-        else:
-            dtype_np = np.float64
-        C_atm_full = np.zeros((total_modes, total_modes), dtype=dtype_np)
+        C_atm_full = np.zeros((total_modes, total_modes), dtype=cpu_float_dtype)
 
         # Conversion factor (nm to rad^2 at 500nm)
         conversion_factor = (500 / 2 / np.pi) ** 2
@@ -2841,7 +2897,8 @@ class ParamsManager:
             # Place in full matrix
             idx_full = slice(current_idx, current_idx + len(valid_modes))
             if return_inverse:
-                C_atm_full[idx_full, idx_full] = np.linalg.pinv(C_atm_sub * weight * conversion_factor)
+                C_atm_full[idx_full, idx_full] = \
+                    np.linalg.pinv(C_atm_sub * weight * conversion_factor)
             else:
                 C_atm_full[idx_full, idx_full] = C_atm_sub * weight * conversion_factor
 
