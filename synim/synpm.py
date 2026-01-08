@@ -32,7 +32,7 @@ def transpose_base_array_for_specula(base_inv_array, pup_mask_original, verbose=
     - transposed_array: numpy array with swapped X-Y coordinates
     """
 
-    # *** MODIFIED: Convert inputs to xp arrays with correct dtype ***
+    # *** Convert inputs to xp arrays with correct dtype ***
     base_inv_array = to_xp(xp, base_inv_array, dtype=float_dtype)
     pup_mask_original = to_xp(xp, pup_mask_original, dtype=float_dtype)
 
@@ -110,7 +110,7 @@ def transpose_base_array_for_specula(base_inv_array, pup_mask_original, verbose=
             # Get transposed mask
             pup_mask_transposed = xp.transpose(pup_mask_original)
 
-            # *** MODIFIED: USE dm3d_to_2d TO EXTRACT ***
+            # *** USE dm3d_to_2d TO EXTRACT ***
             base_2d_transposed = dm3d_to_2d(base_3d_transposed, pup_mask_transposed)
 
             # normalize by number of valid pixels
@@ -457,7 +457,7 @@ def projection_matrix(pup_diam_m, pup_mask,
     # We want: projection = DM^T × Base
     # Result: (n_dm_modes, n_base_modes)
 
-    # *** MODIFIED: Use xp.dot instead of np.dot ***
+    # *** Use xp.dot instead of np.dot ***
     projection = xp.dot(dm_valid_values.T, base_valid_values)
 
     if verbose:
@@ -472,7 +472,7 @@ def projection_matrix(pup_diam_m, pup_mask,
     # ================================================================
     plot_debug = False
     if plot_debug:
-        # *** MODIFIED: Convert to CPU for plotting if needed ***
+        # *** Convert to CPU for plotting if needed ***
         valid_mask_cpu = cpuArray(valid_mask)
         trans_dm_array_cpu = cpuArray(trans_dm_array)
         projection_cpu = cpuArray(projection)

@@ -71,7 +71,6 @@ print(f"  Weights: {info['weights']}")
 
 print(f"\nRegularization:")
 print(f"  reg_factor: {info['reg_factor']}")
-print(f"  Condition number: {info['condition_number']:.2e}")
 print(f"  rcond: {info['rcond']}")
 
 print(f"\n{'='*70}\n")

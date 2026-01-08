@@ -1755,20 +1755,18 @@ def compute_layer_weights_from_turbulence(params,
     if verbose:
         print(f"\n  Layer heights: {layer_heights}")
 
-    # Associate each layer with nearest turbulence height
+    # Associate each turbulence height with its nearest layer
+    # For each turbulence height, find which layer it's closest to
     weights = np.zeros(len(layer_heights))
 
-    for i, layer_h in enumerate(layer_heights):
-        # Find nearest turbulence height
-        idx_nearest = np.argmin(np.abs(turb_heights - layer_h))
-        weights[i] = turb_cn2_norm[idx_nearest]
+    for j, turb_h in enumerate(turb_heights):
+        # Find the layer closest to this turbulence height
+        idx_nearest_layer = np.argmin(np.abs(layer_heights - turb_h))
 
-        if verbose:
-            print(f"  Layer {component_indices[i]} (h={layer_h:.0f}m) → "
-                  f"turb height {turb_heights[idx_nearest]:.0f}m, "
-                  f"weight={weights[i]:.4f}")
+        # Add this turbulence contribution to the nearest layer
+        weights[idx_nearest_layer] += turb_cn2_norm[j]
 
-    # Normalize weights to sum to 1
+    # Normalize weights to sum to 1 (should already be ~1, but ensure it)
     weights = weights / np.sum(weights)
 
     if verbose:
@@ -1889,12 +1887,18 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     # Compute H^(-1)
     if verbose:
         print("Inverting H")
-    if use_inverse:
-        H_inv = np.linalg.inv(H)
-    else:
-        if verbose:
-            print("Warning: Using pseudo-inverse")
-        H_inv = np.linalg.pinv(H)
+
+    try:
+        if use_inverse:
+            H_inv = np.linalg.inv(H)
+        else:
+            if verbose:
+                print("Using pseudo-inverse with rcond=1e-14")
+            H_inv = np.linalg.pinv(H, rcond=1e-14)
+    except Exception as e:
+        print(f"ERROR during H inversion: {e}")
+        print(f"H shape: {H.shape}, dtype: {H.dtype}")
+        raise
 
     # Compute W = H^(-1) A' Cz^(-1)
     if verbose:

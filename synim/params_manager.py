@@ -1331,7 +1331,8 @@ class ParamsManager:
         with fits.open(filtmat_path) as hdul:
             filtmat = hdul[0].data  # Shape: (2, n_slopes, n_modes)
 
-        if verbose:
+        debug_verbose = False
+        if debug_verbose:
             print(f"    Loaded filtmat shape: {filtmat.shape}")
 
         # Extract filter components
@@ -1339,21 +1340,17 @@ class ParamsManager:
         filt_int_mat = filtmat[0, :, :]  # (n_slopes, n_modes)
         filt_rec_mat = filtmat[1, :, :].T  # (n_modes, n_slopes)
 
-        if verbose:
+        if debug_verbose:
             print(f"    filt_int_mat shape: {filt_int_mat.shape}")
             print(f"    filt_rec_mat shape: {filt_rec_mat.shape}")
             print(f"    IM shape before filtering: {im.shape}")
 
-        # Apply filtering: im_filtered = im - filt_int_mat @ (filt_rec_mat @ im)
-        # im has shape (_slopes, n_dm_modes)
-        # filt_rec_mat has shape (n_filter_modes, n_slopes)
-        # filt_int_mat has shape (n_slopes, n_filter_modes)
 
         m = filt_rec_mat @ im  # (n_filter_modes, n_dm_modes)
         im0 = filt_int_mat @ m   # (n_slopes, n_dm_modes)
         im_filtered = im - im0
 
-        if verbose:
+        if debug_verbose:
             print(f"    IM shape after filtering: {im_filtered.shape}")
             rms_before = np.sqrt(np.mean(im**2))
             rms_after = np.sqrt(np.mean(im_filtered**2))
@@ -2108,7 +2105,11 @@ class ParamsManager:
                 rad2arcsec = 3600. * 180. / np.pi
 
                 # *** Use extracted sigma2_in_nm2 ***
-                sigma2_in_nm2 = self.sigma2_in_nm2
+                # convert it to cpu_float_dtype for consistency
+                if np.isscalar(self.sigma2_in_nm2):
+                    sigma2_in_nm2 = cpu_float_dtype(self.sigma2_in_nm2)
+                else:
+                    sigma2_in_nm2 = np.array(self.sigma2_in_nm2, dtype=cpu_float_dtype)
 
                 sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
                 sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2.
@@ -2122,7 +2123,7 @@ class ParamsManager:
 
                 # *** Compute illumination for each WFS ***
                 n_slopes_total = im_full.shape[0]
-                C_noise = np.zeros((n_slopes_total, n_slopes_total))
+                C_noise = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
                 n_slopes_list = []
                 illumination_list = []
@@ -2156,12 +2157,12 @@ class ParamsManager:
                         # We repeat for X and Y slopes
                         sa_noise_variance = base_noise_variance / \
                             (illumination + 1e-10)  # Avoid division by zero
-                        wfs_noise_variance = np.repeat(sa_noise_variance, 2)  # X and Y slopes
+                        wfs_noise_variance = np.repeat(sa_noise_variance, 2).astype(cpu_float_dtype)  # X and Y slopes
 
                         illumination_list.append(illumination)
                     else:
-                        wfs_noise_variance = np.array([])
-                        illumination_list.append(np.array([]))
+                        wfs_noise_variance = np.array([], dtype=cpu_float_dtype)
+                        illumination_list.append(np.array([], dtype=cpu_float_dtype))
 
                     if verbose_flag:
                         if len(wfs_noise_variance) > 0:
@@ -2188,12 +2189,11 @@ class ParamsManager:
                 if verbose_flag:
                     print(f"  ✓ Noise covariance built with illumination weighting:"
                           f"{C_noise.shape}")
-                    print(f"  Condition number: {np.linalg.cond(C_noise):.2e}")
             else:
                 # User provided noise variance
                 n_slopes_total = im_full.shape[0]
                 if np.isscalar(noise_variance):
-                    C_noise = np.eye(n_slopes_total) * (1.0 / noise_variance)
+                    C_noise = np.eye(n_slopes_total, dtype=cpu_float_dtype) * (1.0 / noise_variance)
                 else:
                     if len(noise_variance) != n_slopes_total:
                         raise ValueError("Length of noise_variance does not match"
@@ -2203,11 +2203,11 @@ class ParamsManager:
                 if verbose_flag:
                     print(f"  ✓ Noise covariance built from provided variance:"
                           f"{C_noise.shape}")
-                    print(f"  Condition number: {np.linalg.cond(C_noise):.2e}")
             C_noise_from_input = False
         else:
             if verbose_flag:
                 print(f"  Using provided C_noise: {C_noise.shape}")
+            C_noise = C_noise.astype(cpu_float_dtype)
             C_noise_from_input = True
 
         print()
@@ -2216,6 +2216,20 @@ class ParamsManager:
         if verbose_flag:
             print(f"STEP 4: Computing MMSE Reconstructor")
             print(f"-" * 70)
+
+        # Check: all must be cpu_float_dtype (regardless of endianness)
+        expected_dtype = cpu_float_dtype
+        for name, arr in [('im_full', im_full), ('C_atm_full', C_atm_full), ('C_noise', C_noise)]:
+            arr_dtype = np.dtype(arr.dtype)
+            # Check kind and itemsize (float32: kind='f', itemsize=4)
+            if not (arr_dtype.kind == expected_dtype.kind and
+                    arr_dtype.itemsize == expected_dtype.itemsize):
+                msg = (f"Data type mismatch for {name}: got {arr_dtype}, "
+                    f"expected {expected_dtype} (any endianness)")
+                if verbose_flag:
+                    print("WARNING:", msg)
+                else:
+                    raise TypeError(msg)
 
         reconstructor = compute_mmse_reconstructor(
             im_full,  # Transpose for SPECULA convention
@@ -2430,8 +2444,9 @@ class ParamsManager:
             print(f"  Computing pseudoinverse...")
 
         # Condition number check
-        cond_number = np.linalg.cond(tpdm_pdm_reg)
-        if verbose_flag:
+        cond_number_check = False
+        if cond_number_check:
+            cond_number = np.linalg.cond(tpdm_pdm_reg)
             print(f"  Condition number: {cond_number:.2e}")
 
         # Compute pseudoinverse
@@ -2510,7 +2525,6 @@ class ParamsManager:
             'n_pupil_modes': n_pupil_modes,
             'weights': weights_array,
             'reg_factor': reg_factor,
-            'condition_number': cond_number,
             'rcond': rcond,
             'rec_filename': rec_filename,
             'rec_path': rec_path
@@ -2897,8 +2911,14 @@ class ParamsManager:
             # Place in full matrix
             idx_full = slice(current_idx, current_idx + len(valid_modes))
             if return_inverse:
-                C_atm_full[idx_full, idx_full] = \
-                    np.linalg.pinv(C_atm_sub * weight * conversion_factor)
+                # Check if C_atm_sub is diagonal
+                if np.allclose(C_atm_sub, np.diag(np.diagonal(C_atm_sub))):
+                    # Invert only the diagonal elements
+                    diag = np.diagonal(C_atm_sub * weight * conversion_factor)
+                    C_atm_full[idx_full, idx_full] = np.diag(1.0 / diag)
+                else:
+                    C_atm_full[idx_full, idx_full] = \
+                        np.linalg.pinv(C_atm_sub * weight * conversion_factor)
             else:
                 C_atm_full[idx_full, idx_full] = C_atm_sub * weight * conversion_factor
 
