@@ -229,37 +229,3 @@ plt.show()
 print(f"\n{'='*70}")
 print(f"All visualizations saved to: {output_rec_dir}")
 print(f"{'='*70}\n")
-
-# ===================================================================
-# Optional: Analysis
-# ===================================================================
-print(f"{'='*70}")
-print(f"PERFORMANCE ANALYSIS")
-print(f"{'='*70}")
-
-# Condition number analysis
-from numpy.linalg import svd, cond
-
-print(f"\nInteraction Matrix:")
-print(f"  Condition number: {cond(im_full):.2e}")
-u, s, vh = svd(im_full, full_matrices=False)
-print(f"  Singular values: min={s.min():.2e}, max={s.max():.2e}")
-print(f"  Rank: {np.sum(s > s.max() * 1e-10)}/{len(s)}")
-
-print(f"\nAtmospheric Covariance:")
-print(f"  Condition number: {cond(C_atm_full):.2e}")
-eigenvalues = np.linalg.eigvalsh(C_atm_full)
-print(f"  Eigenvalues: min={eigenvalues.min():.2e}, max={eigenvalues.max():.2e}")
-
-print(f"\nNoise Covariance:")
-noise_diag = np.diag(C_noise)
-print(f"  Mean variance: {noise_diag.mean():.2e} rad²")
-print(f"  Std variance: {noise_diag.std():.2e} rad²")
-
-print(f"\nReconstructor Statistics:")
-print(f"  Mean: {reconstructor.mean():.2e}")
-print(f"  Std: {reconstructor.std():.2e}")
-print(f"  Max abs: {np.abs(reconstructor).max():.2e}")
-print(f"  Sparsity: {100 * np.sum(reconstructor == 0) / reconstructor.size:.1f}%")
-
-print(f"{'='*70}\n")
