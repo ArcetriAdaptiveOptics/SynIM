@@ -24,6 +24,7 @@ from specula.calib_manager import CalibManager
 from specula.data_objects.intmat import Intmat
 from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
+from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
 verbose_gpu_flag = False  # Global flag for verbose GPU memory printing
 
@@ -167,6 +168,7 @@ class ParamsManager:
         if self.projection_params is not None:
             # Use reg_factor from projection section
             self.proj_reg_factor = float(self.projection_params['reg_factor'])
+            self.noise_elong_model = self.projection_params.get('noise_elong_model', None)
 
             if self.verbose:
                 print(f"\n✓ Found 'projection' section:")
@@ -194,6 +196,11 @@ class ParamsManager:
                 if self.verbose:
                     print(f"\n✓ Using IDL-style projection parameters:")
                     print(f"  reg_factor from modalrec1.proj_regFactor: {self.proj_reg_factor}")
+
+            # Extract noiseCovTallon if present (PRO/IDL)
+            self.noise_elong_model = modalrec1.get('noiseCovTallon', None)
+            if self.noise_elong_model is not None and self.verbose:
+                print(f"  noiseCovTallon: {self.noise_elong_model}")
 
         # ==================== RECONSTRUCTOR PARAMETERS ====================
         self.reconstructor_params = {}
@@ -2078,137 +2085,16 @@ class ParamsManager:
             print(f"STEP 3: Building Noise Covariance Matrix")
             print(f"-" * 70)
 
-        if C_noise is None:
-            # Count WFSs
-            out = self.count_mcao_stars()
-            if wfs_type == 'lgs':
-                n_wfs = out['n_lgs']
-            elif wfs_type == 'ngs':
-                n_wfs = out['n_ngs']
-            else:
-                n_wfs = out['n_ref']
-
-            # Compute noise variance if not provided
-            if noise_variance is None:
-                # ***  Use sigma2_in_nm2 from params ***
-                params = self.params
-                wfs_params = params[f'sh_{wfs_type}1']
-                sa_side_in_m = (params['main']['pixel_pupil'] *
-                            params['main']['pixel_pitch'] /
-                            wfs_params['subap_on_diameter'])
-                subap_npx = wfs_params.get('subap_npx', wfs_params.get('sensor_npx'))
-                if subap_npx is None:
-                    raise KeyError(f"Neither 'subap_npx' nor 'sensor_npx' found"
-                                f" in params['sh_{wfs_type}1']")
-                sensor_fov = (wfs_params['sensor_pxscale'] * subap_npx)
-
-                rad2arcsec = 3600. * 180. / np.pi
-
-                # *** Use extracted sigma2_in_nm2 ***
-                # convert it to cpu_float_dtype for consistency
-                if np.isscalar(self.sigma2_in_nm2):
-                    sigma2_in_nm2 = cpu_float_dtype(self.sigma2_in_nm2)
-                else:
-                    sigma2_in_nm2 = np.array(self.sigma2_in_nm2, dtype=cpu_float_dtype)
-
-                sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2.
-                sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2.
-
-                # *** This is the BASE noise variance (for fully illuminated subaperture) ***
-                base_noise_variance = sigma2_in_slope
-
-                if verbose_flag:
-                    print(f"  Base noise variance (fully illuminated): {base_noise_variance:.2e}")
-                    print(f"  (from sigma2_in_nm2 = {sigma2_in_nm2:.2e})")
-
-                # *** Compute illumination for each WFS ***
-                n_slopes_total = im_full.shape[0]
-                C_noise = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
-
-                n_slopes_list = []
-                illumination_list = []
-
-                for i in range(n_wfs):
-                    wfs_params = self.get_wfs_params(wfs_type, i+1,
-                                                     xp_local=np)
-
-                    if wfs_params['idx_valid_sa'] is not None:
-                        n_slopes_this_wfs = len(wfs_params['idx_valid_sa']) * 2
-                    else:
-                        n_slopes_this_wfs = 0
-
-                    n_slopes_list.append(n_slopes_this_wfs)
-
-                    # *** Compute subaperture illumination for this WFS ***
-                    if n_slopes_this_wfs > 0:
-                        illumination = synim.compute_subaperture_illumination(
-                            pup_mask=self.pup_mask,
-                            wfs_nsubaps=wfs_params['wfs_nsubaps'],
-                            wfs_rotation=wfs_params['wfs_rotation'],
-                            wfs_translation=wfs_params['wfs_translation'],
-                            wfs_magnification=wfs_params['wfs_magnification'],
-                            idx_valid_sa=wfs_params['idx_valid_sa'],
-                            verbose=verbose_flag
-                        )
-
-                        # *** Noise variance is INVERSELY proportional to illumination ***
-                        # (less light = more noise)
-                        # Each subaperture has noise variance = base_variance / illumination
-                        # We repeat for X and Y slopes
-                        sa_noise_variance = base_noise_variance / \
-                            (illumination + 1e-10)  # Avoid division by zero
-                        wfs_noise_variance = np.repeat(sa_noise_variance, 2).astype(cpu_float_dtype)  # X and Y slopes
-
-                        illumination_list.append(illumination)
-                    else:
-                        wfs_noise_variance = np.array([], dtype=cpu_float_dtype)
-                        illumination_list.append(np.array([], dtype=cpu_float_dtype))
-
-                    if verbose_flag:
-                        if len(wfs_noise_variance) > 0:
-                            print(f"  WFS {i+1} noise variance:")
-                            print(f"    Min: {np.min(wfs_noise_variance):.2e}")
-                            print(f"    Max: {np.max(wfs_noise_variance):.2e}")
-                            print(f"    Mean: {np.mean(wfs_noise_variance):.2e}")
-
-                # Build diagonal noise covariance with illumination weighting
-                for i in range(n_wfs):
-                    start_idx = sum(n_slopes_list[:i])
-                    end_idx = sum(n_slopes_list[:i+1])
-
-                    if n_slopes_list[i] > 0:
-                        # Use illumination-weighted noise variance
-                        sa_noise_variance = base_noise_variance / (illumination_list[i] + 1e-10)
-                        wfs_noise_variance = np.repeat(sa_noise_variance, 2)
-
-                        # C_noise diagonal elements are 1/variance (precision)
-                        C_noise[start_idx:end_idx, start_idx:end_idx] = np.diag(
-                            1.0 / wfs_noise_variance
-                        )
-
-                if verbose_flag:
-                    print(f"  ✓ Noise covariance built with illumination weighting:"
-                          f"{C_noise.shape}")
-            else:
-                # User provided noise variance
-                n_slopes_total = im_full.shape[0]
-                if np.isscalar(noise_variance):
-                    C_noise = np.eye(n_slopes_total, dtype=cpu_float_dtype) * (1.0 / noise_variance)
-                else:
-                    if len(noise_variance) != n_slopes_total:
-                        raise ValueError("Length of noise_variance does not match"
-                                         " number of slopes in IM")
-                    C_noise = np.diag(1.0 / noise_variance)
-
-                if verbose_flag:
-                    print(f"  ✓ Noise covariance built from provided variance:"
-                          f"{C_noise.shape}")
-            C_noise_from_input = False
-        else:
-            if verbose_flag:
-                print(f"  Using provided C_noise: {C_noise.shape}")
-            C_noise = C_noise.astype(cpu_float_dtype)
-            C_noise_from_input = True
+        # *** USE CENTRALIZED METHOD ***
+        C_noise = self.build_noise_covariance(
+            wfs_type=wfs_type,
+            n_wfs=None,  # Auto-detect
+            im_full=im_full,
+            noise_variance=noise_variance,
+            C_noise=C_noise,
+            use_elongation=self.noise_elong_model,
+            verbose=verbose_flag
+        )
 
         print()
 
@@ -2218,10 +2104,9 @@ class ParamsManager:
             print(f"-" * 70)
 
         # Check: all must be cpu_float_dtype (regardless of endianness)
-        expected_dtype = cpu_float_dtype
+        expected_dtype = np.dtype(cpu_float_dtype)
         for name, arr in [('im_full', im_full), ('C_atm_full', C_atm_full), ('C_noise', C_noise)]:
             arr_dtype = np.dtype(arr.dtype)
-            # Check kind and itemsize (float32: kind='f', itemsize=4)
             if not (arr_dtype.kind == expected_dtype.kind and
                     arr_dtype.itemsize == expected_dtype.itemsize):
                 msg = (f"Data type mismatch for {name}: got {arr_dtype}, "
@@ -2232,11 +2117,13 @@ class ParamsManager:
                     raise TypeError(msg)
 
         reconstructor = compute_mmse_reconstructor(
-            im_full,  # Transpose for SPECULA convention
+            im_full,
             C_atm_full,
             noise_variance=None,  # Already in C_noise
             C_noise=C_noise,
             cinverse=True,
+            xp=np,
+            dtype=cpu_float_dtype,
             verbose=verbose_flag
         )
 
@@ -2913,10 +2800,14 @@ class ParamsManager:
             if return_inverse:
                 # Check if C_atm_sub is diagonal
                 if np.allclose(C_atm_sub, np.diag(np.diagonal(C_atm_sub))):
+                    if verbose_flag:
+                        print(f"  Component {i+1} covariance is diagonal, using optimized inversion.")
                     # Invert only the diagonal elements
                     diag = np.diagonal(C_atm_sub * weight * conversion_factor)
                     C_atm_full[idx_full, idx_full] = np.diag(1.0 / diag)
                 else:
+                    if verbose_flag:
+                        print(f"  Component {i+1} covariance is full, using pseudoinverse.")
                     C_atm_full[idx_full, idx_full] = \
                         np.linalg.pinv(C_atm_sub * weight * conversion_factor)
             else:
@@ -2932,3 +2823,399 @@ class ParamsManager:
             print(f"\n  ✓ Full covariance matrix assembled: {C_atm_full.shape}")
 
         return C_atm_full
+
+    def _build_elongated_noise_covariance(self, wfs_type, n_wfs,
+                                          n_slopes_per_wfs, verbose=False):
+        """
+        Build noise covariance matrix considering LGS spot elongation.
+        
+        Uses calc_noise_cov_elong from SPECULA to compute per-WFS covariance,
+        then assembles into block-diagonal structure.
+        
+        Args:
+            wfs_type (str): WFS type ('lgs')
+            n_wfs (int): Number of WFS
+            n_slopes_per_wfs (int): Number of slopes per WFS
+            verbose (bool): Whether to print information
+            
+        Returns:
+            np.ndarray: Full noise covariance matrix (inverse)
+        """
+
+        params = self.params
+        main_params = params['main']
+
+        # Get common parameters
+        diameter_in_m = main_params['pixel_pupil'] * main_params['pixel_pitch']
+        zenith_angle_in_deg = main_params.get('zenithAngleInDeg', 0.0)
+
+        # Get sodium layer parameters
+        if 'atmo' in params:
+            atmo = params['atmo']
+            # Find LGS height (typically highest layer or specific LGS height)
+            heights = np.array(atmo.get('heights', [90000.0]))
+            lgs_height_idx = np.argmax(heights)
+            h_in_m = heights[lgs_height_idx]
+
+            # Estimate sodium thickness (FWHM)
+            if 'na_thickness' in atmo:
+                na_thickness_in_m = atmo['na_thickness']
+            else:
+                na_thickness_in_m = 10000.0  # Default 10 km FWHM
+        else:
+            h_in_m = 90000.0
+            na_thickness_in_m = 10000.0
+
+        # Get launcher coordinates
+        if f'sh_{wfs_type}1' in params:
+            wfs1_params = params[f'sh_{wfs_type}1']
+            if 'launcher_coord' in wfs1_params:
+                launcher_coord_in_m = wfs1_params['launcher_coord']
+            else:
+                # Default: assume launcher at edge of pupil
+                launcher_coord_in_m = [diameter_in_m/2, 0.0, 0.0]
+        else:
+            launcher_coord_in_m = [diameter_in_m/2, 0.0, 0.0]
+
+        if verbose:
+            print(f"\n  Elongation model parameters:")
+            print(f"    Telescope diameter: {diameter_in_m:.2f} m")
+            print(f"    Zenith angle: {zenith_angle_in_deg:.1f} deg")
+            print(f"    LGS altitude: {h_in_m/1000:.1f} km")
+            print(f"    Na layer thickness (FWHM): {na_thickness_in_m/1000:.1f} km")
+            print(f"    Launcher position: {launcher_coord_in_m}")
+
+        # Initialize full covariance matrix
+        n_slopes_total = n_wfs * n_slopes_per_wfs
+        C_noise_inv_full = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
+
+        # Compute for each WFS
+        for i in range(n_wfs):
+            wfs_params = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+
+            # Get WFS-specific parameters
+            n_sub_aps = wfs_params['wfs_nsubaps']
+            sub_aps_fov = wfs_params['wfs_fov_arcsec']
+            idx_valid_sa = wfs_params['idx_valid_sa']
+
+            # Get sigma2 in nm^2
+            if np.isscalar(self.sigma2_in_nm2):
+                sigma2_nm2 = float(self.sigma2_in_nm2)
+            else:
+                sigma2_nm2 = float(self.sigma2_in_nm2[i] if i < len(self.sigma2_in_nm2) 
+                                else self.sigma2_in_nm2[0])
+
+            # Convert to slope units (same as diagonal model)
+            wfs_config = params[f'sh_{wfs_type}{i+1}']
+            sa_side_in_m = diameter_in_m / n_sub_aps
+            subap_npx = wfs_config.get('subap_npx', wfs_config.get('sensor_npx'))
+            sensor_fov = wfs_config['sensor_pxscale'] * subap_npx
+
+            rad2arcsec = 3600. * 180. / np.pi
+            sigma2_in_arcsec2 = sigma2_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2
+            sigma_noise2 = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2
+
+            # SH spot FWHM (assume diffraction limited)
+            wavelength_nm = wfs_config.get('wavelength', 589.0)
+            sh_spot_fwhm = 1.22 * (wavelength_nm * 1e-9) / diameter_in_m * rad2arcsec * n_sub_aps
+
+            # Truncation parameter (optional, from config or default)
+            t_g_parameter = wfs_config.get('t_g_parameter', 0.0)
+
+            # Convert idx_valid_sa to 1D indices
+            if idx_valid_sa is not None and idx_valid_sa.ndim == 2:
+                # Convert 2D indices to 1D
+                sub_aps_index = np.ravel_multi_index(
+                    (idx_valid_sa[:, 0], idx_valid_sa[:, 1]), 
+                    (n_sub_aps, n_sub_aps)
+                )
+            elif idx_valid_sa is not None:
+                sub_aps_index = idx_valid_sa
+            else:
+                # Use all subapertures
+                sub_aps_index = np.arange(n_sub_aps * n_sub_aps)
+
+            if verbose:
+                print(f"\n  WFS {i+1}/{n_wfs}:")
+                print(f"    N subapertures: {n_sub_aps}x{n_sub_aps}")
+                print(f"    Valid subapertures: {len(sub_aps_index)}")
+                print(f"    FOV: {sub_aps_fov:.2f} arcsec")
+                print(f"    Spot FWHM: {sh_spot_fwhm:.2f} arcsec")
+                print(f"    Noise variance: {sigma_noise2:.2e}")
+
+            # Call calc_noise_cov_elong
+            try:
+                C_noise_inv_wfs = calc_noise_cov_elong(
+                    diameter_in_m=diameter_in_m,
+                    zenith_angle_in_deg=zenith_angle_in_deg,
+                    na_thickness_in_m=na_thickness_in_m,
+                    launcher_coord_in_m=launcher_coord_in_m,
+                    sub_aps_index=sub_aps_index,
+                    n_sub_aps=n_sub_aps,
+                    sub_aps_fov=sub_aps_fov,
+                    sh_spot_fwhm=sh_spot_fwhm,
+                    sigma_noise2=sigma_noise2,
+                    t_g_parameter=t_g_parameter,
+                    h_in_m=h_in_m,
+                    user_pofile_xy=None,
+                    theta=None,
+                    only_diag=False,
+                    eta_is_not_one=True,
+                    display=False,
+                    verbose=verbose
+                )
+
+                if verbose:
+                    print(f"    Elongated covariance computed: {C_noise_inv_wfs.shape}")
+                    print(f"    Condition number: {np.linalg.cond(C_noise_inv_wfs):.2e}")
+
+            except Exception as e:
+                print(f"  WARNING: calc_noise_cov_elong failed for WFS {i+1}: {e}")
+                print(f"  Falling back to diagonal model for this WFS")
+
+                # Fallback to diagonal
+                n_slopes_wfs = len(sub_aps_index) * 2
+                C_noise_inv_wfs = np.eye(n_slopes_wfs) / sigma_noise2
+
+            # Insert into full matrix (block diagonal)
+            start_idx = i * n_slopes_per_wfs
+            end_idx = start_idx + C_noise_inv_wfs.shape[0]
+
+            C_noise_inv_full[start_idx:end_idx, start_idx:end_idx] = C_noise_inv_wfs
+
+        if verbose:
+            print(f"\n  Full elongated C_noise^(-1) assembled: {C_noise_inv_full.shape}")
+            print(f"  Min/Max diagonal: {np.min(np.diag(C_noise_inv_full)):.2e} / "
+                f"{np.max(np.diag(C_noise_inv_full)):.2e}")
+
+        return C_noise_inv_full
+
+    def build_noise_covariance(self, wfs_type='lgs', n_wfs=None,
+                            im_full=None, noise_variance=None,
+                            C_noise=None, use_elongation=False,
+                            verbose=None):
+        """
+        Build noise covariance matrix with multiple strategies:
+        1. Use provided C_noise (highest priority)
+        2. Use provided noise_variance (scalar or array)
+        3. Compute from sigma2_in_nm2 with illumination weighting
+        4. Optionally use elongated spot model for LGS
+        
+        Args:
+            wfs_type (str): Type of WFS ('lgs', 'ngs', 'ref')
+            n_wfs (int, optional): Number of WFS. Auto-detected if None.
+            im_full (np.ndarray, optional): Full interaction matrix for shape inference
+            noise_variance (float or array, optional): Noise variance per WFS
+            C_noise (np.ndarray, optional): Pre-computed full noise covariance matrix
+            use_elongation (bool): Whether to use elongated spot model for LGS
+            verbose (bool, optional): Override the class's verbose setting
+            
+        Returns:
+            np.ndarray: Noise covariance matrix (inverse, ready for MMSE)
+            
+        Raises:
+            ValueError: If insufficient information provided
+        """
+        verbose_flag = self.verbose if verbose is None else verbose
+
+        if verbose_flag:
+            print(f"\n{'='*60}")
+            print(f"Building Noise Covariance Matrix")
+            print(f"{'='*60}")
+            print(f"  WFS type: {wfs_type}")
+            print(f"  Use elongation: {use_elongation}")
+
+        # ==================== CASE 1: C_NOISE PROVIDED ====================
+        if C_noise is not None:
+            if verbose_flag:
+                print(f"  Using provided C_noise: {C_noise.shape}")
+
+            # Ensure correct dtype
+            C_noise = np.array(C_noise, dtype=cpu_float_dtype)
+
+            if verbose_flag:
+                print(f"{'='*60}\n")
+
+            return C_noise
+
+        # ==================== GET N_WFS AND N_SLOPES ====================
+        if n_wfs is None:
+            out = self.count_mcao_stars()
+            if wfs_type == 'lgs':
+                n_wfs = out['n_lgs']
+            elif wfs_type == 'ngs':
+                n_wfs = out['n_ngs']
+            else:
+                n_wfs = out['n_ref']
+
+        if im_full is None:
+            raise ValueError("im_full must be provided if C_noise is not given")
+
+        n_slopes_total = im_full.shape[0]
+
+        if verbose_flag:
+            print(f"  Number of {wfs_type.upper()} WFS: {n_wfs}")
+            print(f"  Total slopes: {n_slopes_total}")
+
+        # ==================== CASE 2: USER-PROVIDED NOISE_VARIANCE ====================
+        if noise_variance is not None:
+            if verbose_flag:
+                print(f"  Using provided noise_variance")
+
+            if np.isscalar(noise_variance):
+                # Scalar variance: apply to all slopes
+                C_noise_inv = np.eye(n_slopes_total, dtype=cpu_float_dtype) / noise_variance
+
+                if verbose_flag:
+                    print(f"    Scalar variance: {noise_variance:.2e}")
+            else:
+                # Array variance: one per slope
+                noise_variance = np.array(noise_variance, dtype=cpu_float_dtype)
+
+                if len(noise_variance) != n_slopes_total:
+                    raise ValueError(f"Length of noise_variance ({len(noise_variance)}) "
+                                f"does not match n_slopes ({n_slopes_total})")
+
+                C_noise_inv = np.diag(1.0 / noise_variance)
+
+                if verbose_flag:
+                    print(f"    Array variance: min={np.min(noise_variance):.2e}, "
+                        f"max={np.max(noise_variance):.2e}")
+
+            if verbose_flag:
+                print(f"  ✓ C_noise built: {C_noise_inv.shape}")
+                print(f"{'='*60}\n")
+
+            return C_noise_inv
+
+        # ==================== COMPUTE ILLUMINATION (ALWAYS NEEDED) ====================
+        if verbose_flag:
+            print(f"  Computing subaperture illumination...")
+
+        n_slopes_list = []
+        illumination_list = []
+
+        for i in range(n_wfs):
+            wfs_params_i = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+
+            if wfs_params_i['idx_valid_sa'] is not None:
+                n_slopes_this_wfs = len(wfs_params_i['idx_valid_sa']) * 2
+            else:
+                n_slopes_this_wfs = 0
+
+            n_slopes_list.append(n_slopes_this_wfs)
+
+            if n_slopes_this_wfs > 0:
+                illumination = synim.compute_subaperture_illumination(
+                    pup_mask=self.pup_mask,
+                    wfs_nsubaps=wfs_params_i['wfs_nsubaps'],
+                    wfs_rotation=wfs_params_i['wfs_rotation'],
+                    wfs_translation=wfs_params_i['wfs_translation'],
+                    wfs_magnification=wfs_params_i['wfs_magnification'],
+                    idx_valid_sa=wfs_params_i['idx_valid_sa'],
+                    verbose=False,
+                    specula_convention=True
+                )
+                illumination_list.append(illumination)
+
+                if verbose_flag:
+                    print(f"    WFS {i+1}: {n_slopes_this_wfs} slopes, "
+                        f"illumination [{np.min(illumination):.2f}, {np.max(illumination):.2f}]")
+            else:
+                illumination_list.append(np.array([], dtype=cpu_float_dtype))
+
+        illumination_vect = []
+        for i in range(n_wfs):
+            if n_slopes_list[i] > 0:
+                wfs_noise_precision = np.repeat(illumination_list[i], 2)
+                illumination_vect.append(wfs_noise_precision)
+
+        # ==================== CASE 3: ELONGATION MODEL (LGS) ====================
+        use_elong = use_elongation and wfs_type == 'lgs'
+
+        if use_elong:
+            if verbose_flag:
+                print(f"  Using elongated spot noise covariance model")
+
+            # Get n_slopes_per_wfs for elongation computation
+            n_slopes_list = []
+            for i in range(n_wfs):
+                wfs_params = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+                if wfs_params['idx_valid_sa'] is not None:
+                    n_slopes = len(wfs_params['idx_valid_sa']) * 2
+                else:
+                    n_slopes = wfs_params['wfs_nsubaps']**2 * 2
+                n_slopes_list.append(n_slopes)
+
+            # Assume uniform for now (can be made more sophisticated)
+            n_slopes_per_wfs = n_slopes_total // n_wfs
+
+            C_noise_inv = self._build_elongated_noise_covariance(
+                wfs_type=wfs_type,
+                n_wfs=n_wfs,
+                n_slopes_per_wfs=n_slopes_per_wfs,
+                verbose=verbose_flag
+            )
+
+            # scale by illumination
+            illumination_inv_array = np.diag(np.concatenate(illumination_vect))
+            C_noise_inv = illumination_inv_array @ C_noise_inv
+
+            if verbose_flag:
+                print(f"{'='*60}\n")
+
+            return C_noise_inv
+
+        # ==================== CASE 4: DIAGONAL MODEL ====================
+        if verbose_flag:
+            print(f"\n  Using diagonal noise model with illumination weighting")
+
+        # Get WFS parameters
+        params = self.params
+        wfs_params = params[f'sh_{wfs_type}1']
+
+        sa_side_in_m = (params['main']['pixel_pupil'] *
+                    params['main']['pixel_pitch'] /
+                    wfs_params['subap_on_diameter'])
+
+        subap_npx = wfs_params.get('subap_npx', wfs_params.get('sensor_npx'))
+        if subap_npx is None:
+            raise KeyError(f"Neither 'subap_npx' nor 'sensor_npx' found "
+                        f"in params['sh_{wfs_type}1']")
+
+        sensor_fov = wfs_params['sensor_pxscale'] * subap_npx
+        rad2arcsec = 3600. * 180. / np.pi
+
+        # Convert sigma2_in_nm2 to slope units
+        if np.isscalar(self.sigma2_in_nm2):
+            sigma2_in_nm2 = cpu_float_dtype(self.sigma2_in_nm2)
+        else:
+            sigma2_in_nm2 = np.array(self.sigma2_in_nm2, dtype=cpu_float_dtype)
+
+        sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2
+        sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2
+
+        base_noise_variance = sigma2_in_slope
+
+        if verbose_flag:
+            print(f"    sigma2_in_nm2: {sigma2_in_nm2:.2e}")
+            print(f"    Base noise variance (fully illuminated): {base_noise_variance:.2e}")
+
+        # Inverse of noise covariance matrix
+        C_noise_inv = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
+
+        if illumination_vect:
+            all_precisions = np.concatenate(illumination_vect) / base_noise_variance
+            # Assign directly to diagonal
+            np.fill_diagonal(C_noise_inv, all_precisions)
+
+        if verbose_flag:
+            diag_vals = np.diag(C_noise_inv)
+            non_zero = diag_vals[diag_vals > 0]
+            if len(non_zero) > 0:
+                print(f"\n  ✓ Noise covariance (inverse) built: {C_noise_inv.shape}")
+                print(f"    Precision range: [{np.min(non_zero):.2e}, {np.max(non_zero):.2e}]")
+                print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
+            print(f"{'='*60}\n")
+
+        return C_noise_inv

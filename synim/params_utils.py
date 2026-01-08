@@ -6,7 +6,7 @@ import yaml
 import datetime
 import numpy as np
 
-from synim import cpu_float_dtype
+from synim import cpuArray, to_xp, cpu_float_dtype
 
 # Import all utility functions from utils
 from synim.utils import *
@@ -1779,6 +1779,7 @@ def compute_layer_weights_from_turbulence(params,
 def compute_mmse_reconstructor(interaction_matrix, C_atm,
                               noise_variance=None, C_noise=None,
                               cinverse=False, use_inverse=False,
+                              xp=np, dtype=np.float32,
                               verbose=False):
     """
     Compute the Minimum Mean Square Error (MMSE) reconstructor.
@@ -1792,6 +1793,8 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
                                          If None, it's built from noise_variance.
         cinverse (bool, optional): If True, C_atm and C_noise are already inverted.
         use_inverse (bool, optional): If True, use standard inverse; otherwise, use pseudo-inverse.
+        xp (module, optional): Numerical library to use (e.g., numpy or cupy).
+        dtype (data-type, optional): Data type for computations.
         verbose (bool, optional): Whether to print detailed information during computation.
         
     Returns:
@@ -1801,7 +1804,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         print("Starting MMSE reconstructor computation")
 
     # Setup matrices
-    A = interaction_matrix
+    A = to_xp(xp, interaction_matrix, dtype=dtype)
 
     # Handle noise covariance matrix
     if C_noise is None and noise_variance is not None:
@@ -1813,13 +1816,20 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             print(f"Building noise covariance matrix for {n_wfs}"
                   f" WFSs with {n_slopes_per_wfs} slopes each")
 
-        C_noise = np.zeros((n_slopes_total, n_slopes_total))
+        C_noise = xp.zeros((n_slopes_total, n_slopes_total), dtype=dtype)
         for i in range(n_wfs):
             # Set the diagonal elements for this WFS
             start_idx = i * n_slopes_per_wfs
             end_idx = (i + 1) * n_slopes_per_wfs
             C_noise[start_idx:end_idx, start_idx:end_idx] = \
-                noise_variance[i] * np.eye(n_slopes_per_wfs)
+                noise_variance[i] * xp.eye(n_slopes_per_wfs, dtype=dtype)
+    else:
+        C_noise = to_xp(xp, C_noise, dtype=dtype) if C_noise is not None else None
+
+    if C_atm is not None:
+        C_atm = to_xp(xp, C_atm, dtype=dtype)
+    else:
+        raise ValueError("C_atm (atmospheric covariance matrix) must be provided")
 
     # Check dimensions
     if A.shape[1] != C_atm.shape[0]:
@@ -1833,46 +1843,46 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     if not cinverse:
         # Check if matrices are diagonal
         if C_noise is not None:
-            is_diag_noise = np.all(np.abs(np.diag(np.diag(C_noise)) - C_noise) < 1e-10)
+            is_diag_noise = xp.all(xp.abs(xp.diag(xp.diag(C_noise)) - C_noise) < 1e-10)
 
             if is_diag_noise:
                 if verbose:
                     print("C_noise is diagonal, using optimized inversion")
-                C_noise_inv = np.diag(1.0 / np.diag(C_noise))
+                C_noise_inv = xp.diag(1.0 / xp.diag(C_noise))
             else:
                 if verbose:
                     print("Inverting C_noise matrix")
                 try:
-                    C_noise_inv = np.linalg.inv(C_noise)
-                except np.linalg.LinAlgError:
+                    C_noise_inv = xp.linalg.inv(C_noise)
+                except xp.linalg.LinAlgError:
                     if verbose:
                         print("Warning: C_noise inversion failed, using pseudo-inverse")
-                    C_noise_inv = np.linalg.pinv(C_noise)
+                    C_noise_inv = xp.linalg.pinv(C_noise)
         else:
             # Default: identity matrix (no noise)
             if verbose:
                 print("No C_noise provided, using identity matrix")
-            C_noise_inv = np.eye(A.shape[1])
+            C_noise_inv = xp.eye(A.shape[1], dtype=dtype)
 
-        is_diag_atm = np.all(np.abs(np.diag(np.diag(C_atm)) - C_atm) < 1e-10)
+        is_diag_atm = xp.all(xp.abs(xp.diag(xp.diag(C_atm)) - C_atm) < 1e-10)
 
         if is_diag_atm:
             if verbose:
                 print("C_atm is diagonal, using optimized inversion")
-            C_atm_inv = np.diag(1.0 / np.diag(C_atm))
+            C_atm_inv = xp.diag(1.0 / xp.diag(C_atm))
         else:
             if verbose:
                 print("Inverting C_atm matrix")
             if use_inverse:
-                C_atm_inv = np.linalg.inv(C_atm)
+                C_atm_inv = xp.linalg.inv(C_atm)
             else:
                 if verbose:
                     print("Warning: Using pseudo-inverse")
-                C_atm_inv = np.linalg.pinv(C_atm)
+                C_atm_inv = xp.linalg.pinv(C_atm)
     else:
         # Matrices are already inverted
         C_atm_inv = C_atm
-        C_noise_inv = C_noise if C_noise is not None else np.eye(A.shape[1])
+        C_noise_inv = C_noise if C_noise is not None else xp.eye(A.shape[1], dtype=dtype)
     # Compute H = A' Cz^(-1) A + Cx^(-1)
     if verbose:
         print("Computing H = A' Cz^(-1) A + Cx^(-1)")
@@ -1880,9 +1890,21 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     # Check if C_noise_inv is scalar
     if isinstance(C_noise_inv, (int, float)) \
         or (hasattr(C_noise_inv, 'size') and C_noise_inv.size == 1):
-        H = C_noise_inv * np.dot(A.T, A) + C_atm_inv
+        H = C_noise_inv * xp.dot(A.T, A) + C_atm_inv
     else:
-        H = np.dot(A.T, np.dot(C_noise_inv, A)) + C_atm_inv
+        H = xp.dot(A.T, xp.dot(C_noise_inv, A)) + C_atm_inv
+
+    # *** DIAGNOSTICS ***
+    if verbose:
+        print(f"\nH matrix:")
+        print(f"  Shape: {H.shape}")
+        print(f"  dtype: {H.dtype}")
+        print(f"  Is finite: {xp.all(xp.isfinite(H))}")
+        print(f"  Memory: {H.nbytes / 1024**3:.2f} GB")
+
+    # Check for NaN/Inf
+    if not xp.all(xp.isfinite(H)):
+        raise ValueError("H contains NaN or Inf values!")
 
     # Compute H^(-1)
     if verbose:
@@ -1890,11 +1912,11 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
 
     try:
         if use_inverse:
-            H_inv = np.linalg.inv(H)
+            H_inv = xp.linalg.inv(H)
         else:
             if verbose:
                 print("Using pseudo-inverse with rcond=1e-14")
-            H_inv = np.linalg.pinv(H, rcond=1e-14)
+            H_inv = xp.linalg.pinv(H, rcond=1e-14)
     except Exception as e:
         print(f"ERROR during H inversion: {e}")
         print(f"H shape: {H.shape}, dtype: {H.dtype}")
@@ -1907,15 +1929,15 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     # Check if C_noise_inv is scalar
     if isinstance(C_noise_inv, (int, float)) \
         or (hasattr(C_noise_inv, 'size') and C_noise_inv.size == 1):
-        W_mmse = C_noise_inv * np.dot(H_inv, A.T)
+        W_mmse = C_noise_inv * xp.dot(H_inv, A.T)
     else:
-        W_mmse = np.dot(H_inv, np.dot(A.T, C_noise_inv))
+        W_mmse = xp.dot(H_inv, xp.dot(A.T, C_noise_inv))
 
     if verbose:
         print("MMSE reconstruction matrix computed")
         print(f"Matrix shape: {W_mmse.shape}")
 
-    return W_mmse
+    return cpuArray(W_mmse)
 
 
 __all__ = [
