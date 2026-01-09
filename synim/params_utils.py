@@ -1915,7 +1915,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             H_inv = xp.linalg.inv(H)
         else:
             if verbose:
-                print(f"Using pseudo-inverse")
+                print(f"    Using pseudo-inverse")
             H_inv = xp.linalg.pinv(H)
     except Exception as e:
         print(f"ERROR during H inversion: {e}")
@@ -1935,7 +1935,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
 
     if verbose:
         print("MMSE reconstruction matrix computed")
-        print(f"Matrix shape: {W_mmse.shape}")
+        print(f"    Matrix shape: {W_mmse.shape}")
 
     return cpuArray(W_mmse)
 
