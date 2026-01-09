@@ -1860,7 +1860,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
                     if verbose:
                         print("Warning: C_noise inversion failed, using pseudo-inverse")
                     C_noise_inv = xp.linalg.pinv(C_noise)
-        
+
         if verbose:
             print("Inverting C_atm matrix")
         if use_inverse:
