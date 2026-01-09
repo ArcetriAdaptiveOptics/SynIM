@@ -13,6 +13,7 @@ while IMs are computed transiently as needed.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 os.environ['SPECULA_DISABLE_GPU'] = 'TRUE' # Force CPU usage for Specula
 import specula
@@ -21,6 +22,19 @@ specula.init(device_idx=-1, precision=1)
 import synim
 synim.init(device_idx=0, precision=1)
 from synim.params_manager import ParamsManager
+
+def v_min_max(arr):
+    arr = np.abs(arr)
+    arr = arr[arr > 0]
+    if arr.size == 0:
+        vmin = 1e-12
+        vmax = 1
+    else:
+        vmin = max(np.percentile(arr, 1), 1e-12)
+        vmax = np.percentile(arr, 99)
+        if vmin >= vmax:
+            vmax = vmin * 10
+    return vmin, vmax
 
 # ===================================================================
 # Configuration
@@ -138,90 +152,87 @@ print(f"{'='*70}\n")
 # ===================================================================
 print(f"Creating visualizations...")
 
-# 1. Reconstructor matrix
+# 1. Reconstructor matrix (log scale, normalized)
+vmin, vmax = v_min_max(reconstructor)
 plt.figure(figsize=(12, 8))
-plt.imshow(reconstructor, cmap='seismic', aspect='auto', 
-           vmin=-np.percentile(np.abs(reconstructor), 99),
-           vmax=np.percentile(np.abs(reconstructor), 99))
-plt.colorbar(label='Reconstructor coefficient')
+plt.imshow(np.abs(reconstructor), cmap='seismic', aspect='auto',
+           norm=LogNorm(vmin=vmin,
+                        vmax=vmax))
+plt.colorbar(label='|Reconstructor| (log scale)')
 plt.title(f"Tomographic Reconstructor ({wfs_type.upper()}→{component_type})\n"
-          f"r0={r0}m, L0={L0}m, reg={reg_factor:.0e}")
+          f"r0={r0}m, L0={L0}m")
 plt.xlabel("Slope Index")
 plt.ylabel("Mode Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "reconstructor_matrix.png"), dpi=150)
-print(f"  ✓ Saved reconstructor_matrix.png")
+plt.savefig(os.path.join(output_rec_dir, "reconstructor_matrix_log.png"), dpi=150)
+print(f"  ✓ Saved reconstructor_matrix_log.png")
 
-# 2. Interaction matrix
+# 2. Interaction matrix (log scale)
+vmin, vmax = v_min_max(im_full)
 plt.figure(figsize=(12, 8))
-plt.imshow(im_full, cmap='viridis', aspect='auto')
-plt.colorbar(label='IM coefficient')
+plt.imshow(np.abs(im_full), cmap='viridis', aspect='auto',
+           norm=LogNorm(vmin=vmin,
+                        vmax=vmax))
+plt.colorbar(label='|IM| (log scale)')
 plt.title(f"Interaction Matrix ({wfs_type.upper()}→{component_type})")
 plt.xlabel("Slope Index")
 plt.ylabel("Mode Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "interaction_matrix.png"), dpi=150)
-print(f"  ✓ Saved interaction_matrix.png")
+plt.savefig(os.path.join(output_rec_dir, "interaction_matrix_log.png"), dpi=150)
+print(f"  ✓ Saved interaction_matrix_log.png")
 
-# 3. Atmospheric covariance
+# 3. Atmospheric PRECISION matrix (log scale)
+vmin, vmax = v_min_max(C_atm_full)
 plt.figure(figsize=(10, 8))
-plt.imshow(C_atm_full, cmap='viridis')
-plt.colorbar(label='Covariance [rad²]')
-plt.title(f"Atmospheric Covariance Matrix\n"
-          f"r0={r0}m, L0={L0}m, weights={weights}")
+plt.imshow(np.abs(C_atm_full), cmap='viridis',
+           norm=LogNorm(vmin=vmin, vmax=vmax))
+plt.colorbar(label='|Precision| [rad⁻²] (log scale)')
+plt.title(f"Atmospheric Precision Matrix (Inverse Covariance)\n"
+          f"r0={r0}m, L0={L0}m")
 plt.xlabel("Mode Index")
 plt.ylabel("Mode Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "covariance_atmospheric.png"), dpi=150)
-print(f"  ✓ Saved covariance_atmospheric.png")
+plt.savefig(os.path.join(output_rec_dir, "atmospheric_precision_log.png"), dpi=150)
+print(f"  ✓ Saved atmospheric_precision_log.png")
 
-# 4. Noise covariance (zoomed on first WFS)
+# 4. Noise PRECISION matrix (zoomed on first WFS, log scale)
 n_slopes_per_wfs = result['n_slopes_per_wfs']
+vmin, vmax = v_min_max(C_noise)
 plt.figure(figsize=(10, 8))
-plt.imshow(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs], cmap='viridis')
-plt.colorbar(label='Noise variance [rad²]')
-plt.title(f"Noise Covariance Matrix (first WFS)")
+plt.imshow(np.abs(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs]), 
+           cmap='viridis',
+           norm=LogNorm(vmin=vmin, vmax=vmax))
+plt.colorbar(label='|Noise precision| [rad⁻²] (log scale)')
+plt.title(f"Noise Precision Matrix (Inverse Covariance) - First WFS")
 plt.xlabel("Slope Index")
 plt.ylabel("Slope Index")
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "covariance_noise.png"), dpi=150)
-print(f"  ✓ Saved covariance_noise.png")
+plt.savefig(os.path.join(output_rec_dir, "noise_precision_log.png"), dpi=150)
+print(f"  ✓ Saved noise_precision_log.png")
 
-# 5. Reconstructor histogram
+# 5. Diagonal of IM @ Reconstructor
 plt.figure(figsize=(10, 6))
-plt.hist(reconstructor.flatten(), bins=100, edgecolor='black', alpha=0.7)
-plt.xlabel('Reconstructor Coefficient')
-plt.ylabel('Frequency')
-plt.title(f'Distribution of Reconstructor Coefficients\n'
-          f'Total: {reconstructor.size}, Non-zero: {np.sum(reconstructor != 0)}')
+diag_rec_im = np.diag(reconstructor @ im_full)
+plt.plot(diag_rec_im, '.-')
+plt.xlabel('Mode Index')
+plt.ylabel('Diagonal value')
+plt.title('Diagonal of Reconstructor @ IM')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "reconstructor_histogram.png"), dpi=150)
-print(f"  ✓ Saved reconstructor_histogram.png")
+plt.savefig(os.path.join(output_rec_dir, "diag_reconstructor_im.png"), dpi=150)
+print(f"  ✓ Saved diag_reconstructor_im.png")
 
-# 6. Mode distribution per component
-plt.figure(figsize=(12, 6))
-for i, (comp_idx, modes) in enumerate(zip(component_indices, mode_indices)):
-    plt.subplot(1, len(component_indices), i+1)
-    
-    # Extract reconstructor for this component
-    start_mode = sum(len(mi) for mi in mode_indices[:i])
-    end_mode = start_mode + len(modes)
-    rec_component = reconstructor[start_mode:end_mode, :]
-    
-    # Plot RMS per mode
-    rms_per_mode = np.sqrt(np.mean(rec_component**2, axis=1))
-    plt.plot(modes, rms_per_mode, 'o-', markersize=3)
-    plt.xlabel('Mode Index')
-    plt.ylabel('RMS Coefficient')
-    plt.title(f'{component_type.capitalize()}{comp_idx}\n'
-              f'({len(modes)} modes)')
-    plt.grid(True, alpha=0.3)
-
-plt.suptitle(f'Reconstructor RMS per Mode and Component', fontsize=14)
+# 6. Diagonal of the inverse atmospheric covariance
+plt.figure(figsize=(10, 6))
+diag_cov = np.diag(C_atm_full)
+plt.plot(diag_cov, '.-')
+plt.xlabel('Mode Index')
+plt.ylabel('Precision [rad⁻²]')
+plt.title('Diagonal of the Inverse Atmospheric Covariance Matrix')
+plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "reconstructor_per_component.png"), dpi=150)
-print(f"  ✓ Saved reconstructor_per_component.png")
+plt.savefig(os.path.join(output_rec_dir, "diag_precision_atmospheric.png"), dpi=150)
+print(f"  ✓ Saved diag_precision_atmospheric.png")
 
 # Show all plots
 plt.show()
