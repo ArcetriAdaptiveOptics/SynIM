@@ -1915,8 +1915,8 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             H_inv = xp.linalg.inv(H)
         else:
             if verbose:
-                print("Using pseudo-inverse with rcond=1e-14")
-            H_inv = xp.linalg.pinv(H, rcond=1e-14)
+                print(f"Using pseudo-inverse")
+            H_inv = xp.linalg.pinv(H)
     except Exception as e:
         print(f"ERROR during H inversion: {e}")
         print(f"H shape: {H.shape}, dtype: {H.dtype}")

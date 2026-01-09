@@ -2068,7 +2068,7 @@ class ParamsManager:
         )
 
         # Assemble covariance for selected modes
-        C_atm_full = self.assemble_covariance_matrix(
+        C_atm_full_inv = self.assemble_covariance_matrix(
             C_atm_blocks=cov_result['C_atm_blocks'],
             component_indices=cov_result['component_indices'],
             mode_indices=mode_indices,
@@ -2077,7 +2077,7 @@ class ParamsManager:
         )
 
         if verbose_flag:
-            print(f"  ✓ Covariance assembled: {C_atm_full.shape}")
+            print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
             print()
 
         # ==================== STEP 3: Build Noise Covariance ====================
@@ -2085,8 +2085,13 @@ class ParamsManager:
             print(f"STEP 3: Building Noise Covariance Matrix")
             print(f"-" * 70)
 
+        if C_noise is not None:
+            C_noise_from_input = True
+        else:
+            C_noise_from_input = False
+
         # *** USE CENTRALIZED METHOD ***
-        C_noise = self.build_noise_covariance(
+        C_noise_inv = self.build_noise_covariance(
             wfs_type=wfs_type,
             n_wfs=None,  # Auto-detect
             im_full=im_full,
@@ -2105,7 +2110,9 @@ class ParamsManager:
 
         # Check: all must be cpu_float_dtype (regardless of endianness)
         expected_dtype = np.dtype(cpu_float_dtype)
-        for name, arr in [('im_full', im_full), ('C_atm_full', C_atm_full), ('C_noise', C_noise)]:
+        for name, arr in [('im_full', im_full),
+                          ('C_atm_full', C_atm_full_inv),
+                          ('C_noise', C_noise_inv)]:
             arr_dtype = np.dtype(arr.dtype)
             if not (arr_dtype.kind == expected_dtype.kind and
                     arr_dtype.itemsize == expected_dtype.itemsize):
@@ -2118,9 +2125,9 @@ class ParamsManager:
 
         reconstructor = compute_mmse_reconstructor(
             im_full,
-            C_atm_full,
+            C_atm_full_inv,
             noise_variance=None,  # Already in C_noise
-            C_noise=C_noise,
+            C_noise=C_noise_inv,
             cinverse=True,
             xp=np,
             dtype=cpu_float_dtype,
@@ -2164,10 +2171,7 @@ class ParamsManager:
             # Save as Recmat (SPECULA format)
             recmat_obj = Recmat(
                 recmat=reconstructor,
-                norm_factor=1.0,
-                target_device_idx=self.target_device_idx \
-                    if hasattr(self, 'target_device_idx') else None,
-                precision=self.precision if hasattr(self, 'precision') else None
+                norm_factor=1.0
             )
             recmat_obj.save(rec_path, overwrite=True)
 
@@ -2189,8 +2193,8 @@ class ParamsManager:
         return {
             'reconstructor': reconstructor,
             'im_full': im_full,
-            'C_atm_full': C_atm_full,
-            'C_noise': C_noise,
+            'C_atm_full': C_atm_full_inv,
+            'C_noise': C_noise_inv,
             'mode_indices': mode_indices,
             'component_indices': component_indices,
             'n_slopes_per_wfs': n_slopes_per_wfs,
@@ -2798,18 +2802,8 @@ class ParamsManager:
             # Place in full matrix
             idx_full = slice(current_idx, current_idx + len(valid_modes))
             if return_inverse:
-                # Check if C_atm_sub is diagonal
-                if np.allclose(C_atm_sub, np.diag(np.diagonal(C_atm_sub))):
-                    if verbose_flag:
-                        print(f"  Component {i+1} covariance is diagonal, using optimized inversion.")
-                    # Invert only the diagonal elements
-                    diag = np.diagonal(C_atm_sub * weight * conversion_factor)
-                    C_atm_full[idx_full, idx_full] = np.diag(1.0 / diag)
-                else:
-                    if verbose_flag:
-                        print(f"  Component {i+1} covariance is full, using pseudoinverse.")
-                    C_atm_full[idx_full, idx_full] = \
-                        np.linalg.pinv(C_atm_sub * weight * conversion_factor)
+                C_atm_full[idx_full, idx_full] = \
+                    np.linalg.pinv(C_atm_sub * weight * conversion_factor)
             else:
                 C_atm_full[idx_full, idx_full] = C_atm_sub * weight * conversion_factor
 
@@ -3116,19 +3110,15 @@ class ParamsManager:
                     verbose=False,
                     specula_convention=True
                 )
-                illumination_list.append(illumination)
+                # fill with 6 to avoid division by zero
+                illumination[illumination < 1e-6] = 1e-6
+                illumination_list.append(np.repeat(illumination, 2).astype(cpu_float_dtype))
 
                 if verbose_flag:
                     print(f"    WFS {i+1}: {n_slopes_this_wfs} slopes, "
                         f"illumination [{np.min(illumination):.2f}, {np.max(illumination):.2f}]")
             else:
                 illumination_list.append(np.array([], dtype=cpu_float_dtype))
-
-        illumination_vect = []
-        for i in range(n_wfs):
-            if n_slopes_list[i] > 0:
-                wfs_noise_precision = np.repeat(illumination_list[i], 2)
-                illumination_vect.append(wfs_noise_precision)
 
         # ==================== CASE 3: ELONGATION MODEL (LGS) ====================
         use_elong = use_elongation and wfs_type == 'lgs'
@@ -3158,7 +3148,7 @@ class ParamsManager:
             )
 
             # scale by illumination
-            illumination_inv_array = np.diag(np.concatenate(illumination_vect))
+            illumination_inv_array = np.diag(np.concatenate(illumination_list))
             C_noise_inv = illumination_inv_array @ C_noise_inv
 
             if verbose_flag:
@@ -3204,10 +3194,10 @@ class ParamsManager:
         # Inverse of noise covariance matrix
         C_noise_inv = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
-        if illumination_vect:
-            all_precisions = np.concatenate(illumination_vect) / base_noise_variance
+        if illumination_list:
+            final_noise_variance = base_noise_variance / np.concatenate(illumination_list)
             # Assign directly to diagonal
-            np.fill_diagonal(C_noise_inv, all_precisions)
+            np.fill_diagonal(C_noise_inv, 1 / final_noise_variance)
 
         if verbose_flag:
             diag_vals = np.diag(C_noise_inv)
