@@ -1823,8 +1823,10 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             end_idx = (i + 1) * n_slopes_per_wfs
             C_noise[start_idx:end_idx, start_idx:end_idx] = \
                 noise_variance[i] * xp.eye(n_slopes_per_wfs, dtype=dtype)
+    elif C_noise is None and noise_variance is None:
+        C_noise = xp.eye(A.shape[1], dtype=dtype)
     else:
-        C_noise = to_xp(xp, C_noise, dtype=dtype) if C_noise is not None else None
+        C_noise = to_xp(xp, C_noise, dtype=dtype)
 
     if C_atm is not None:
         C_atm = to_xp(xp, C_atm, dtype=dtype)
@@ -1839,7 +1841,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         raise ValueError(f"A ({A.shape}) and C_noise"
                          f" ({C_noise.shape}) must have compatible dimensions")
 
-    # Compute inverses if needed
+    # Compute covariance inverses if needed
     if not cinverse:
         # Check if matrices are diagonal
         if C_noise is not None:
@@ -1858,31 +1860,20 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
                     if verbose:
                         print("Warning: C_noise inversion failed, using pseudo-inverse")
                     C_noise_inv = xp.linalg.pinv(C_noise)
-        else:
-            # Default: identity matrix (no noise)
-            if verbose:
-                print("No C_noise provided, using identity matrix")
-            C_noise_inv = xp.eye(A.shape[1], dtype=dtype)
-
-        is_diag_atm = xp.all(xp.abs(xp.diag(xp.diag(C_atm)) - C_atm) < 1e-10)
-
-        if is_diag_atm:
-            if verbose:
-                print("C_atm is diagonal, using optimized inversion")
-            C_atm_inv = xp.diag(1.0 / xp.diag(C_atm))
+        
+        if verbose:
+            print("Inverting C_atm matrix")
+        if use_inverse:
+            C_atm_inv = xp.linalg.inv(C_atm)
         else:
             if verbose:
-                print("Inverting C_atm matrix")
-            if use_inverse:
-                C_atm_inv = xp.linalg.inv(C_atm)
-            else:
-                if verbose:
-                    print("Warning: Using pseudo-inverse")
-                C_atm_inv = xp.linalg.pinv(C_atm)
+                print("Warning: Using pseudo-inverse")
+            C_atm_inv = xp.linalg.pinv(C_atm)
     else:
         # Matrices are already inverted
+        C_noise_inv = C_noise
         C_atm_inv = C_atm
-        C_noise_inv = C_noise if C_noise is not None else xp.eye(A.shape[1], dtype=dtype)
+
     # Compute H = A' Cz^(-1) A + Cx^(-1)
     if verbose:
         print("Computing H = A' Cz^(-1) A + Cx^(-1)")
@@ -1916,7 +1907,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         else:
             if verbose:
                 print(f"    Using pseudo-inverse")
-            H_inv = xp.linalg.pinv(H)
+            H_inv = xp.linalg.pinv(H, rcond=1e-14)
     except Exception as e:
         print(f"ERROR during H inversion: {e}")
         print(f"H shape: {H.shape}, dtype: {H.dtype}")
@@ -1935,7 +1926,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
 
     if verbose:
         print("MMSE reconstruction matrix computed")
-        print(f"    Matrix shape: {W_mmse.shape}")
+        print(f"  Matrix shape: {W_mmse.shape}")
 
     return cpuArray(W_mmse)
 
