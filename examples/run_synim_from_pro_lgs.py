@@ -13,6 +13,7 @@ while IMs are computed transiently as needed.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 os.environ['SPECULA_DISABLE_GPU'] = 'TRUE' # Force CPU usage for Specula
 import specula
