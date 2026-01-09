@@ -2603,7 +2603,7 @@ class ParamsManager:
                     r0,
                     L0,
                     xp=np,
-                    dtype=np.float64,
+                    dtype=np.float64, # this computation requires high precision
                     oversampling=2,
                     verbose=False
                 )
@@ -2618,7 +2618,7 @@ class ParamsManager:
                     r0,
                     L0,
                     xp=xp,
-                    dtype=float_dtype,
+                    dtype=xp.float64, # this computation requires high precision
                     oversampling=2,
                     verbose=False
                 )
