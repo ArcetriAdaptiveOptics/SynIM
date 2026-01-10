@@ -158,7 +158,6 @@ class ParamsManager:
         Sets the following attributes:
         - self.projection_params: dict or None
         - self.proj_reg_factor: float
-        - self.reconstructor_params: dict or None (for future use)
         """
 
         # ==================== PROJECTION PARAMETERS ====================
@@ -168,7 +167,6 @@ class ParamsManager:
         if self.projection_params is not None:
             # Use reg_factor from projection section
             self.proj_reg_factor = float(self.projection_params['reg_factor'])
-            self.noise_elong_model = self.projection_params.get('noise_elong_model', None)
 
             if self.verbose:
                 print(f"\n✓ Found 'projection' section:")
@@ -197,18 +195,19 @@ class ParamsManager:
                     print(f"\n✓ Using IDL-style projection parameters:")
                     print(f"  reg_factor from modalrec1.proj_regFactor: {self.proj_reg_factor}")
 
-            # Extract noiseCovTallon if present (PRO/IDL)
-            self.noise_elong_model = modalrec1.get('noiseCovTallon', None)
-            if self.noise_elong_model is not None and self.verbose:
-                print(f"  noiseCovTallon: {self.noise_elong_model}")
-
         # ==================== RECONSTRUCTOR PARAMETERS ====================
-        self.reconstructor_params = {}
+        self.ngs_n_modes_dm = []
+        self.ngs_n_modes_layer = []
+        self.ref_n_modes_dm = []
+        self.ref_n_modes_layer = []
 
         # Try YAML format first (reconstruction section)
         if 'reconstruction' in self.params:
             recon_section = self.params['reconstruction']
             self.sigma2_in_nm2 = float(recon_section.get('sigma2inNm2', 2e4))
+            self.noise_elong_model = recon_section.get('noise_elong_model', False)
+            self.naThicknessInM = float(recon_section.get('naThicknessInM', 10.0))
+            self.tGparameter = float(recon_section.get('tGparameter', 0.0))
 
             # Extract NGS and REF mode configurations ***
             self.ngs_n_modes_dm = recon_section.get('ngs_n_modes_dm', [])
@@ -219,52 +218,37 @@ class ParamsManager:
             if self.verbose:
                 print(f"  Using YAML 'reconstruction' section")
                 print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
-
-            self.reconstructor_params = {
-                'r0': recon_section.get('r0', None),
-                'L0': recon_section.get('L0', None),
-                'reg_factor': recon_section.get('reg_factor', 1e-8),
-                'wfs_type': recon_section.get('wfs_type', 'lgs'),
-                'component_type': recon_section.get('component_type', 'layer'),
-                'sigma2_in_nm2': self.sigma2_in_nm2,
-                'ngs_n_modes_dm': self.ngs_n_modes_dm,
-                'ngs_n_modes_layer': self.ngs_n_modes_layer,
-                'ref_n_modes_dm': self.ref_n_modes_dm,
-                'ref_n_modes_layer': self.ref_n_modes_layer
-            }
+                print(f"  noise_elong_model: {self.noise_elong_model}")
+                print(f"  naThicknessInM: {self.naThicknessInM}")
+                print(f"  tGparameter: {self.tGparameter}")
 
         # Fallback to IDL-style modalrec1
         elif 'modalrec1' in self.params:
             modalrec1 = self.params['modalrec1']
             self.sigma2_in_nm2 = float(modalrec1.get('sigma2inNm2', 2e4))
+            self.noise_elong_model = modalrec1.get('noiseCovTallon', None)
+            self.naThicknessInM = float(modalrec1.get('naThicknessInM', 10.0))
+            self.tGparameter = float(modalrec1.get('tGparameter', 0.0))
 
             if self.verbose:
                 print(f"  Using IDL 'modalrec1' section")
                 print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
-
-            self.reconstructor_params = {
-                'sigma2_in_nm2': self.sigma2_in_nm2
-            }
-
-            self.ngs_n_modes_dm = []
-            self.ngs_n_modes_layer = []
-            self.ref_n_modes_dm = []
-            self.ref_n_modes_layer = []
+                print(f"  noise_elong_model: {self.noise_elong_model}")
+                print(f"  naThicknessInM: {self.naThicknessInM}")
+                print(f"  tGparameter: {self.tGparameter}")
 
         # Default fallback
         else:
             self.sigma2_in_nm2 = 2e4
-            self.ngs_n_modes_dm = []
-            self.ngs_n_modes_layer = []
-            self.ref_n_modes_dm = []
-            self.ref_n_modes_layer = []
+            self.noise_elong_model = False
+            self.naThicknessInM = 10.0
+            self.tGparameter = 0.0
 
             if self.verbose:
                 print(f"  Using default sigma2_in_nm2: {self.sigma2_in_nm2}")
-
-            self.reconstructor_params = {
-                'sigma2_in_nm2': self.sigma2_in_nm2
-            }
+                print(f"  noise_elong_model: {self.noise_elong_model}")
+                print(f"  naThicknessInM: {self.naThicknessInM}")
+                print(f"  tGparameter: {self.tGparameter}")
 
 
     def _print_gpu_memory(self, label="", verbose=True):
@@ -2263,7 +2247,7 @@ class ParamsManager:
             print(f"    pm_full_layer shape: {pm_full_layer.shape}")
             print(f"      (n_opt_sources, n_layer_modes, n_pupil_modes)")
 
-        # ==================== GET OPTICAL SOURCE WEIGHTS ====================            
+        # ==================== GET OPTICAL SOURCE WEIGHTS ====================
         if self.projection_params is not None:
             # Use from projection section
             opt_sources = self.projection_params['opt_sources']
@@ -2819,49 +2803,53 @@ class ParamsManager:
         diameter_in_m = main_params['pixel_pupil'] * main_params['pixel_pitch']
         zenith_angle_in_deg = main_params.get('zenithAngleInDeg', 0.0)
 
-        # Get sodium layer parameters
-        if 'atmo' in params:
-            atmo = params['atmo']
-            # Find LGS height (typically highest layer or specific LGS height)
-            heights = np.array(atmo.get('heights', [90000.0]))
-            lgs_height_idx = np.argmax(heights)
-            h_in_m = heights[lgs_height_idx]
-
-            # Estimate sodium thickness (FWHM)
-            if 'na_thickness' in atmo:
-                na_thickness_in_m = atmo['na_thickness']
-            else:
-                na_thickness_in_m = 10000.0  # Default 10 km FWHM
-        else:
-            h_in_m = 90000.0
-            na_thickness_in_m = 10000.0
-
-        # Get launcher coordinates
-        if f'sh_{wfs_type}1' in params:
-            wfs1_params = params[f'sh_{wfs_type}1']
-            if 'launcher_coord' in wfs1_params:
-                launcher_coord_in_m = wfs1_params['launcher_coord']
-            else:
-                # Default: assume launcher at edge of pupil
-                launcher_coord_in_m = [diameter_in_m/2, 0.0, 0.0]
-        else:
-            launcher_coord_in_m = [diameter_in_m/2, 0.0, 0.0]
-
-        if verbose:
-            print(f"\n  Elongation model parameters:")
-            print(f"    Telescope diameter: {diameter_in_m:.2f} m")
-            print(f"    Zenith angle: {zenith_angle_in_deg:.1f} deg")
-            print(f"    LGS altitude: {h_in_m/1000:.1f} km")
-            print(f"    Na layer thickness (FWHM): {na_thickness_in_m/1000:.1f} km")
-            print(f"    Launcher position: {launcher_coord_in_m}")
+        # Global parameters for LGS
+        na_thickness_in_m = getattr(self, 'naThicknessInM', 10.0)
+        t_g_parameter = getattr(self, 'tGparameter', 0.0)
 
         # Initialize full covariance matrix
         n_slopes_total = n_wfs * n_slopes_per_wfs
         C_noise_inv_full = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
-        # Compute for each WFS
         for i in range(n_wfs):
             wfs_params = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+
+            # --- Get launcher info for this LGS ---
+            h_in_m = None
+            launcher_coord_in_m = None
+            spot_size_arcsec = None
+
+            # Find the launcher reference from sh_lgsN
+            wfs_key = f'sh_{wfs_type}{i+1}'
+            if wfs_key in params:
+                wfs_config = params[wfs_key]
+                launcher_ref = wfs_config.get('laser_launch_tel_ref', None)
+                # if not defined, try fallback launcherN
+                if launcher_ref is None:
+                    fallback_launcher = f'launcher{i+1}'
+                    if fallback_launcher in params:
+                        launcher_ref = fallback_launcher
+                if launcher_ref and launcher_ref in params:
+                    launcher = params[launcher_ref]
+                    # Position
+                    launcher_coord_in_m = launcher.get('tel_position', launcher.get('position'))
+                    # Altitude (beacon focus)
+                    h_in_m = launcher.get('beacon_focus', None)
+                    # Spot size (arcsec)
+                    spot_size_arcsec = launcher.get('spot_size', launcher.get('sizeArcsec', None))
+
+            if launcher_coord_in_m is None:
+                raise ValueError(f"Launcher position not defined for WFS {i+1} ({wfs_type})")
+
+            if spot_size_arcsec is None:
+                raise ValueError(f"Spot size not defined for WFS {i+1} ({wfs_type})")
+
+            # If not defined, compute h_in_m from zenith angle
+            if h_in_m is None:
+                zenith_angle_deg = main_params.get('zenithAngleInDeg', 0.0)
+                airmass = 1.0 / np.cos(np.deg2rad(zenith_angle_deg)) \
+                    if zenith_angle_deg < 90 else 1.0
+                h_in_m = 90000.0 * airmass
 
             # Get WFS-specific parameters
             n_sub_aps = wfs_params['wfs_nsubaps']
@@ -2872,7 +2860,7 @@ class ParamsManager:
             if np.isscalar(self.sigma2_in_nm2):
                 sigma2_nm2 = float(self.sigma2_in_nm2)
             else:
-                sigma2_nm2 = float(self.sigma2_in_nm2[i] if i < len(self.sigma2_in_nm2) 
+                sigma2_nm2 = float(self.sigma2_in_nm2[i] if i < len(self.sigma2_in_nm2)
                                 else self.sigma2_in_nm2[0])
 
             # Convert to slope units (same as diagonal model)
@@ -2885,25 +2873,19 @@ class ParamsManager:
             sigma2_in_arcsec2 = sigma2_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2
             sigma_noise2 = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2
 
-            # SH spot FWHM (assume diffraction limited)
-            wavelength_nm = wfs_config.get('wavelength', 589.0)
-            sh_spot_fwhm = 1.22 * (wavelength_nm * 1e-9) / diameter_in_m * rad2arcsec * n_sub_aps
-
-            # Truncation parameter (optional, from config or default)
-            t_g_parameter = wfs_config.get('t_g_parameter', 0.0)
-
             # Convert idx_valid_sa to 1D indices
             if idx_valid_sa is not None and idx_valid_sa.ndim == 2:
                 # Convert 2D indices to 1D
                 sub_aps_index = np.ravel_multi_index(
-                    (idx_valid_sa[:, 0], idx_valid_sa[:, 1]), 
+                    (idx_valid_sa[:, 0], idx_valid_sa[:, 1]),
                     (n_sub_aps, n_sub_aps)
                 )
             elif idx_valid_sa is not None:
                 sub_aps_index = idx_valid_sa
             else:
-                # Use all subapertures
                 sub_aps_index = np.arange(n_sub_aps * n_sub_aps)
+
+            sh_spot_fwhm = float(spot_size_arcsec)
 
             if verbose:
                 print(f"\n  WFS {i+1}/{n_wfs}:")
@@ -2912,6 +2894,10 @@ class ParamsManager:
                 print(f"    FOV: {sub_aps_fov:.2f} arcsec")
                 print(f"    Spot FWHM: {sh_spot_fwhm:.2f} arcsec")
                 print(f"    Noise variance: {sigma_noise2:.2e}")
+                print(f"    Launcher position: {launcher_coord_in_m}")
+                print(f"    LGS altitude: {h_in_m}")
+                print(f"    Na layer thickness (FWHM): {na_thickness_in_m}")
+                print(f"    tGparameter: {t_g_parameter}")
 
             # Call calc_noise_cov_elong
             try:
