@@ -2530,7 +2530,8 @@ class ParamsManager:
 
             # Get start_mode
             comp_key = f'{component_type}{comp_idx}'
-            if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+            if comp_key not in self.params and component_type == 'dm' \
+                and comp_idx == 1 and 'dm' in self.params:
                 comp_key = 'dm'
 
             # Total modes available
@@ -2561,6 +2562,14 @@ class ParamsManager:
                 if verbose_flag:
                     print(f"    Shape: {C_atm.shape}")
 
+                # Check that loaded covariance has correct shape
+                if C_atm.shape[0] != total_modes or C_atm.shape[1] != total_modes:
+                    raise ValueError(
+                        f"Loaded covariance matrix shape {C_atm.shape} does not match "
+                        f"expected shape ({total_modes}, {total_modes}) for "
+                        f"{component_type}{comp_idx}."
+                    )
+
                 C_atm_blocks.append(C_atm)
                 continue
 
@@ -2580,6 +2589,13 @@ class ParamsManager:
 
             # Compute covariance matrix
             if skip_gpu_covariance:
+
+                # float64 is preferred for this computation,
+                # but if there are more than 1m elements in the cube
+                # switch to float32 to avoid memory issues
+                n_elements = dm2d.shape[0] * dm2d.shape[1]
+                cov_float_dtype = np.float64 if n_elements <= 1e6 else np.float32
+
                 C_atm_rad2 = compute_ifs_covmat(
                     comp_params['dm_mask'],
                     self.pup_diam_m,
@@ -2587,7 +2603,7 @@ class ParamsManager:
                     r0,
                     L0,
                     xp=np,
-                    dtype=np.float64, # this computation requires high precision
+                    dtype=cov_float_dtype,
                     oversampling=2,
                     verbose=False
                 )
@@ -2602,7 +2618,7 @@ class ParamsManager:
                     r0,
                     L0,
                     xp=xp,
-                    dtype=xp.float64, # this computation requires high precision
+                    dtype=float_dtype,
                     oversampling=2,
                     verbose=False
                 )

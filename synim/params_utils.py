@@ -1778,8 +1778,7 @@ def compute_layer_weights_from_turbulence(params,
 
 def compute_mmse_reconstructor(interaction_matrix, C_atm,
                               noise_variance=None, C_noise=None,
-                              cinverse=False, use_inverse=False,
-                              xp=np, dtype=np.float32,
+                              cinverse=False, xp=np, dtype=np.float32,
                               verbose=False):
     """
     Compute the Minimum Mean Square Error (MMSE) reconstructor.
@@ -1792,7 +1791,6 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         C_noise (numpy.ndarray, optional): Covariance matrix of measurement noise (Cz).
                                          If None, it's built from noise_variance.
         cinverse (bool, optional): If True, C_atm and C_noise are already inverted.
-        use_inverse (bool, optional): If True, use standard inverse; otherwise, use pseudo-inverse.
         xp (module, optional): Numerical library to use (e.g., numpy or cupy).
         dtype (data-type, optional): Data type for computations.
         verbose (bool, optional): Whether to print detailed information during computation.
@@ -1863,9 +1861,9 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
 
         if verbose:
             print("Inverting C_atm matrix")
-        if use_inverse:
+        try:
             C_atm_inv = xp.linalg.inv(C_atm)
-        else:
+        except:
             if verbose:
                 print("Warning: Using pseudo-inverse")
             C_atm_inv = xp.linalg.pinv(C_atm)
@@ -1902,16 +1900,11 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         print("Inverting H")
 
     try:
-        if use_inverse:
-            H_inv = xp.linalg.inv(H)
-        else:
-            if verbose:
-                print(f"    Using pseudo-inverse")
-            H_inv = xp.linalg.pinv(H, rcond=1e-14)
-    except Exception as e:
-        print(f"ERROR during H inversion: {e}")
-        print(f"H shape: {H.shape}, dtype: {H.dtype}")
-        raise
+        H_inv = xp.linalg.inv(H)
+    except:
+        if verbose:
+            print(f"    Using pseudo-inverse")
+        H_inv = xp.linalg.pinv(H, rcond=1e-14)
 
     # Compute W = H^(-1) A' Cz^(-1)
     if verbose:
