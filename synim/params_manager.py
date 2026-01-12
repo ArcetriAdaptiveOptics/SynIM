@@ -2794,8 +2794,8 @@ class ParamsManager:
 
         return C_atm_full
 
-    def _build_elongated_noise_covariance(self, wfs_type, n_wfs,
-                                          n_slopes_per_wfs, verbose=False):
+    def _build_elongated_noise_covariance(self, wfs_type,
+                                          verbose=False):
         """
         Build noise covariance matrix considering LGS spot elongation.
         
@@ -2804,8 +2804,6 @@ class ParamsManager:
         
         Args:
             wfs_type (str): WFS type ('lgs')
-            n_wfs (int): Number of WFS
-            n_slopes_per_wfs (int): Number of slopes per WFS
             verbose (bool): Whether to print information
             
         Returns:
@@ -2823,8 +2821,27 @@ class ParamsManager:
         na_thickness_in_m = getattr(self, 'naThicknessInM', 10.0)
         t_g_parameter = getattr(self, 'tGparameter', 0.0)
 
-        # Initialize full covariance matrix
-        n_slopes_total = n_wfs * n_slopes_per_wfs
+        # Auto-detect number of WFS from configuration
+        out = self.count_mcao_stars()
+        if wfs_type == 'lgs':
+            n_wfs = out['n_lgs']
+        elif wfs_type == 'ngs':
+            n_wfs = out['n_ngs']
+        else:
+            n_wfs = out['n_ref']
+
+        # Get actual number of slopes per WFS
+        n_slopes_list = []
+        for i in range(n_wfs):
+            wfs_params_i = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+            if wfs_params_i['idx_valid_sa'] is not None:
+                n_slopes_this_wfs = len(wfs_params_i['idx_valid_sa']) * 2
+            else:
+                n_slopes_this_wfs = wfs_params_i['wfs_nsubaps']**2 * 2
+            n_slopes_list.append(n_slopes_this_wfs)
+
+        # Initialize full covariance matrix with correct total size
+        n_slopes_total = sum(n_slopes_list)
         C_noise_inv_full = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
         for i in range(n_wfs):
@@ -2842,9 +2859,16 @@ class ParamsManager:
                 launcher_ref = wfs_config.get('laser_launch_tel_ref', None)
                 # if not defined, try fallback launcherN
                 if launcher_ref is None:
-                    fallback_launcher = f'launcher{i+1}'
-                    if fallback_launcher in params:
-                        launcher_ref = fallback_launcher
+                    # fallback launcher reference
+                    for fallback in (f'launcher{i+1}', f'launcherpos{i+1}', f'launcherPos{i+1}'):
+                        if fallback in params:
+                            launcher_ref = fallback
+                            print(f"Warning: Using deprecated launcher reference"
+                                  f" '{fallback}' for WFS {i+1}")
+                            break
+                    if launcher_ref is None:
+                        raise ValueError(f"Launcher reference not defined for"
+                                         f" WFS {i+1} ({wfs_type})")
                 if launcher_ref and launcher_ref in params:
                     launcher = params[launcher_ref]
                     # Position
@@ -2875,7 +2899,7 @@ class ParamsManager:
             # Get sigma2 in nm^2
             if np.isscalar(self.sigma2_in_nm2):
                 sigma2_nm2 = float(self.sigma2_in_nm2)
-            else:
+            elif isinstance(self.sigma2_in_nm2, (list, np.ndarray)):
                 sigma2_nm2 = float(self.sigma2_in_nm2[i] if i < len(self.sigma2_in_nm2)
                                 else self.sigma2_in_nm2[0])
 
@@ -2890,7 +2914,8 @@ class ParamsManager:
             sigma_noise2 = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2
 
             # Convert idx_valid_sa to 1D indices
-            if idx_valid_sa is not None and idx_valid_sa.ndim == 2:
+            if idx_valid_sa is not None and hasattr(idx_valid_sa, "ndim") \
+                and idx_valid_sa.ndim == 2 and idx_valid_sa.shape[0] > 0:
                 # Convert 2D indices to 1D
                 sub_aps_index = np.ravel_multi_index(
                     (idx_valid_sa[:, 0], idx_valid_sa[:, 1]),
@@ -2899,6 +2924,8 @@ class ParamsManager:
             elif idx_valid_sa is not None:
                 sub_aps_index = idx_valid_sa
             else:
+                print(f"  WARNING: idx_valid_sa is None or empty for WFS {i+1}"
+                      f" ({wfs_type}), using all subaps.")
                 sub_aps_index = np.arange(n_sub_aps * n_sub_aps)
 
             sh_spot_fwhm = float(spot_size_arcsec)
@@ -2950,7 +2977,10 @@ class ParamsManager:
                 C_noise_inv_wfs = np.eye(n_slopes_wfs) / sigma_noise2
 
             # Insert into full matrix (block diagonal)
-            start_idx = i * n_slopes_per_wfs
+            if i == 0:
+                start_idx = 0
+            else:
+                start_idx = sum(n_slopes_list[:i])
             end_idx = start_idx + C_noise_inv_wfs.shape[0]
 
             C_noise_inv_full[start_idx:end_idx, start_idx:end_idx] = C_noise_inv_wfs

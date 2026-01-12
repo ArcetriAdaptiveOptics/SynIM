@@ -670,7 +670,8 @@ def parse_pro_file(pro_file_path):
 
             try:
                 # Recognize the start of a new section (e.g., {main, {dm1, etc.)
-                section_match = re.match(r'^\{(\w+),?', line)
+                # Allow empty spaces before parenthesis and after comma
+                section_match = re.match(r'^\{\s*(\w+)\s*,?', line)
                 if section_match:
                     current_section = section_match.group(1).lower()
                     data[current_section] = {}
