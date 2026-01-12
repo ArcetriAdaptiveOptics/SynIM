@@ -3145,13 +3145,8 @@ class ParamsManager:
                     n_slopes = wfs_params['wfs_nsubaps']**2 * 2
                 n_slopes_list.append(n_slopes)
 
-            # Assume uniform for now (can be made more sophisticated)
-            n_slopes_per_wfs = n_slopes_total // n_wfs
-
             C_noise_inv = self._build_elongated_noise_covariance(
                 wfs_type=wfs_type,
-                n_wfs=n_wfs,
-                n_slopes_per_wfs=n_slopes_per_wfs,
                 verbose=verbose_flag
             )
 
