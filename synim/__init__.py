@@ -17,6 +17,7 @@ zoom = None
 
 # *** Precision management ***
 global_precision = None
+int_dtype = None
 float_dtype = None
 cpu_float_dtype = None
 complex_dtype = None
@@ -37,7 +38,7 @@ def init(device_idx=-1, precision=1):
         None
     """
     global xp, cp, gpuEnabled, default_target_device_idx, default_target_device
-    global global_precision, float_dtype, complex_dtype
+    global global_precision, float_dtype, complex_dtype, int_dtype
     global gpu_float_dtype_list, gpu_complex_dtype_list
     global cpu_float_dtype
     # *** Declare scipy globals ***
@@ -71,6 +72,7 @@ def init(device_idx=-1, precision=1):
     # ==================== SET ARRAY LIBRARY ====================
     if default_target_device_idx >= 0:
         xp = cp
+        int_dtype = cp.int32
         float_dtype_list = [cp.float64, cp.float32]
         complex_dtype_list = [cp.complex128, cp.complex64]
         default_target_device = cp.cuda.Device(default_target_device_idx)
@@ -107,6 +109,7 @@ def init(device_idx=-1, precision=1):
     else:
         print('Default device is CPU')
         xp = np
+        int_dtype = np.int32
         float_dtype_list = [np.float64, np.float32]
         complex_dtype_list = [np.complex128, np.complex64]
 

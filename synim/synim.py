@@ -187,7 +187,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_array = xp.transpose(dm_array, (1, 0, 2))
         dm_mask = xp.transpose(dm_mask)
         pup_mask = xp.transpose(pup_mask)
-        wfs_translation_local = (-1*wfs_translation[0], -1*wfs_translation[1])
+        wfs_translation_local = (-1*wfs_translation[1], -1*wfs_translation[0])
     else:
         wfs_translation_local = wfs_translation
 
@@ -233,9 +233,10 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_translation=dm_translation,
         dm_rotation=dm_rotation,
         dm_magnification=dm_magnification,
-        wfs_translation=(0, 0),
-        wfs_rotation=0,
-        wfs_magnification=(1, 1),
+        wfs_translation=wfs_translation_local,
+        wfs_rotation=wfs_rotation,
+        wfs_magnification=wfs_magnification,
+        wfs_anamorphosis_45=wfs_anamorphosis_45,
         output_size=output_size
     )
     trans_dm_mask[trans_dm_mask < 0.5] = 0
@@ -249,6 +250,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
+        wfs_anamorphosis_45=wfs_anamorphosis_45,
         output_size=output_size
     )
     trans_pup_mask[trans_pup_mask < 0.5] = 0
@@ -291,7 +293,7 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
     wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
 
     if specula_convention:
-        wfs_translation_local = (-1*wfs_translation[0], -1*wfs_translation[1])
+        wfs_translation_local = (-1*wfs_translation[1], -1*wfs_translation[0])
     else:
         wfs_translation_local = wfs_translation
 
@@ -556,13 +558,15 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
 
     if display:
         idx_plot = [2, 5]
+        pup_mask_cpu = cpuArray(pup_mask_conv)
+        trans_dm_mask_cpu = cpuArray(trans_dm_mask)
         trans_dm_array_cpu = cpuArray(trans_dm_array)
         fig, axs = plt.subplots(2, 2)
-        im3 = axs[0, 0].imshow(trans_dm_array_cpu[:, :, idx_plot[0]], cmap='seismic')
-        axs[0, 1].imshow(trans_dm_array_cpu[:, :, idx_plot[0]], cmap='seismic')
-        axs[1, 0].imshow(trans_dm_array_cpu[:, :, idx_plot[1]], cmap='seismic')
+        im3 = axs[0, 0].imshow(pup_mask_cpu, cmap='seismic')
+        axs[0, 1].imshow(trans_dm_mask_cpu, cmap='seismic')
+        axs[1, 0].imshow(trans_dm_array_cpu[:, :, idx_plot[0]], cmap='seismic')
         axs[1, 1].imshow(trans_dm_array_cpu[:, :, idx_plot[1]], cmap='seismic')
-        fig.suptitle(f'DM shapes (modes {idx_plot[0]} and {idx_plot[1]})')
+        fig.suptitle(f'Mask, DM mask, DM shapes (modes {idx_plot[0]} and {idx_plot[1]})')
         fig.colorbar(im3, ax=axs.ravel().tolist(), fraction=0.02)
         plt.show()
 
