@@ -6,7 +6,7 @@ from astropy.io import fits
 
 # *** Import xp, cpuArray, to_xp, float_dtype ***
 from synim import (
-    xp, cpuArray, to_xp, float_dtype, cpu_float_dtype,
+    xp, cpuArray, to_xp, int_dtype, float_dtype, cpu_float_dtype,
     default_target_device_idx, global_precision
 )
 
@@ -713,7 +713,7 @@ class ParamsManager:
             wfs_translation=params['wfs_translation'],
             wfs_mag_global=params['wfs_magnification'],
             wfs_fov_arcsec=params['wfs_fov_arcsec'],
-            idx_valid_sa=to_xp(xp, params['idx_valid_sa'], dtype=float_dtype),
+            idx_valid_sa=to_xp(xp, params['idx_valid_sa'], dtype=int_dtype),
             verbose=verbose_flag,
             display=display
         )
