@@ -187,6 +187,9 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_array = xp.transpose(dm_array, (1, 0, 2))
         dm_mask = xp.transpose(dm_mask)
         pup_mask = xp.transpose(pup_mask)
+        wfs_translation_local = (-1*wfs_translation[0], -1*wfs_translation[1])
+    else:
+        wfs_translation_local = wfs_translation
 
     pup_diam_pix = pup_mask.shape[0]
     pixel_pitch = pup_diam_m / pup_diam_pix
@@ -217,7 +220,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_translation=dm_translation,
         dm_rotation=dm_rotation,
         dm_magnification=dm_magnification,
-        wfs_translation=wfs_translation,
+        wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         wfs_anamorphosis_45=wfs_anamorphosis_45,
@@ -243,7 +246,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         dm_translation=(0, 0),
         dm_rotation=0,
         dm_magnification=(1, 1),
-        wfs_translation=wfs_translation,
+        wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         output_size=output_size
@@ -287,13 +290,18 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
     # *** Compute WFS magnification including anamorphosis at 90° ***
     wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
 
+    if specula_convention:
+        wfs_translation_local = (-1*wfs_translation[0], -1*wfs_translation[1])
+    else:
+        wfs_translation_local = wfs_translation
+
     # Transform pupil mask
     trans_pup_mask = rotshiftzoom_array(
         pup_mask,
         dm_translation=(0, 0),
         dm_rotation=0,
         dm_magnification=(1, 1),
-        wfs_translation=wfs_translation,
+        wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         wfs_anamorphosis_45=wfs_anamorphosis_45,
@@ -316,7 +324,7 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
         dm_translation=(0, 0),
         dm_rotation=0,
         dm_magnification=(1, 1),
-        wfs_translation=wfs_translation,
+        wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         wfs_anamorphosis_45=wfs_anamorphosis_45,
@@ -328,7 +336,7 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
         dm_translation=(0, 0),
         dm_rotation=0,
         dm_magnification=(1, 1),
-        wfs_translation=wfs_translation,
+        wfs_translation=wfs_translation_local,
         wfs_rotation=wfs_rotation,
         wfs_magnification=wfs_magnification,
         wfs_anamorphosis_45=wfs_anamorphosis_45,
