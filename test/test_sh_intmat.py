@@ -16,6 +16,29 @@ class TestShIntmatComparison(unittest.TestCase):
     Uses the same SCAO configuration as SPECULA's test_sh_calibration.
     """
 
+    def im_2d_map(self, im_mode):
+        """Convert interaction matrix to 2D map for visualization."""
+        # Load subapdata
+        from specula.data_objects.slopes import Slopes
+        from specula.data_objects.subap_data import SubapData
+        subapdata = SubapData.restore(self.subap_path)
+
+        # Create Slopes object for IM mode
+        sl = Slopes(length=im_mode.shape[0])
+        sl.set_value(im_mode)
+        sl.single_mask = subapdata.single_mask()
+        sl.display_map = subapdata.display_map
+
+        # Create 2D frames
+        frame_x = sl.xp.zeros_like(sl.single_mask, dtype=sl.dtype)
+        frame_y = sl.xp.zeros_like(sl.single_mask, dtype=sl.dtype)
+
+        # Remap to 2D
+        sl.x_remap2d(frame_x, sl.display_map)
+        sl.y_remap2d(frame_y, sl.display_map)
+
+        return frame_x, frame_y
+
     def setUp(self):
         """Set up test directories and paths"""
         # Test directory (where SPECULA test files are located)
@@ -186,7 +209,7 @@ class TestShIntmatComparison(unittest.TestCase):
         synim_im /= np.std(np.abs(synim_im), axis=1, keepdims=True)
 
         plot_debug = False  # Set to True to visualize differences
-        if plot_debug:
+        if plot_debug: # pragma: no cover
             import matplotlib.pyplot as plt
 
             plt.figure(figsize=(12, 5))
@@ -207,7 +230,6 @@ class TestShIntmatComparison(unittest.TestCase):
             plt.colorbar()
 
             plt.tight_layout()
-            plt.show()
 
             plt.figure(figsize=(15, 15))
             for i in range(9):
@@ -220,6 +242,37 @@ class TestShIntmatComparison(unittest.TestCase):
                 plt.legend()
                 plt.grid()
             plt.tight_layout()
+
+            # 2D plot of N modes
+            modes_idx = [0, 2, 10, 20, 30]
+
+            for i_mode in modes_idx:
+
+                frame_specula_x, frame_specula_y = \
+                    self.im_2d_map(specula_im[:,i_mode])
+                frame_synim_x, frame_synim_y = \
+                    self.im_2d_map(synim_im[:,i_mode])
+
+                # Plot
+                plt.figure(figsize=(10, 10))
+                plt.subplot(2, 2, 1)
+                plt.title(f"X slopes - mode {i_mode}")
+                plt.imshow(frame_specula_x, cmap='bwr')
+                plt.colorbar()
+                plt.subplot(2, 2, 2)
+                plt.title(f"Y slopes - mode {i_mode}")
+                plt.imshow(frame_specula_y, cmap='bwr')
+                plt.colorbar()
+                plt.subplot(2, 2, 3)
+                plt.title(f"X slopes - mode {i_mode}")
+                plt.imshow(frame_synim_x, cmap='bwr')
+                plt.colorbar()
+                plt.subplot(2, 2, 4)
+                plt.title(f"Y slopes - mode {i_mode}")
+                plt.imshow(frame_synim_y, cmap='bwr')
+                plt.colorbar()
+                plt.tight_layout()
+
             plt.show()
 
         # Compute difference
