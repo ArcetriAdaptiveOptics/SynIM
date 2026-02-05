@@ -297,7 +297,6 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False, is_inver
             return dm_array, dm_mask
 
     elif 'type_str' in dm_params:
-        # ... existing code for Zernike generation ...
         if verbose:
             print(f"     Loading influence function from type_str: {dm_params['type_str']}")
 
@@ -2051,32 +2050,38 @@ def compute_influence_functions_and_modalbases(
         print(f"1. Creating Pupil Mask")
         print(f"{'='*70}")
 
-    pupil_mask = make_mask(
-        int(pixel_pupil),
-        obsratio=obsratio,
-        diaratio=1.0,
-        xp=specula_np,
-        spider=True,
-        spider_width=1,
-        n_petals=n_petals
-    )
-
     mask_name = f"mask_{pixel_pupil}px_{n_petals}petals"
+    mask_path = root_dir / "pupilstop" / f"{mask_name}.fits"
 
-    # Save pupil mask
     simul_params = SimulParams(
         pixel_pupil=int(pixel_pupil),
         pixel_pitch=float(pixel_pitch)
     )
-    pupilstop_obj = Pupilstop(simul_params, input_mask=pupil_mask)
 
-    mask_path = root_dir / "pupilstop" / f"{mask_name}.fits"
-    mask_path.parent.mkdir(parents=True, exist_ok=True)
-    pupilstop_obj.save(str(mask_path), overwrite=overwrite)
+    if mask_path.exists() and not overwrite:
+        # restore mask
+        pupilstop_obj = Pupilstop.restore(mask_path)
+        pupil_mask = pupilstop_obj.get_value()
+    else:
+        pupil_mask = make_mask(
+            int(pixel_pupil),
+            obsratio=obsratio,
+            diaratio=1.0,
+            xp=specula_np,
+            spider=True,
+            spider_width=1,
+            n_petals=n_petals
+        )
 
-    if verbose:
-        print(f"  ✓ Saved pupil mask: {mask_name}")
-        print(f"    Valid pixels: {np.sum(pupil_mask > 0.5)}")
+        # Save pupil mask
+        pupilstop_obj = Pupilstop(simul_params, input_mask=pupil_mask)
+
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+        pupilstop_obj.save(str(mask_path), overwrite=overwrite)
+
+        if verbose:
+            print(f"  ✓ Saved pupil mask: {mask_name}")
+            print(f"    Valid pixels: {np.sum(pupil_mask > 0.5)}")
 
     # ==================== COMPUTE INFLUENCE FUNCTIONS ====================
     if verbose:
@@ -2112,7 +2117,42 @@ def compute_influence_functions_and_modalbases(
                 print(f"\n  {comp_name} (altitude {alt} m, {nact} actuators):")
                 print(f"    ✓ {base_name} (already exists)")
 
+            n_modes = None
+    
+            # Look for M2C files matching this base name
+            m2c_dir = root_dir / "m2c"
+            if m2c_dir.exists():
+                import glob
+                # Pattern: base_XXpx_YYacts_ZZZZmodes.fits or
+                # base_XXpx_YYacts_Npetals_ZZZZmodes.fits
+                pattern = str(m2c_dir / f"{base_name}_*modes.fits")
+                matching_m2c = glob.glob(pattern)
+
+                if matching_m2c:
+                    # Extract n_modes from filename
+                    m2c_file = Path(matching_m2c[0])
+                    # Parse filename: ..._1260modes.fits
+                    import re
+                    match = re.search(r'_(\d+)modes\.fits$', m2c_file.name)
+                    if match:
+                        n_modes = int(match.group(1))
+                        if verbose:
+                            print(f"    Found M2C: {m2c_file.name} ({n_modes} modes)")
+
+            # Fallback: load IFunc if M2C not found
+            if n_modes is None:
+                if verbose:
+                    print(f"    M2C not found, loading IFunc to determine n_modes")
+                ifunc_obj = IFunc.restore(str(ifunc_path))
+                n_modes = ifunc_obj.influence_function.shape[0]
+                if verbose:
+                    print(f"    IFunc shape: {ifunc_obj.influence_function.shape},"
+                          f" using {n_modes} modes")
+
+            # Store correct tags
             ifunc_tags[comp_name] = base_name
+            m2c_name = f"{base_name}_{n_modes}modes"
+            m2c_tags[comp_name] = m2c_name
 
             # For ground layer, check if inverse exists
             if alt == 0:
@@ -2121,6 +2161,10 @@ def compute_influence_functions_and_modalbases(
                 n_modes = ifunc_obj.influence_function.shape[0]
                 inv_name = f"{base_name}_{n_modes}modes_inv"
                 ifunc_inv_tag = inv_name
+
+                # Update m2c_tags with actual m2c name
+                m2c_name = f"{base_name}_{n_modes}modes"
+                m2c_tags[comp_name] = m2c_name
 
             continue
 
@@ -2209,8 +2253,13 @@ def compute_influence_functions_and_modalbases(
         print(f"COMPUTATION COMPLETE")
         print(f"{'='*70}")
         print(f"  Generated {len(ifunc_tags)} influence function sets")
-        print(f"  DMs: {list(range(1, len(dm_altitudes) + 1))}")
-        print(f"  Layers: {list(range(1, len(layer_altitudes) + 1))}")
+
+        # Show what keys were generated
+        dm_keys = [k for k in ifunc_tags.keys() if k.startswith('dm')]
+        layer_keys = [k for k in ifunc_tags.keys() if k.startswith('layer')]
+        print(f"  DM keys: {dm_keys}")
+        print(f"  Layer keys: {layer_keys}")
+
         if ifunc_inv_tag:
             print(f"  Inverse basis: {ifunc_inv_tag}")
         print(f"{'='*70}\n")
@@ -2230,8 +2279,6 @@ def compute_influence_functions_and_modalbases(
 
     return result
 
-
-# ... existing code ...
 
 def generate_filter_matrix_from_intmat(
     intmat,

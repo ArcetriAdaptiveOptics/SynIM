@@ -19,6 +19,7 @@ and manages dependencies between calibration steps.
 """
 import os
 import sys
+import glob
 import yaml
 import shutil
 from datetime import datetime
@@ -27,11 +28,14 @@ import subprocess
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 import re
-        
+
 import numpy as np
 
 import specula
 specula.init(device_idx=-1, precision=1)
+from specula.calib_manager import CalibManager
+from specula.data_objects.intmat import Intmat
+from specula.data_objects.recmat import Recmat
 
 import synim
 synim.init(device_idx=0, precision=1)
@@ -40,43 +44,120 @@ from synim.params_utils import compute_influence_functions_and_modalbases
 from synim.params_utils import generate_filter_matrix_from_intmat_file
 
 class MORFEOCalibrationWorkflow:
-    """Manages the complete MORFEO calibration pipeline."""
 
     def __init__(self,
-                 base_yml_path: str,
-                 root_dir: str,
+                 workflow_yml_path: str,
+                 base_yml_path: str = None,
+                 params_dir: str = None,
+                 root_dir: str = None,  # Only for override
                  output_base_dir: str = None,
-                 device_idx: int = 0,
-                 overwrite: bool = False,
-                 verbose: bool = True):
+                 device_idx: int = None,
+                 overwrite: bool = None,
+                 verbose: bool = None):
         """
         Initialize the calibration workflow.
         
         Parameters
         ----------
-        base_yml_path : str
-            Path to the initial MORFEO YAML configuration file (template)
-        root_dir : str
-            Root directory for calibration files (SPECULA CalibManager root)
+        workflow_yml_path : str
+            Path to workflow configuration YAML (contains all parameters)
+        base_yml_path : str, optional
+            Path to the initial MORFEO YAML configuration file (template).
+            If None, uses base_simulation_yml from workflow_yml_path (relative to params_dir).
+        params_dir : str, optional
+            Directory containing parameter YAML files.
+            If None, uses the directory of workflow_yml_path.
+        root_dir : str, optional
+            Root directory for SPECULA calibration files (CalibManager root).
+            If None, reads from base_simulation_yml's main.root_dir.
+            Command-line override takes precedence.
         output_base_dir : str, optional
             Base directory for workflow outputs. If None, uses root_dir/workflow/
-        device_idx : int
-            GPU device index (-1 for CPU)
-        overwrite : bool
-            Whether to overwrite existing calibration files
-        verbose : bool
-            Verbose output
+        device_idx : int, optional
+            GPU device index (-1 for CPU). Overrides workflow YAML if provided.
+        overwrite : bool, optional
+            Whether to overwrite existing calibration files. Overrides workflow YAML.
+        verbose : bool, optional
+            Verbose output. Overrides workflow YAML if provided.
         """
-        self.base_yml_path = Path(base_yml_path)
-        self.root_dir = Path(root_dir)
-        self.device_idx = device_idx
-        self.overwrite = overwrite
-        self.verbose = verbose
+        # Load workflow configuration first
+        self.workflow_yml_path = Path(workflow_yml_path)
+
+        if not self.workflow_yml_path.exists():
+            raise FileNotFoundError(f"Workflow configuration not found: {self.workflow_yml_path}")
+
+        with open(self.workflow_yml_path) as f:
+            self.workflow_config = yaml.safe_load(f)
+
+        # Get input files from workflow config
+        input_config = self.workflow_config.get('input_files', {})
+
+        # Resolve params directory (YAML parameter files)
+        if params_dir is not None:
+            # Command-line override
+            self.params_dir = Path(params_dir)
+        else:
+            # Use workflow config
+            params_dir_from_config = input_config.get('params_dir')
+            if params_dir_from_config is None:
+                # Default: same as workflow YAML directory
+                self.params_dir = self.workflow_yml_path.parent
+            else:
+                self.params_dir = Path(params_dir_from_config)
+
+        # Resolve base YAML path
+        if base_yml_path is not None:
+            # Command-line override
+            self.base_yml_path = Path(base_yml_path)
+        else:
+            # Use workflow config
+            base_yml_from_config = input_config.get('base_simulation_yml')
+            if base_yml_from_config is None:
+                raise ValueError(
+                    "base_simulation_yml not specified in workflow config"
+                    " and not provided via command line"
+                )
+
+            base_yml_path_obj = Path(base_yml_from_config)
+            if base_yml_path_obj.is_absolute():
+                self.base_yml_path = base_yml_path_obj
+            else:
+                # Relative to params_dir
+                self.base_yml_path = self.params_dir / base_yml_path_obj
+
+        if not self.base_yml_path.exists():
+            raise FileNotFoundError(f"Base simulation YAML not found: {self.base_yml_path}")
+
+        # Load base simulation config to extract root_dir
+        with open(self.base_yml_path) as f:
+            self.config = yaml.safe_load(f)
+
+        # Resolve root directory
+        if root_dir is not None:
+            # Command-line override
+            self.root_dir = Path(root_dir)
+        else:
+            # Extract from base simulation YAML
+            main_config = self.config.get('main', {})
+            root_dir_from_sim = main_config.get('root_dir')
+            if root_dir_from_sim is None:
+                raise ValueError(
+                    "root_dir not found in base simulation YAML (main.root_dir)"
+                    " and not provided via command line"
+                )
+            self.root_dir = Path(root_dir_from_sim)
+
+        # Extract parameters from workflow config (with command-line overrides)
+        exec_config = self.workflow_config['execution']
+        self.device_idx = device_idx if device_idx is not None else exec_config['device_idx']
+        self.overwrite = overwrite if overwrite is not None else exec_config['overwrite']
+        self.verbose = verbose if verbose is not None else exec_config['verbose']
 
         # Create timestamped workflow directory
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if output_base_dir is None:
-            self.workflow_dir = self.root_dir / "workflow" / self.timestamp
+            output_base = self.root_dir / exec_config['output_dirs']['workflow']
+            self.workflow_dir = output_base / self.timestamp
         else:
             self.workflow_dir = Path(output_base_dir) / self.timestamp
 
@@ -86,74 +167,88 @@ class MORFEOCalibrationWorkflow:
         self.yml_dir = self.workflow_dir / "yml"
         self.yml_dir.mkdir(exist_ok=True)
 
-        # Copy and load initial YAML
+        # Copy and load initial YAML (already loaded above, but keep for tracking)
         self.initial_yml_path = self.yml_dir / f"params_morfeo_initial_{self.timestamp}.yml"
         shutil.copy(self.base_yml_path, self.initial_yml_path)
-
-        with open(self.initial_yml_path) as f:
-            self.config = yaml.safe_load(f)
 
         # Store generated filenames for tracking
         self.generated_files = {}
 
-        # Extract calibration parameters from YAML
-        self._extract_calibration_params()
+        # Extract calibration parameters from workflow YAML
+        self._extract_workflow_parameters()
 
         self._log(f"Initialized MORFEO calibration workflow")
-        self._log(f"  Base YAML: {self.base_yml_path}")
-        self._log(f"  Root dir: {self.root_dir}")
+        self._log(f"  Workflow YAML: {self.workflow_yml_path}")
+        self._log(f"  Base simulation YAML: {self.base_yml_path}")
+        self._log(f"  Root dir (from simulation YAML): {self.root_dir}")
+        self._log(f"  Params dir: {self.params_dir}")
         self._log(f"  Workflow dir: {self.workflow_dir}")
         self._log(f"  Timestamp: {self.timestamp}")
 
-    def _extract_calibration_params(self):
-        """Extract calibration parameters from YAML configuration."""
-        # Get main parameters
-        main_config = self.config.get('main', {})
-        self.pixel_pupil = main_config.get('pixel_pupil', 160)
-        self.pixel_pitch = main_config.get('pixel_pitch', 0.2406)
+    def _extract_workflow_parameters(self):
+        """Extract calibration parameters from workflow YAML configuration."""
+        wf = self.workflow_config
+
+        # System parameters
+        sys_config = wf['system']
+        self.pixel_pupil = sys_config['pixel_pupil']
+        self.pixel_pitch = sys_config['pixel_pitch']
         self.telescope_diameter = self.pixel_pupil * self.pixel_pitch
+        self.n_petals = sys_config['n_petals']
+        self.obsratio = sys_config['obsratio']
+        self.r0 = sys_config['r0']
+        self.L0 = sys_config['L0']
 
-        # LGS filter parameters
-        self.lgs_filter_n_modes = 1000
-        self.lgs_filter_n_modes_filtered = 3  # tip, tilt, focus
+        # Extract DM parameters
+        dms_config = wf['dms']
+        self.dm_altitudes = []
+        self.dm_nacts = []
+        for dm_key in sorted(dms_config.keys()):  # dm1, dm2, dm3
+            dm = dms_config[dm_key]
+            self.dm_altitudes.append(dm['altitude'])
+            self.dm_nacts.append(dm['n_actuators'])
 
-        # REF focus parameters
-        self.ref_focus_n_modes = 30
+        # Extract layer parameters
+        layers_config = wf['layers']
+        self.layer_altitudes = []
+        self.layer_nacts = []
+        for layer_key in sorted(layers_config.keys()):  # layer1, layer2, ...
+            layer = layers_config[layer_key]
+            self.layer_altitudes.append(layer['altitude'])
+            self.layer_nacts.append(layer['n_actuators'])
 
-        # Get reconstruction parameters
-        if 'reconstruction' in self.config:
-            rec_config = self.config['reconstruction']
-            self.ngs_n_modes_dm = rec_config.get('ngs_n_modes_dm', [2, 0, 3])
-            self.ref_n_modes_dm = rec_config.get('ref_n_modes_dm', [50, 45, 48])
-        else:
-            self._log("⚠ No reconstruction section in YAML, using defaults")
-            self.ngs_n_modes_dm = [2, 0, 3]
-            self.ref_n_modes_dm = [50, 45, 48]
+        # WFS parameters
+        wfs_config = wf['wfs']
+        self.lgs_filter_n_modes = wfs_config['lgs']['filter_n_modes']
+        self.lgs_filter_n_modes_filtered = wfs_config['lgs']['filter_n_modes_filtered']
+        self.ref_focus_n_modes = wfs_config['ref']['focus_n_modes']
+        self.ngs_n_modes_dm = wfs_config['ngs']['n_modes_dm']
+        self.ref_n_modes_dm = wfs_config['ref']['n_modes_dm']
 
-        # Atmospheric parameters from YAML
-        atmo_config = self.config.get('atmo', {})
-        self.r0 = 0.15  # Will be set at runtime
-        self.L0 = atmo_config.get('L0', 25.0)
+        # Reconstruction parameters
+        rec_config = wf['reconstruction']
+        self.sigma2_in_nm2 = rec_config['sigma2_in_nm2']
+        self.noise_elong_model = rec_config['noise_elong_model']
+        self.naThicknessInM = rec_config['na_thickness_in_m']
+        self.tGparameter = rec_config['tG_parameter']
 
-        # DM and layer configuration
-        self.dm_altitudes = [600, 6500, 17500]  # From dm1, dm2, dm3 heights in YAML
-        self.layer_altitudes = [0, 2000, 4500, 11000, 15000, 18000, 22000]  # From layer1-7
+        # Projection parameters
+        proj_config = wf['projection']
+        self.proj_reg_factor = proj_config['reg_factor']
 
-        # Number of actuators per component (from morfeo_compute_influence_functions.py)
-        self.dm_nacts = [41, 37, 37]  # dm1, dm2, dm3
-        self.layer_nacts = [41, 41, 41, 37, 37, 37, 37]  # layer1-7
+        # Calibration files
+        calib_files_config = wf.get('calibration_files', {})
+        self.subap_calib_yml = calib_files_config.get('subap_calib_yml', 
+                                                       'calib_morfeo_tiny_subaps.yml')
 
-        # Get projection parameters
-        if 'projection' in self.config:
-            proj_config = self.config['projection']
-            self.proj_reg_factor = proj_config.get('reg_factor', 1e-4)
-        else:
-            self._log("⚠ No projection section in YAML, using defaults")
-            self.proj_reg_factor = 1e-4
-
-        # Pupil mask parameters
-        self.n_petals = 6
-        self.obsratio = 0.283
+        if self.verbose:
+            self._log("\nWorkflow parameters loaded:")
+            self._log(f"  Pupil: {self.pixel_pupil} px × {self.pixel_pitch} m")
+            self._log(f"  DMs: {len(self.dm_altitudes)} at altitudes {self.dm_altitudes}")
+            self._log(f"  Layers: {len(self.layer_altitudes)} at altitudes {self.layer_altitudes}")
+            self._log(f"  LGS filter: {self.lgs_filter_n_modes} modes "
+                     f"({self.lgs_filter_n_modes_filtered} filtered)")
+            self._log(f"  Projection reg_factor: {self.proj_reg_factor}")
 
     def _log(self, message: str):
         """Print log message if verbose."""
@@ -243,35 +338,69 @@ class MORFEOCalibrationWorkflow:
         # Update config with generated tags
         self._update_config_field('pupilstop.tag', result['pupil_mask_tag'])
 
-        # Update DMs
-        for i in result['dm_indices']:
-            dm_key = f"dm{i}"
-            if dm_key in result['ifunc_tags']:
-                self._update_config_field(f'{dm_key}.ifunc_object',
-                                          result['ifunc_tags'][dm_key])
-                self._update_config_field(f'{dm_key}.m2c_object',
-                                          result['m2c_tags'][dm_key])
-                # Extract n_modes from m2c tag
-                n_modes = int(result['m2c_tags'][dm_key].split('_')[-1].replace('modes', ''))
-                self._update_config_field(f'{dm_key}.nmodes', n_modes)
+        # Helper function to normalize key (remove underscores)
+        def normalize_key(key):
+            """Convert 'dm_1' or 'layer_1' to 'dm1' or 'layer1'"""
+            return key.replace('_', '')
 
-        # Update layers
-        for i in result['layer_indices']:
-            layer_key = f"layer{i}"
-            if layer_key in result['ifunc_tags']:
-                self._update_config_field(f'{layer_key}.ifunc_object',
-                                          result['ifunc_tags'][layer_key])
-                self._update_config_field(f'{layer_key}.m2c_object',
-                                          result['m2c_tags'][layer_key])
-                n_modes = int(result['m2c_tags'][layer_key].split('_')[-1].replace('modes', ''))
-                self._update_config_field(f'{layer_key}.nmodes', n_modes)
+        # Update DMs - iterate over result keys and match to config
+        for result_key in result['ifunc_tags'].keys():
+            if result_key.startswith('dm'):
+                config_key = normalize_key(result_key)  # dm_1 -> dm1
+
+                if config_key in self.config:
+                    self._update_config_field(f'{config_key}.ifunc_object',
+                                            result['ifunc_tags'][result_key])
+                    self._update_config_field(f'{config_key}.m2c_object',
+                                            result['m2c_tags'][result_key])
+                    # Extract n_modes from m2c tag
+                    m2c_tag = result['m2c_tags'][result_key]
+                    n_modes = int(m2c_tag.split('_')[-1].replace('modes', ''))
+                    self._update_config_field(f'{config_key}.nmodes', n_modes)
+
+                    if self.verbose:
+                        self._log(f"  Updated {config_key}:")
+                        self._log(f"    ifunc: {result['ifunc_tags'][result_key]}")
+                        self._log(f"    m2c: {m2c_tag}")
+                        self._log(f"    nmodes: {n_modes}")
+
+        # Update layers - iterate over result keys and match to config
+        for result_key in result['ifunc_tags'].keys():
+            if result_key.startswith('layer'):
+                config_key = normalize_key(result_key)  # layer_1 -> layer1
+
+                if config_key in self.config:
+                    self._update_config_field(f'{config_key}.ifunc_object',
+                                            result['ifunc_tags'][result_key])
+                    self._update_config_field(f'{config_key}.m2c_object',
+                                            result['m2c_tags'][result_key])
+                    m2c_tag = result['m2c_tags'][result_key]
+                    n_modes = int(m2c_tag.split('_')[-1].replace('modes', ''))
+                    self._update_config_field(f'{config_key}.nmodes', n_modes)
+
+                    if self.verbose:
+                        self._log(f"  Updated {config_key}:")
+                        self._log(f"    ifunc: {result['ifunc_tags'][result_key]}")
+                        self._log(f"    m2c: {m2c_tag}")
+                        self._log(f"    nmodes: {n_modes}")
 
         # Update modal_analysis with inverse ifunc
         if result['ifunc_inv_tag']:
             self._update_config_field('modal_analysis.ifunc_inv_object',
-                                      result['ifunc_inv_tag'])
+                                    result['ifunc_inv_tag'])
+            self._update_config_field('projection.ifunc_inverse_tag',
+                                    result['ifunc_inv_tag'])
+
+            if self.verbose:
+                self._log(f"  Updated modal_analysis.ifunc_inv_object: {result['ifunc_inv_tag']}")
+
+        # Count components
+        n_dms = len([k for k in result['ifunc_tags'] if k.startswith('dm')])
+        n_layers = len([k for k in result['ifunc_tags'] if k.startswith('layer')])
 
         self._log(f"\n✓ Generated influence functions for {len(result['ifunc_tags'])} components")
+        self._log(f"  DMs: {n_dms}")
+        self._log(f"  Layers: {n_layers}")
 
         return result
 
@@ -292,37 +421,114 @@ class MORFEOCalibrationWorkflow:
         self._log("STEP 1: SUBAPERTURE CALIBRATION")
         self._log("="*70)
 
-        # Find the calib YAML file
-        calib_yml = self.base_yml_path.parent / "calib_morfeo_tiny_subaps.yml"
-        if not calib_yml.exists():
-            raise FileNotFoundError(f"Subaperture calibration YAML not found: {calib_yml}")
+        # Resolve the calib YAML path (now relative to params_dir)
+        if self.subap_calib_yml is None:
+            # Auto-detect: look for calib_*_subaps.yml in params_dir
+            calib_pattern = self.params_dir / "calib_morfeo_*_subaps.yml"
+            matches = glob.glob(str(calib_pattern))
+            if not matches:
+                raise FileNotFoundError(
+                    f"No subaperture calibration YAML found matching {calib_pattern}. "
+                    f"Please specify 'subap_calib_yml' in workflow config."
+                )
+            calib_yml = Path(matches[0])
+            self._log(f"Auto-detected subaperture calibration YAML: {calib_yml.name}")
+        else:
+            # Check if it's an absolute path
+            calib_yml = Path(self.subap_calib_yml)
+            if not calib_yml.is_absolute():
+                # Relative to params_dir
+                calib_yml = self.params_dir / self.subap_calib_yml
 
-        # Run SPECULA calibration
-        self._log("Running subaperture calibration with SPECULA...")
-        self._run_specula(self.initial_yml_path, calib_yml)
+            if not calib_yml.exists():
+                raise FileNotFoundError(
+                    f"Subaperture calibration YAML not found: {calib_yml}"
+                )
 
-        # Extract generated subapdata tags from the calibration YAML
+        self._log(f"Using subaperture calibration YAML: {calib_yml}")
+        self._log(f"  (from params_dir: {self.params_dir})")
+
+        # Load calibration YAML to extract expected tags
         with open(calib_yml) as f:
             calib_config = yaml.safe_load(f)
 
-        subap_tags = {}
+        # Extract expected subapdata tags
+        expected_tags = {}
         for key, value in calib_config.items():
             if key.startswith('sh_subaps_'):
                 wfs_name = key.replace('sh_subaps_', '')
-                subap_tags[wfs_name] = value['output_tag']
+                if 'output_tag' in value:
+                    expected_tags[wfs_name] = value['output_tag']
 
+        if not expected_tags:
+            raise ValueError(
+                f"No 'sh_subaps_*' entries with 'output_tag' found in {calib_yml}"
+            )
+
+        self._log(f"Expected {len(expected_tags)} subaperture configurations")
+
+        # Check which subapdata files already exist
+        cm = CalibManager(str(self.root_dir))
+
+        existing_tags = {}
+        missing_tags = {}
+
+        for wfs_name, tag in expected_tags.items():
+            # Loo for the subapdata
+            subap_data_path = Path(cm.filename('subapdata', tag))
+            if subap_data_path.exists():
+                existing_tags[wfs_name] = tag
+                self._log(f"  ✓ {wfs_name}: {tag} (already exists)")
+            else:
+                missing_tags[wfs_name] = tag
+                self._log(f"  ✗ {wfs_name}: {tag} (needs computation)")
+
+        # Determine if we need to run SPECULA
+        need_computation = bool(missing_tags) or self.overwrite
+
+        if need_computation:
+            if self.overwrite:
+                self._log("\nOverwrite mode: recomputing all subapertures")
+            else:
+                self._log(f"\nMissing {len(missing_tags)} subaperture files, running SPECULA...")
+
+            # Run SPECULA calibration
+            self._log("Running subaperture calibration with SPECULA...")
+            self._run_specula(self.initial_yml_path, calib_yml)
+
+            # Verify all files were created
+            for wfs_name, tag in expected_tags.items():
+                try:
+                    cm.load('subapdata', tag)
+                    self._log(f"  ✓ Generated: {wfs_name} → {tag}")
+                except (FileNotFoundError, KeyError):
+                    self._log(f"  ✗ Failed to generate: {wfs_name} → {tag}")
+                    raise RuntimeError(
+                        f"SPECULA failed to generate subapdata for {wfs_name} (tag: {tag})"
+                    )
+        else:
+            self._log("\n✓ All subaperture files already exist, skipping computation")
+
+        # Store all tags (existing + newly generated)
+        subap_tags = expected_tags
         self.generated_files['subap_tags'] = subap_tags
+        self.generated_files['subap_calib_yml_used'] = calib_yml
 
         # Update config with subap tags
         for wfs_name, tag in subap_tags.items():
             slopec_key = f"slopec_{wfs_name}"
             if slopec_key in self.config:
                 self._update_config_field(f"{slopec_key}.subapdata_object", tag)
+                if self.verbose:
+                    self._log(f"  Updated {slopec_key}.subapdata_object = {tag}")
 
-        self._log(f"✓ Generated subaperture data for {len(subap_tags)} WFS configurations")
-
-        for wfs_name, tag in subap_tags.items():
-            self._log(f"  {wfs_name}: {tag}")
+        self._log(f"\n✓ Subaperture calibration complete")
+        self._log(f"  Total configurations: {len(subap_tags)}")
+        if not need_computation:
+            self._log(f"  Existing: {len(existing_tags)}")
+        else:
+            self._log(f"  Existing: {len(existing_tags)}")
+            self._log(f"  Generated: {len(missing_tags)}")
 
         return subap_tags
 
@@ -595,10 +801,6 @@ class MORFEOCalibrationWorkflow:
 
         self._log(f"Generating focus reconstruction matrix (n_modes={self.ref_focus_n_modes})...")
         self._log(f"  From IM: {im_path.name}")
-
-        # Import required classes
-        from specula.data_objects.intmat import Intmat
-        from specula.data_objects.recmat import Recmat
 
         # Load IM and stack 3 copies (for 3 REF WFS)
         intmat_obj = Intmat.restore(str(im_path))
@@ -904,9 +1106,43 @@ class MORFEOCalibrationWorkflow:
             f.write("MORFEO CALIBRATION WORKFLOW SUMMARY\n")
             f.write("=" * 70 + "\n\n")
             f.write(f"Workflow timestamp: {self.timestamp}\n")
-            f.write(f"Base YAML: {self.base_yml_path}\n")
-            f.write(f"Root directory: {self.root_dir}\n")
-            f.write(f"Workflow directory: {self.workflow_dir}\n\n")
+            f.write(f"Workflow YAML: {self.workflow_yml_path}\n")
+            f.write(f"Base simulation YAML: {self.base_yml_path}\n\n")
+            
+            f.write("CONFIGURATION HIERARCHY:\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"1. Workflow YAML: {self.workflow_yml_path.name}\n")
+            f.write(f"   - Provides: calibration parameters, execution settings\n")
+            f.write(f"2. Base simulation YAML: {self.base_yml_path.name}\n")
+            f.write(f"   - Provides: root_dir, system configuration, sources, WFS setup\n")
+            f.write(f"3. Command-line: (if used, overrides both YAMLs)\n\n")
+            
+            f.write("DIRECTORY STRUCTURE:\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"Root directory (from simulation YAML main.root_dir):\n")
+            f.write(f"  {self.root_dir}\n")
+            f.write(f"  ├── pupilstop/  (pupil masks)\n")
+            f.write(f"  ├── ifunc/      (influence functions)\n")
+            f.write(f"  ├── m2c/        (modal-to-commands matrices)\n")
+            f.write(f"  ├── synim/      (interaction matrices)\n")
+            f.write(f"  ├── synrec/     (reconstructors)\n")
+            f.write(f"  ├── synpm/      (projection matrices)\n")
+            f.write(f"  └── workflow/   (workflow outputs)\n\n")
+            
+            f.write(f"Params directory:\n")
+            f.write(f"  {self.params_dir}\n")
+            f.write(f"  Contains: simulation YAMLs, calibration YAMLs\n\n")
+            
+            f.write(f"Workflow directory (this run):\n")
+            f.write(f"  {self.workflow_dir}\n")
+            f.write(f"  ├── yml/  (generated YAML configurations)\n")
+            f.write(f"  └── workflow_summary.txt (this file)\n\n")
+
+            f.write("INPUT FILES:\n")
+            f.write("-" * 70 + "\n")
+            if 'subap_calib_yml_used' in self.generated_files:
+                f.write(f"  Subaperture calib: {self.generated_files['subap_calib_yml_used']}\n")
+            f.write("\n")
 
             f.write("CALIBRATION PARAMETERS:\n")
             f.write("-" * 70 + "\n")
@@ -928,23 +1164,24 @@ class MORFEOCalibrationWorkflow:
                 for wfs, tag in self.generated_files['subap_tags'].items():
                     f.write(f"     {wfs}: {tag}\n")
                 f.write("\n")
- 
+
             # Interaction matrices
             if 'lgs_im_paths' in self.generated_files:
                 f.write("2. LGS Interaction Matrices:\n")
                 f.write(f"     Count: {len(self.generated_files['lgs_im_paths'])}\n")
-                layer0_count = sum(1 for p in self.generated_files['lgs_im_paths'] 
+                layer0_count = sum(1 for p in self.generated_files['lgs_im_paths']
                                   if 'layH0.0' in str(p))
                 f.write(f"     Layer 0: {layer0_count}\n")
-                f.write(f"     Other layers: {len(self.generated_files['lgs_im_paths']) - layer0_count}\n\n")
- 
+                f.write(f"     Other layers:"
+                        f" {len(self.generated_files['lgs_im_paths']) - layer0_count}\n\n")
+
             # Filter matrices
             if 'filtmat_mapping' in self.generated_files:
                 f.write("3. Filter Matrices:\n")
                 for rot, fname in self.generated_files['filtmat_mapping'].items():
                     f.write(f"     {rot}: {fname}\n")
                 f.write("\n")
- 
+
             if 'ngs_im_paths' in self.generated_files:
                 f.write("4. NGS Interaction Matrices:\n")
                 f.write(f"     Count: {len(self.generated_files['ngs_im_paths'])}\n\n")
@@ -997,7 +1234,7 @@ class MORFEOCalibrationWorkflow:
                        f"{self.generated_files['remove_yml'].name}\n\n")
             else:
                 f.write("(Workflow incomplete - missing final YAML)\n\n")
- 
+
             f.write("VALIDATION CHECKS:\n")
             f.write("-" * 70 + "\n")
             checks_passed = 0
@@ -1023,7 +1260,7 @@ class MORFEOCalibrationWorkflow:
                     checks_passed += 1
                 else:
                     f.write(f"  ✗ {desc}\n")
-    
+
             f.write(f"\nPassed: {checks_passed}/{checks_total}\n\n")
 
         self._log(f"✓ Generated workflow summary: {summary_path}")
@@ -1033,7 +1270,7 @@ class MORFEOCalibrationWorkflow:
         with open(summary_path) as f:
             print(f.read())
         print("="*70 + "\n")
- 
+
         return summary_path
 
     # =======================================================================
@@ -1051,7 +1288,7 @@ class MORFEOCalibrationWorkflow:
             Example: [0, 1, 2, 3] to run only first four steps
         """
         if steps is None:
-            steps = list(range(1, 11))
+            steps = list(range(0, 11))
 
         self._log("\n" + "="*70)
         self._log("STARTING MORFEO CALIBRATION WORKFLOW")
@@ -1103,7 +1340,7 @@ class MORFEOCalibrationWorkflow:
             self._log(f"Total duration: {duration}")
             self._log(f"Workflow directory: {self.workflow_dir}")
             self._log(f"Timestamp: {self.timestamp}")
-            
+
         except Exception as e:
             self._log("\n" + "="*70)
             self._log("WORKFLOW FAILED")
@@ -1125,28 +1362,70 @@ if __name__ == "__main__":
         description="Run MORFEO calibration workflow",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Configuration hierarchy (from lowest to highest priority):
+  1. Workflow YAML (params_workflow_morfeo.yml)
+  2. Base simulation YAML (params_morfeo_*.yml - includes root_dir)
+  3. Command-line arguments (override both YAMLs)
+
+Directory structure:
+  root_dir/           # From base simulation YAML (main.root_dir)
+    ├── pupilstop/    # Pupil masks
+    ├── ifunc/        # Influence functions
+    ├── m2c/          # Modal-to-commands matrices
+    ├── synim/        # Interaction matrices
+    ├── synrec/       # Reconstructors
+    ├── synpm/        # Projection matrices
+    └── workflow/     # Workflow outputs (timestamped)
+        └── YYYYMMDD_HHMMSS/
+            ├── yml/  # YAML configurations
+            └── workflow_summary.txt
+
+  params_dir/         # Parameter YAML files (default: workflow YAML directory)
+    ├── params_morfeo_*.yml  (contains root_dir in main.root_dir)
+    ├── calib_morfeo_*_subaps.yml
+    └── params_workflow_morfeo.yml
+
 Examples:
-  # Run complete workflow
-  python run_calib_workflow_morfeo.py params_morfeo_ref_focus_tiny_initial.yml
+  # Run with all defaults (root_dir from base simulation YAML)
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml
   
-  # Run only first 3 steps
-  python run_calib_workflow_morfeo.py params_morfeo_ref_focus_tiny_initial.yml --steps 1 2 3
+  # Override root_dir (ignore value in simulation YAML)
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml \\
+      --root-dir /raid1/guido/PASSATA/MORFEOtest/
   
-  # Run with overwrite
-  python run_calib_workflow_morfeo.py params_morfeo_ref_focus_tiny_initial.yml --overwrite
+  # Override params directory
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml \\
+      --params-dir /home/guido/pythonLib/SPECULA_scripts/params_morfeo_test/
   
-  # Run on CPU
-  python run_calib_workflow_morfeo.py params_morfeo_ref_focus_tiny_initial.yml --device -1
+  # Override base simulation YAML
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml \\
+      --base-yml /path/to/custom_params_morfeo.yml
+  
+  # Run only specific steps
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml --steps 0 1 2
+  
+  # Run with overwrite on CPU
+  python run_calib_workflow_morfeo.py params_workflow_morfeo.yml \\
+      --overwrite --device -1
         """
     )
     parser.add_argument(
-        "yaml_file",
-        help="Path to initial MORFEO YAML configuration file (template)"
+        "workflow_config",
+        help="Path to workflow configuration YAML"
+    )
+    parser.add_argument(
+        "--base-yml",
+        help="Path to base MORFEO simulation YAML (overrides workflow config). "
+             "The root_dir is extracted from main.root_dir in this file."
     )
     parser.add_argument(
         "--root-dir",
-        default="/raid1/guido/PASSATA/MORFEO/",
-        help="Root directory for calibration files (default: /raid1/guido/PASSATA/MORFEO/)"
+        help="Root directory for SPECULA calibration files "
+             "(overrides main.root_dir from base simulation YAML)"
+    )
+    parser.add_argument(
+        "--params-dir",
+        help="Directory containing parameter YAML files (overrides workflow config)"
     )
     parser.add_argument(
         "--output-dir",
@@ -1156,30 +1435,36 @@ Examples:
         "--steps",
         nargs="+",
         type=int,
-        help="Steps to run (default: all). Example: --steps 1 2 3"
+        help="Steps to run (default: all). Example: --steps 0 1 2"
     )
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing calibration files"
+        help="Overwrite existing calibration files (overrides workflow config)"
     )
     parser.add_argument(
         "--device",
         type=int,
-        default=0,
-        help="GPU device index, -1 for CPU (default: 0)"
+        help="GPU device index, -1 for CPU (overrides workflow config)"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output (overrides workflow config)"
     )
 
     args = parser.parse_args()
 
     # Create and run workflow
     workflow = MORFEOCalibrationWorkflow(
-        base_yml_path=args.yaml_file,
+        workflow_yml_path=args.workflow_config,
+        base_yml_path=args.base_yml,
+        params_dir=args.params_dir,
         root_dir=args.root_dir,
         output_base_dir=args.output_dir,
         device_idx=args.device,
         overwrite=args.overwrite,
-        verbose=True
+        verbose=args.verbose
     )
 
     workflow.run_full_workflow(steps=args.steps)
