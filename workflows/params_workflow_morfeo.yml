@@ -1,0 +1,249 @@
+# MORFEO Calibration Workflow Parameters
+# 
+# This file contains all parameters needed for the automated calibration workflow.
+# It complements the main MORFEO simulation YAML by providing workflow-specific settings.
+
+workflow:
+  # Workflow metadata
+  name: "MORFEO_MCAO_Calibration"
+  description: "Automated calibration pipeline for MORFEO MCAO system"
+  version: "1.0"
+
+# =============================================================================
+# INPUT FILES
+# =============================================================================
+input_files:
+  # Main MORFEO simulation YAML (template)
+  # This can be:
+  # - Relative path (relative to workflow YAML location)
+  # - Absolute path
+  # - null (will be provided via command line)
+  base_simulation_yml: "params_morfeo_ref_focus_tiny_initial.yml"
+  
+  # Directory containing parameter YAML files
+  # If null, uses the directory of this workflow YAML file
+  params_dir: null
+
+# =============================================================================
+# CALIBRATION FILES
+# =============================================================================
+calibration_files:
+  # Subaperture calibration YAML
+  # Path relative to the directory containing the base simulation YAML
+  # Set to null to auto-detect (looks for calib_morfeo_*_subaps.yml)
+  subap_calib_yml: "calib_morfeo_tiny_subaps.yml"
+
+# =============================================================================
+# SYSTEM CONFIGURATION
+# =============================================================================
+system:
+  # Pupil parameters
+  pixel_pupil: 160
+  pixel_pitch: 0.2406  # meters
+  n_petals: 6
+  obsratio: 0.283
+  
+  # Atmospheric parameters
+  r0: 0.15  # Fried parameter in meters (will be updated at runtime)
+  L0: 25.0  # Outer scale in meters
+  fov_arcsec: 160  # Field of view in arcseconds
+
+# =============================================================================
+# DEFORMABLE MIRRORS
+# =============================================================================
+dms:
+  # List of DM configurations
+  # Each DM has: index, altitude (m), number of actuators
+  dm1:
+    index: 1
+    altitude: 600  # meters
+    n_actuators: 41
+    
+  dm2:
+    index: 2
+    altitude: 6500
+    n_actuators: 37
+    
+  dm3:
+    index: 3
+    altitude: 17500
+    n_actuators: 37
+
+# =============================================================================
+# ATMOSPHERIC LAYERS
+# =============================================================================
+layers:
+  # List of atmospheric layer configurations
+  # Each layer has: index, altitude (m), number of actuators
+  layer1:
+    index: 1
+    altitude: 0  # Ground layer
+    n_actuators: 41
+    
+  layer2:
+    index: 2
+    altitude: 2000
+    n_actuators: 41
+    
+  layer3:
+    index: 3
+    altitude: 4500
+    n_actuators: 41
+    
+  layer4:
+    index: 4
+    altitude: 11000
+    n_actuators: 37
+    
+  layer5:
+    index: 5
+    altitude: 15000
+    n_actuators: 37
+    
+  layer6:
+    index: 6
+    altitude: 18000
+    n_actuators: 37
+    
+  layer7:
+    index: 7
+    altitude: 22000
+    n_actuators: 37
+
+# =============================================================================
+# WAVEFRONT SENSORS
+# =============================================================================
+wfs:
+  # LGS parameters
+  lgs:
+    n_wfs: 6
+    filter_n_modes: 1000  # Total modes for reconstruction
+    filter_n_modes_filtered: 3  # Modes to filter (tip, tilt, focus)
+    
+  # NGS parameters
+  ngs:
+    n_wfs: 3
+    n_modes_dm: [2, 0, 3]  # Modes per DM for NGS reconstruction
+    
+  # Reference (REF) parameters
+  ref:
+    n_wfs: 3
+    focus_n_modes: 30  # Modes for focus reconstruction
+    n_modes_dm: [50, 45, 48]  # Modes per DM for REF reconstruction
+
+# =============================================================================
+# RECONSTRUCTION
+# =============================================================================
+reconstruction:
+  # MMSE reconstructor parameters
+  sigma2_in_nm2: 2.0e4  # Noise variance in nm^2
+  noise_elong_model: false  # Use elongation model for LGS noise
+  na_thickness_in_m: 10.0  # Sodium layer thickness (FWHM)
+  tG_parameter: 0.0  # Tallon-Foy parameter
+  
+  # NGS mode selection per DM
+  ngs_n_modes_dm: [2, 0, 3]
+  ngs_n_modes_layer: []  # Empty if not using layers
+  
+  # REF mode selection per DM
+  ref_n_modes_dm: [50, 45, 48]
+  ref_n_modes_layer: []  # Empty if not using layers
+
+# =============================================================================
+# PROJECTION
+# =============================================================================
+projection:
+  # Projection matrix parameters
+  reg_factor: 1.0e-4  # Tikhonov regularization factor
+  
+  # Optical sources for tomographic projection
+  opt_sources:
+    polar_coordinates:
+      # On-axis
+      - [0.0, 0.0]
+      # Inner ring (30 arcsec)
+      - [30.0, 0.0]
+      - [30.0, 90.0]
+      - [30.0, 180.0]
+      - [30.0, 270.0]
+      # Diagonal (45 degrees)
+      - [30.0, 45.0]
+      - [30.0, 135.0]
+      - [30.0, 225.0]
+      - [30.0, 315.0]
+      # Outer ring (80 arcsec)
+      - [80.0, 0.0]
+      - [80.0, 90.0]
+      - [80.0, 180.0]
+      - [80.0, 270.0]
+      # Diagonal
+      - [80.0, 45.0]
+      - [80.0, 135.0]
+      - [80.0, 225.0]
+      - [80.0, 315.0]
+    
+    # Weights for each optical source (same order as coordinates)
+    weights:
+      - 0.5   # On-axis
+      - 1.0   # Inner ring
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0   # Diagonal
+      - 1.0
+      - 1.0
+      - 1.0
+      - 0.05  # Outer ring (lower weight)
+      - 0.05
+      - 0.05
+      - 0.05
+      - 0.05  # Diagonal
+      - 0.05
+      - 0.05
+      - 0.05
+
+# =============================================================================
+# WORKFLOW EXECUTION
+# =============================================================================
+execution:
+  # Device configuration
+  device_idx: 0  # GPU device (-1 for CPU)
+  
+  # File handling
+  overwrite: false  # Whether to overwrite existing calibration files
+  
+  # Output directories (relative to root_dir)
+  output_dirs:
+    workflow: "workflow"  # Timestamped workflow outputs
+    yml: "yml"            # YAML configurations
+    im: "synim"           # Interaction matrices
+    rec: "synrec"         # Reconstructors
+    pm: "synpm"           # Projection matrices
+    cov: "covariance"     # Covariance matrices
+    filtmat: "data"       # Filter matrices
+  
+  # Steps to run (0-10)
+  # Set to null or [] to run all steps
+  steps: null
+  
+  # Verbosity
+  verbose: true
+  
+  # Display plots during computation
+  display: false
+
+# =============================================================================
+# ADVANCED OPTIONS
+# =============================================================================
+advanced:
+  # Covariance computation
+  skip_gpu_covariance: false  # Skip GPU for covariance (use CPU)
+  
+  # Memory optimization
+  minimize_memory: true  # Minimize GPU memory usage during IM computation
+  
+  # Reconstructor options
+  mmse_rcond: 1.0e-14  # Condition number for pseudoinverse
+  
+  # Filter matrix options
+  smooth_tt: true  # Smooth tip/tilt in filter matrices
