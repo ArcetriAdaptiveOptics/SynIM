@@ -18,7 +18,7 @@ input_files:
   # - Relative path (relative to workflow YAML location)
   # - Absolute path
   # - null (will be provided via command line)
-  base_simulation_yml: "params_morfeo_ref_focus_tiny_initial.yml"
+  base_simulation_yml: "params_morfeo_simplified.yml"
   
   # Directory containing parameter YAML files
   # If null, uses the directory of this workflow YAML file
@@ -31,7 +31,7 @@ calibration_files:
   # Subaperture calibration YAML
   # Path relative to the directory containing the base simulation YAML
   # Set to null to auto-detect (looks for calib_morfeo_*_subaps.yml)
-  subap_calib_yml: "calib_morfeo_tiny_subaps.yml"
+  subap_calib_yml: "calib_morfeo_simplified_subaps.yml"
 
 # =============================================================================
 # SYSTEM CONFIGURATION
