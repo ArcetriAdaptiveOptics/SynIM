@@ -4,6 +4,7 @@ sh_subaps_lgs1: &LGS_SA_SH
   subap_on_diameter:  40
   output_tag:        'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot6.2'
   energy_th:         0.2
+  overwrite:        true
   inputs:
     in_i: 'sh_lgs1.out_i'
 
@@ -11,8 +12,13 @@ sh_subaps_lgs2: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589
           inputs: {in_i: sh_lgs2.out_i}}
 sh_subaps_lgs3: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot-6.2',
           inputs: {in_i: sh_lgs3.out_i}}
-# sh_subaps_lgs4, sh_subaps_lgs5, sh_subaps_lgs6 are not considered because they have the same subap configuration
-# as sh_subaps_lgs1, sh_subaps_lgs2, sh_subaps_lgs3 respectively
+# lgs4, lgs5, lgs6 share rotations with lgs1, lgs2, lgs3
+sh_subaps_lgs4: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot6.2',
+          inputs: {in_i: sh_lgs4.out_i}}
+sh_subaps_lgs5: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot14.2',
+          inputs: {in_i: sh_lgs5.out_i}}
+sh_subaps_lgs6: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot-6.2',
+          inputs: {in_i: sh_lgs6.out_i}}
 
 sh_subaps_ngs1:
   class: 'ShSubapCalibrator'
@@ -38,7 +44,6 @@ prop_override:
     common_layer_list: ['pupilstop']
 
 remove: ['atmo',
-        'sh_lgs4', 'sh_lgs5', 'sh_lgs6',
         'detector_lgs1', 'detector_lgs2', 'detector_lgs3', 'detector_lgs4', 'detector_lgs5', 'detector_lgs6',
         'slopec_lgs1', 'slopec_lgs2', 'slopec_lgs3', 'slopec_lgs4', 'slopec_lgs5', 'slopec_lgs6',
         'tomo_polc_lgs',

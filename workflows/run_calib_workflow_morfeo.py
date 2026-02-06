@@ -238,8 +238,8 @@ class MORFEOCalibrationWorkflow:
 
         # Calibration files
         calib_files_config = wf.get('calibration_files', {})
-        self.subap_calib_yml = calib_files_config.get('subap_calib_yml', 
-                                                       'calib_morfeo_tiny_subaps.yml')
+        self.subap_calib_yml = calib_files_config.get('subap_calib_yml',
+                                                       'calib_morfeo_simplified_subaps.yml')
 
         if self.verbose:
             self._log("\nWorkflow parameters loaded:")
@@ -498,10 +498,10 @@ class MORFEOCalibrationWorkflow:
 
             # Verify all files were created
             for wfs_name, tag in expected_tags.items():
-                try:
-                    cm.load('subapdata', tag)
+                subap_data_path = Path(cm.filename('subapdata', tag))
+                if subap_data_path.exists():
                     self._log(f"  ✓ Generated: {wfs_name} → {tag}")
-                except (FileNotFoundError, KeyError):
+                else:
                     self._log(f"  ✗ Failed to generate: {wfs_name} → {tag}")
                     raise RuntimeError(
                         f"SPECULA failed to generate subapdata for {wfs_name} (tag: {tag})"
@@ -600,15 +600,23 @@ class MORFEOCalibrationWorkflow:
         self._log("STEP 3: FILTER MATRICES")
         self._log("="*70)
 
-        lgs_im_paths = self.generated_files.get('lgs_im_paths', [])
-        if not lgs_im_paths:
+        lgs_im_dict = self.generated_files.get('lgs_im_paths', [])
+        if not lgs_im_dict:
             raise RuntimeError("No LGS interaction matrices found. Run step2 first.")
 
+        # Extract Path objects from dictionary values
+        lgs_im_paths = [Path(p) for p in lgs_im_dict.values()]
+
         # Filter only layer 0 IMs (ground level, where filtering is needed)
-        layer0_ims = [p for p in lgs_im_paths if 'layH0.0' in str(p)]
+        layer0_ims = [p for p in lgs_im_paths if 'layH0.0' in p.name]
 
         if not layer0_ims:
+            print("Available LGS IMs:")
+            for p in lgs_im_paths:
+                print(f"  {p.name}")
             raise RuntimeError("No layer 0 interaction matrices found")
+
+        self._log(f"Found {len(layer0_ims)} layer 0 interaction matrices")
 
         filtmat_paths = []
         filtmat_mapping = {}  # unique_id -> filtmat info
@@ -785,12 +793,16 @@ class MORFEOCalibrationWorkflow:
         self._log("STEP 5: FOCUS RECONSTRUCTION MATRIX")
         self._log("="*70)
 
-        ref_im_paths = self.generated_files.get('ref_im_paths', [])
-        if not ref_im_paths:
-            raise RuntimeError("No REF interaction matrices found. Run step4 first.")
+        ref_im_dict = self.generated_files.get('ref_im_paths', {})
+        if not ref_im_dict:
+            raise RuntimeError("No REF interaction matrices found. Run step2 first.")
 
-        # Find the layer 0 REF IM (should be only one)
-        layer0_ref_im = [p for p in ref_im_paths if 'layH0.0' in str(p)]
+        # Extract Path objects from dictionary values
+        ref_im_paths = [Path(p) for p in ref_im_dict.values()]
+
+        # Filter only layer 0 IMs (ground level, where filtering is needed)
+        layer0_ref_im = [p for p in ref_im_paths if 'layH0.0' in p.name]
+
         if not layer0_ref_im:
             raise RuntimeError("No layer 0 REF interaction matrix found")
 

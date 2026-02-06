@@ -2117,8 +2117,10 @@ def compute_influence_functions_and_modalbases(
                 print(f"\n  {comp_name} (altitude {alt} m, {nact} actuators):")
                 print(f"    ✓ {base_name} (already exists)")
 
+            # Look for M2C file first, then fallback to IFunc
             n_modes = None
-    
+            m2c_name = None
+
             # Look for M2C files matching this base name
             m2c_dir = root_dir / "m2c"
             if m2c_dir.exists():
@@ -2131,6 +2133,8 @@ def compute_influence_functions_and_modalbases(
                 if matching_m2c:
                     # Extract n_modes from filename
                     m2c_file = Path(matching_m2c[0])
+                    m2c_name = m2c_file.stem
+
                     # Parse filename: ..._1260modes.fits
                     import re
                     match = re.search(r'_(\d+)modes\.fits$', m2c_file.name)
@@ -2145,26 +2149,27 @@ def compute_influence_functions_and_modalbases(
                     print(f"    M2C not found, loading IFunc to determine n_modes")
                 ifunc_obj = IFunc.restore(str(ifunc_path))
                 n_modes = ifunc_obj.influence_function.shape[0]
+                m2c_name = f"{base_name}_{n_modes}modes"
                 if verbose:
                     print(f"    IFunc shape: {ifunc_obj.influence_function.shape},"
                           f" using {n_modes} modes")
 
             # Store correct tags
             ifunc_tags[comp_name] = base_name
-            m2c_name = f"{base_name}_{n_modes}modes"
             m2c_tags[comp_name] = m2c_name
 
             # For ground layer, check if inverse exists
             if alt == 0:
-                # Need to load to get n_modes
-                ifunc_obj = IFunc.restore(str(ifunc_path))
-                n_modes = ifunc_obj.influence_function.shape[0]
                 inv_name = f"{base_name}_{n_modes}modes_inv"
-                ifunc_inv_tag = inv_name
+                inv_path = root_dir / "ifunc" / f"{inv_name}.fits"
+                if inv_path.exists():
+                    ifunc_inv_tag = inv_name
+                    if verbose:
+                        print(f"    ✓ Found inverse: {inv_name}")
 
-                # Update m2c_tags with actual m2c name
-                m2c_name = f"{base_name}_{n_modes}modes"
-                m2c_tags[comp_name] = m2c_name
+            if verbose:
+                print(f"    ifunc: {base_name}")
+                print(f"    m2c: {m2c_name} ({n_modes} modes)")
 
             continue
 
