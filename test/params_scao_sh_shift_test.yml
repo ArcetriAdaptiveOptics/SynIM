@@ -71,8 +71,8 @@ sh:
   subap_npx:         8                       # Output sampling [usually corresponding to CCD pixels]
   subap_on_diameter: 8                       # Number of subapertures in diameter
   wavelengthInNm:    600                     # [nm] Pyramid wavelength
-  xShiftPhInPixel:   0.2                    # [pix] WFS pupil shift in x
-  yShiftPhInPixel:   0.1                     # [pix] WFS pupil shift in y
+  xShiftPhInPixel:   10.0                    # [pix] WFS pupil shift in x
+  yShiftPhInPixel:   0.0                     # [pix] WFS pupil shift in y
   rotAnglePhInDeg:   0.0                     # [degrees] WFS pupil rotation
   inputs:
     in_ef: 'prop.out_on_axis_source_ef'

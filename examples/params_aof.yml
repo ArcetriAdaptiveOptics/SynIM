@@ -1,0 +1,413 @@
+
+main:
+  class:             'SimulParams'
+  root_dir:          '/raid1/guido/PASSATA/AOF/'         # Root directory for calibration manager  
+  pixel_pupil:       160                    # Linear dimension of pupil phase array
+  pixel_pitch:       0.05                   # [m] Pitch of the pupil phase array
+  total_time:        2.000                  # [s] Total simulation running time
+  time_step:         0.001                  # [s] Simulation time step
+  zenithAngleInDeg:  30.0                   # [deg] Airmass correction
+  display_server:    false                  # Display server on auto-selected port
+
+
+seeing:
+  class:             'WaveGenerator'
+  constant:          0.644                  # ["] seeing value
+  outputs: ['output']
+
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5.786, 6.102,  6.838,  7.364,  8.942, 
+                      18.41, 30.508, 33.664, 28.404, 23.144,
+                      5.786, 8.942,  10.52] # [m/s] Wind speed value
+  outputs: ['output']
+
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [0,    -180, 0, 0,   90,
+                      -180, 90,   0, -90, -90,
+                      180,  -90,  90]   # [degrees] Wind direction value
+  outputs: ['output']
+
+
+source_on_axis:
+  class:             'Source'
+  polar_coordinates:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  magnitude:         8                    # source magnitude
+  wavelengthInNm:    750                   # [nm] wavelength
+
+source_lgs1: &LGS_SOURCE
+  class:             'Source'
+  polar_coordinates:  [10.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  height:            90000                 # Source height [m]
+  magnitude:         5.0                   # source magnitude
+  wavelengthInNm:    589                   # [nm] wavelength
+
+source_lgs2: { <<: *LGS_SOURCE, polar_coordinates: [10.0, 90.0] }
+source_lgs3: { <<: *LGS_SOURCE, polar_coordinates: [10.0, 180.0] }
+source_lgs4: { <<: *LGS_SOURCE, polar_coordinates: [10.0, 270.0] }
+
+source_ngs:
+  class:             'Source'
+  polar_coordinates:  [0.0,0.0]         # [arcsec, degrees] source polar coordinates
+  height:            .inf                # Source height [m]
+  magnitude:         10.0                # source magnitude
+  wavelengthInNm:    1650                # [nm] wavelength
+
+pupilstop:                                 # Default parameters (circular pupil)
+  class: 'Pupilstop'
+  tag: 'mask_160px'
+
+atmo:
+  class:                'AtmoEvolution'
+  simul_params_ref:  'main'
+  L0:                   25                   # [m] Outer scale
+  heights:              [30,    250,   1000, 2000,  3000,
+                         5000,  7000,  9000, 12000, 15000,
+                         18000, 21000, 24000] # [m] layer heights at 0 zenith angle
+  Cn2:                  [0.361931, 0.345035, 0.0398925, 0.0323939, 0.0422920,
+                         0.0259951, 0.0219958, 0.0310041, 0.0489008, 0.0351334,
+                         0.00863836, 0.00431918, 0.00246853] # Cn2 weights (total must be eq 1)
+  fov:      120
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:  'main'
+  source_dict_ref:      ['source_on_axis',
+                         'source_lgs1','source_lgs2','source_lgs3','source_lgs4',
+                         'source_ngs']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: [ 'pupilstop',
+                  'dm.out_layer:-1'
+                  ]
+  outputs: ['out_source_on_axis_ef',
+            'out_source_lgs1_ef', 'out_source_lgs2_ef',
+            'out_source_lgs3_ef', 'out_source_lgs4_ef',
+            'out_source_ngs_ef']            
+
+# ---------------------------------------
+# LGS WFS simulation and slope processing
+# ---------------------------------------
+
+launcher:
+  class:             'LaserLaunchTelescope'
+  simul_params_ref:  'main'
+  spot_size:          1.8
+
+
+sh_lgs1: &LGS_SH
+  class:             'SH'
+  subap_wanted_fov:  5.1                     # Requested field-of-view [arcsec]
+  sensor_pxscale:    0.85                    # Pixel scale in arcsec/pix
+  subap_npx:         6                       # Output sampling [usually corresponding to CCD pixels]
+  subap_on_diameter: 40                      # Number of subapertures in diameter
+  wavelengthInNm:    589                     # [nm] Pyramid wavelength
+  laser_launch_tel_ref: 'launcher'
+  inputs:
+    in_ef: 'prop.out_source_lgs1_ef'
+  outputs:  ['out_i']
+
+sh_lgs2: { <<: *LGS_SH, inputs: {in_ef: 'prop.out_source_lgs2_ef'}}
+sh_lgs3: { <<: *LGS_SH, inputs: {in_ef: 'prop.out_source_lgs3_ef'}}
+sh_lgs4: { <<: *LGS_SH, inputs: {in_ef: 'prop.out_source_lgs4_ef'}}
+
+detector_lgs1: &LGS_DETECTOR
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [240,240]               # Detector size in pixels
+  dt:                0.001                   # [s] Detector integration time
+  bandw:             20                      # [nm] Sensor bandwidth
+  photon_noise:      True                    # activate photon noise
+  readout_noise:     True                    # activate readout noise
+  excess_noise:      True                    # activate excess noise
+  readout_level:     0.5                     # readout noise in [e-/pix/frame]
+  quantum_eff:       0.3                     # quantum efficiency * total transmission
+  inputs:
+    in_i: 'sh_lgs1.out_i'
+  outputs:  ['out_pixels']
+
+detector_lgs2: { <<: *LGS_DETECTOR, inputs: {in_i: 'sh_lgs2.out_i' }}
+detector_lgs3: { <<: *LGS_DETECTOR, inputs: {in_i: 'sh_lgs3.out_i' }}
+detector_lgs4: { <<: *LGS_DETECTOR, inputs: {in_i: 'sh_lgs4.out_i' }}
+
+slopec_lgs1: &LGS_SLOPEC
+  class:             'ShSlopec'
+  subapdata_object:  'aof_ps160p0.05_shs40x40_wl589_fv5.1_np6_th0.20'  # tag of the SH WFS valid SA
+  filtmat_data:      'filtmat_IM_syn_SH40x40_fv5.1_np6_mn2_2'
+  inputs:
+    in_pixels:        'detector_lgs1.out_pixels'
+  outputs:  ['out_slopes', 'out_subapdata']
+
+slopec_lgs2: { <<: *LGS_SLOPEC,
+    inputs: {in_pixels: 'detector_lgs2.out_pixels' }
+    }
+
+slopec_lgs3: { <<: *LGS_SLOPEC,
+    inputs: {in_pixels: 'detector_lgs3.out_pixels' }
+    }
+
+slopec_lgs4: { <<: *LGS_SLOPEC,
+    inputs: {in_pixels: 'detector_lgs4.out_pixels' }
+    }
+
+# ---------------------------------------
+# LO WFS simulation and slope processing
+# ---------------------------------------
+
+sh_ngs:
+  class:             'SH'
+  subap_on_diameter: 1                      # Number of subapertures in diameter
+  subap_wanted_fov:  7.2                    # Requested field-of-view [arcsec]
+  sensor_pxscale:    0.03                   # Pixel scale in arcsec/pix
+  subap_npx:         240                    # Output sampling [usually corresponding to CCD pixels]
+  wavelengthInNm:    1650                   # [nm] Pyramid wavelength
+  inputs:
+    in_ef: 'prop.out_source_ngs_ef'
+  outputs:  ['out_i']
+
+
+detector_ngs:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [240,240]               # Detector size in pixels
+  dt:                0.001                   # [s] Detector integration time
+  bandw:             330                      # [nm] Sensor bandwidth
+  photon_noise:      True                    # activate photon noise
+  readout_noise:     True                    # activate readout noise
+  excess_noise:      True                    # activate excess noise
+  excess_delta:      3.33
+  readout_level:     1.0                     # readout noise in [e-/pix/frame]
+  quantum_eff:       0.4                     # quantum efficiency * total transmission
+  inputs:
+    in_i: 'sh_ngs.out_i'
+  outputs:  ['out_pixels']
+
+
+slopec_ngs:
+  class:             'ShSlopec'
+  weightedPixRad:    1
+  subapdata_object:  'aof_ps160p0.05_shs1x1_wl1650_fv7.2_np240'
+  inputs:
+    in_pixels:        'detector_ngs.out_pixels'
+  outputs:  ['out_slopes', 'out_subapdata']
+
+
+# -----------------------------
+# LGS pipeline
+# -----------------------------
+
+tomo_polc_lgs:
+  class:              'Modalrec'
+  recmat_object:      'synrec/rec_params_aof_lgs_layer_r00.200_L025.0_var200.000nm2' # 10192 slopes x 6851 modes
+  projmat_object:     'synpm/rec_params_aof_tomographic_r1e-04' # 6851 modes x  1253 modes
+  intmat_object:      'synim/im_full_params_aof_lgs_to_dm_filtered' # 1253 modes x 10192 slopes tip/tilt filtered
+  polc:   true
+  input_modes_slice:  [0, 1253] 
+  in_commands_size:   1253
+  inputs:
+    in_slopes_list:        ['slopec_lgs1.out_slopes',
+                            'slopec_lgs2.out_slopes',
+                            'slopec_lgs3.out_slopes',
+                            'slopec_lgs4.out_slopes']
+    in_commands:            'iir_lgs.out_comm_no_delay:-1'
+  outputs:  ['out_modes', 'out_pseudo_ol_modes']
+
+iir_lgs:
+  class:             'Integrator'
+  simul_params_ref:  'main'
+  int_gain: [0.0,0.40]
+  n_modes:  [2,1251]
+  delay: 1.5
+  inputs:
+    delta_comm: 'tomo_polc_lgs.out_modes'
+  outputs:  ['out_comm']
+
+# ----------------
+# LO pipeline
+# ----------------
+
+tomo_ngs:
+  class:              'Modalrec'
+  recmat_object:      'tt_recmat_nmodes2' # NGS at 55asec
+  inputs:
+    in_slopes_list:        ['slopec_ngs.out_slopes']
+  outputs:  ['out_modes']
+
+
+iir_ngs:
+  class:             'Integrator'
+  simul_params_ref:  'main'
+  int_gain: [0.3]
+  n_modes:  [2]
+  delay: 1.5
+  inputs:
+    delta_comm: 'tomo_ngs.out_modes'
+  outputs:  ['out_comm']
+
+# ----------------
+# HO + LO
+# ----------------
+
+slicer_lgs:
+  class:          'BaseSlicer'
+  slice_args:     [2,1253]
+  inputs:
+    in_value: 'iir_lgs.out_comm'
+  outputs:  ['out_value']
+
+modal_combination:
+  class:        'BaseOperation'
+  concat:       True
+  inputs:
+    in_value1: 'iir_ngs.out_comm'
+    in_value2: 'slicer_lgs.out_value'
+  outputs: ['out_value']
+
+# ----------------
+
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_160px_41acts'
+  m2c_object:        'base_160px_41acts_1253modes'
+  nmodes:            1253
+  height:            0                      # DM height [m]
+  inputs:
+    in_command: 'modal_combination.out_value'
+  outputs:  ['out_layer']
+
+
+psf:
+  class:             'PsfCoronagraph'
+  simul_params_ref:  'main'
+  wavelengthInNm:    750                 # [nm] Imaging wavelength
+  pixel_size_mas:    5                   # [mas] Pixel size
+  start_time:        0.05                # PSF integration start time
+  inputs:
+    in_ef:  'prop.out_source_on_axis_ef'
+  outputs:  ['out_psf', 'out_sr', 'out_int_coronagraph_psf']
+
+modal_analysis:
+  class: 'ModalAnalysis'
+  ifunc_inv_object: 'base_160px_41acts_1253modes_inv'
+  inputs:
+    in_ef: 'prop.out_source_on_axis_ef'
+  outputs: ['out_modes']
+
+data_store:
+  class:             'DataStore'
+  store_dir:         '/raid1/guido/results/AOF/specula/'             # Data result directory: 'store_dir'/TN/
+  inputs:
+    input_list: ['resMod-modal_analysis.out_modes',
+                 'deltaCommLgs-tomo_polc_lgs.out_modes',
+                 'deltaCommNgs-tomo_ngs.out_modes',
+                 'comm-modal_combination.out_value',
+                 'psf-psf.out_int_psf',
+                 'psf_coro-psf.out_int_coronagraph_psf',
+                 'psf_std-psf.out_std_psf',
+                 'psf_coro_std-psf.out_std_coronagraph_psf',
+                 'srRes-psf.out_sr']
+
+
+# modes_disp:
+#   class:            'ModesDisplay'
+#   inputs:
+#     modes:          'modal_analysis.out_modes'
+#   title:            'residual modes'
+#   xrange:           [0, 1253]
+#   yrange:           [-75.0, 75.0]
+
+
+# ph_disp:
+#   class:            'PhaseDisplay'
+#   inputs:
+#     phase:          'prop.out_source_on_axis_ef'
+#   title:            'PUPIL PHASE'
+
+# --- --- --- layers / virtual DMs --- --- --- #
+
+layer1:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_160px_41acts'
+  m2c_object:        'base_160px_41acts_1253modes'
+  nmodes:            1253
+  height:            0                         # DM height [m]
+
+layer2:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_184px_41acts'
+  m2c_object:        'base_184px_41acts_1260modes'
+  nmodes:            1260
+  height:            2000                      # DM height [m]
+
+layer3:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_214px_41acts'
+  m2c_object:        'base_214px_41acts_1260modes'
+  nmodes:            1260
+  height:            4500                      # DM height [m]
+
+layer4:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_288px_37acts'
+  m2c_object:        'base_288px_37acts_1026modes'
+  nmodes:            1026
+  height:            11000                     # DM height [m]
+
+layer5:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_336px_37acts'
+  m2c_object:        'base_336px_37acts_1026modes'
+  nmodes:            1026
+  height:            15000                     # DM height [m]
+
+layer6:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'base_370px_37acts'
+  m2c_object:        'base_370px_37acts_1026modes'
+  nmodes:            1026
+  height:            18000                     # DM height [m]
+
+
+reconstruction:
+  sigma2inNm2:  2e2
+
+  # Modes to use for NGS reconstruction
+  ngs_n_modes_dm:  [2]      # Number of modes per DM for NGS (tip-tilt only)
+  ngs_n_modes_layer: []     # Number of modes per layer for NGS (empty = none)
+
+  # Modes to use for REF reconstruction  
+  ref_n_modes_dm:  []      # Number of modes per DM for REF (focus only)
+  ref_n_modes_layer: []     # Number of modes per layer for REF (empty = none)
+
+projection:
+  reg_factor: 1e-4
+  ifunc_inverse_tag: 'base_160px_41acts_1253modes_inv'
+  opt_sources:
+    polar_coordinates: [[0.0, 0.0]]  # [radius, angle] in arcsec, degrees
+    weights: [1.0]
+    # polar_coordinates: [[0.0, 0.0],
+    #               [5.0, 0.0],  [5.0, 90.0],  [5.0, 180.0], [5.0, 270.0],
+    #               [5.0, 45.0], [5.0, 135.0], [5.0, 225.0], [5.0, 315.0],
+    #               [60.0, 0.0],  [60.0, 90.0],  [60.0, 180.0], [60.0, 270.0],
+    #               [60.0, 45.0], [60.0, 135.0], [60.0, 225.0], [60.0, 315.0]]  # [radius, angle] in arcsec, degrees
+    # weights: [1.0,
+    #           1.0,  1.0,  1.0,  1.0,
+    #           1.0,  1.0,  1.0,  1.0,
+    #           0.01, 0.01, 0.01, 0.01,
+    #           0.01, 0.01, 0.01, 0.01]
