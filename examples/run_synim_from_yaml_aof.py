@@ -112,6 +112,7 @@ result = params_mgr.compute_tomographic_reconstructor(
     noise_variance=noise_variance,
     C_noise=C_noise,
     output_dir=output_rec_dir,
+    skip_gpu_covariance=False,
     save=True,  # Save the reconstructor
     verbose=True
 )
@@ -157,131 +158,99 @@ if result['rec_filename']:
 
 print(f"{'='*70}\n")
 
-# ===================================================================
-# Visualizations
-# ===================================================================
-print(f"Creating visualizations...")
+visualize = False
 
-# 1. Reconstructor matrix (log scale, normalized)
-vmin, vmax = v_min_max(reconstructor)
-plt.figure(figsize=(12, 8))
-plt.imshow(np.abs(reconstructor), cmap='seismic', aspect='auto',
-           norm=LogNorm(vmin=vmin,
-                        vmax=vmax))
-plt.colorbar(label='|Reconstructor| (log scale)')
-plt.title(f"Tomographic Reconstructor ({wfs_type.upper()}→{component_type})\n"
-          f"r0={r0}m, L0={L0}m")
-plt.xlabel("Slope Index")
-plt.ylabel("Mode Index")
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "reconstructor_matrix_log.png"), dpi=150)
-print(f"  ✓ Saved reconstructor_matrix_log.png")
+if visualize:
+    # ===================================================================
+    # Visualizations
+    # ===================================================================
+    print(f"Creating visualizations...")
 
-# 2. Interaction matrix (log scale)
-vmin, vmax = v_min_max(im_full)
-plt.figure(figsize=(12, 8))
-plt.imshow(np.abs(im_full), cmap='viridis', aspect='auto',
-           norm=LogNorm(vmin=vmin,
-                        vmax=vmax))
-plt.colorbar(label='|IM| (log scale)')
-plt.title(f"Interaction Matrix ({wfs_type.upper()}→{component_type})")
-plt.xlabel("Slope Index")
-plt.ylabel("Mode Index")
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "interaction_matrix_log.png"), dpi=150)
-print(f"  ✓ Saved interaction_matrix_log.png")
+    # 1. Reconstructor matrix (log scale, normalized)
+    vmin, vmax = v_min_max(reconstructor)
+    plt.figure(figsize=(12, 8))
+    plt.imshow(np.abs(reconstructor), cmap='seismic', aspect='auto',
+            norm=LogNorm(vmin=vmin,
+                            vmax=vmax))
+    plt.colorbar(label='|Reconstructor| (log scale)')
+    plt.title(f"Tomographic Reconstructor ({wfs_type.upper()}→{component_type})\n"
+            f"r0={r0}m, L0={L0}m")
+    plt.xlabel("Slope Index")
+    plt.ylabel("Mode Index")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "reconstructor_matrix_log.png"), dpi=150)
+    print(f"  ✓ Saved reconstructor_matrix_log.png")
 
-# 3. Atmospheric PRECISION matrix (log scale)
-vmin, vmax = v_min_max(C_atm_full)
-plt.figure(figsize=(10, 8))
-plt.imshow(np.abs(C_atm_full), cmap='viridis',
-           norm=LogNorm(vmin=vmin, vmax=vmax))
-plt.colorbar(label='|Precision| [rad⁻²] (log scale)')
-plt.title(f"Atmospheric Precision Matrix (Inverse Covariance)\n"
-          f"r0={r0}m, L0={L0}m")
-plt.xlabel("Mode Index")
-plt.ylabel("Mode Index")
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "atmospheric_precision_log.png"), dpi=150)
-print(f"  ✓ Saved atmospheric_precision_log.png")
+    # 2. Interaction matrix (log scale)
+    vmin, vmax = v_min_max(im_full)
+    plt.figure(figsize=(12, 8))
+    plt.imshow(np.abs(im_full), cmap='viridis', aspect='auto',
+            norm=LogNorm(vmin=vmin,
+                            vmax=vmax))
+    plt.colorbar(label='|IM| (log scale)')
+    plt.title(f"Interaction Matrix ({wfs_type.upper()}→{component_type})")
+    plt.xlabel("Slope Index")
+    plt.ylabel("Mode Index")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "interaction_matrix_log.png"), dpi=150)
+    print(f"  ✓ Saved interaction_matrix_log.png")
 
-# 4. Noise PRECISION matrix (zoomed on first WFS, log scale)
-n_slopes_per_wfs = result['n_slopes_per_wfs']
-vmin, vmax = v_min_max(C_noise)
-plt.figure(figsize=(10, 8))
-plt.imshow(np.abs(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs]), 
-           cmap='viridis',
-           norm=LogNorm(vmin=vmin, vmax=vmax))
-plt.colorbar(label='|Noise precision| [rad⁻²] (log scale)')
-plt.title(f"Noise Precision Matrix (Inverse Covariance) - First WFS")
-plt.xlabel("Slope Index")
-plt.ylabel("Slope Index")
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "noise_precision_log.png"), dpi=150)
-print(f"  ✓ Saved noise_precision_log.png")
+    # 3. Atmospheric PRECISION matrix (log scale)
+    vmin, vmax = v_min_max(C_atm_full)
+    plt.figure(figsize=(10, 8))
+    plt.imshow(np.abs(C_atm_full), cmap='viridis',
+            norm=LogNorm(vmin=vmin, vmax=vmax))
+    plt.colorbar(label='|Precision| [rad⁻²] (log scale)')
+    plt.title(f"Atmospheric Precision Matrix (Inverse Covariance)\n"
+            f"r0={r0}m, L0={L0}m")
+    plt.xlabel("Mode Index")
+    plt.ylabel("Mode Index")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "atmospheric_precision_log.png"), dpi=150)
+    print(f"  ✓ Saved atmospheric_precision_log.png")
 
-# 5. Diagonal of IM @ Reconstructor
-plt.figure(figsize=(10, 6))
-diag_rec_im = np.diag(reconstructor @ im_full)
-plt.plot(diag_rec_im, '.-')
-plt.xlabel('Mode Index')
-plt.ylabel('Diagonal value')
-plt.title('Diagonal of Reconstructor @ IM')
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "diag_reconstructor_im.png"), dpi=150)
-print(f"  ✓ Saved diag_reconstructor_im.png")
+    # 4. Noise PRECISION matrix (zoomed on first WFS, log scale)
+    n_slopes_per_wfs = result['n_slopes_per_wfs']
+    vmin, vmax = v_min_max(C_noise)
+    plt.figure(figsize=(10, 8))
+    plt.imshow(np.abs(C_noise[:2*n_slopes_per_wfs, :2*n_slopes_per_wfs]), 
+            cmap='viridis',
+            norm=LogNorm(vmin=vmin, vmax=vmax))
+    plt.colorbar(label='|Noise precision| [rad⁻²] (log scale)')
+    plt.title(f"Noise Precision Matrix (Inverse Covariance) - First WFS")
+    plt.xlabel("Slope Index")
+    plt.ylabel("Slope Index")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "noise_precision_log.png"), dpi=150)
+    print(f"  ✓ Saved noise_precision_log.png")
 
-# 6. Diagonal of the inverse atmospheric covariance
-plt.figure(figsize=(10, 6))
-diag_cov = np.diag(C_atm_full)
-plt.plot(diag_cov, '.-')
-plt.xlabel('Mode Index')
-plt.ylabel('Precision [rad⁻²]')
-plt.title('Diagonal of the Inverse Atmospheric Covariance Matrix')
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.savefig(os.path.join(output_rec_dir, "diag_precision_atmospheric.png"), dpi=150)
-print(f"  ✓ Saved diag_precision_atmospheric.png")
+    # 5. Diagonal of IM @ Reconstructor
+    plt.figure(figsize=(10, 6))
+    diag_rec_im = np.diag(reconstructor @ im_full)
+    plt.plot(diag_rec_im, '.-')
+    plt.xlabel('Mode Index')
+    plt.ylabel('Diagonal value')
+    plt.title('Diagonal of Reconstructor @ IM')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "diag_reconstructor_im.png"), dpi=150)
+    print(f"  ✓ Saved diag_reconstructor_im.png")
 
-# Show all plots
-plt.show()
+    # 6. Diagonal of the inverse atmospheric covariance
+    plt.figure(figsize=(10, 6))
+    diag_cov = np.diag(C_atm_full)
+    plt.plot(diag_cov, '.-')
+    plt.xlabel('Mode Index')
+    plt.ylabel('Precision [rad⁻²]')
+    plt.title('Diagonal of the Inverse Atmospheric Covariance Matrix')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_rec_dir, "diag_precision_atmospheric.png"), dpi=150)
+    print(f"  ✓ Saved diag_precision_atmospheric.png")
 
-print(f"\n{'='*70}")
-print(f"All visualizations saved to: {output_rec_dir}")
-print(f"{'='*70}\n")
+    # Show all plots
+    plt.show()
 
-# ===================================================================
-# Optional: Analysis
-# ===================================================================
-print(f"{'='*70}")
-print(f"PERFORMANCE ANALYSIS")
-print(f"{'='*70}")
-
-# Condition number analysis
-from numpy.linalg import svd, cond
-
-print(f"\nInteraction Matrix:")
-print(f"  Condition number: {cond(im_full):.2e}")
-u, s, vh = svd(im_full, full_matrices=False)
-print(f"  Singular values: min={s.min():.2e}, max={s.max():.2e}")
-print(f"  Rank: {np.sum(s > s.max() * 1e-10)}/{len(s)}")
-
-print(f"\nAtmospheric Precision Matrix (Cx^(-1)):")
-print(f"  Condition number: {cond(C_atm_full):.2e}")
-eigenvalues = np.linalg.eigvalsh(C_atm_full)
-print(f"  Eigenvalues: min={eigenvalues.min():.2e}, max={eigenvalues.max():.2e}")
-
-print(f"\nNoise Precision Matrix (Cz^(-1)):")
-noise_diag = np.diag(C_noise)
-print(f"  Mean precision: {noise_diag.mean():.2e} rad⁻²")
-print(f"  Std precision: {noise_diag.std():.2e} rad⁻²")
-print(f"  Equivalent noise variance: {1.0/noise_diag.mean():.2e} rad²")
-
-print(f"\nReconstructor Statistics:")
-print(f"  Mean: {reconstructor.mean():.2e}")
-print(f"  Std: {reconstructor.std():.2e}")
-print(f"  Max abs: {np.abs(reconstructor).max():.2e}")
-print(f"  Sparsity: {100 * np.sum(reconstructor == 0) / reconstructor.size:.1f}%")
-
-print(f"{'='*70}\n")
+    print(f"\n{'='*70}")
+    print(f"All visualizations saved to: {output_rec_dir}")
+    print(f"{'='*70}\n")

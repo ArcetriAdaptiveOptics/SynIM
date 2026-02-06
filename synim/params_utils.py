@@ -4,8 +4,10 @@ import os
 import re
 import yaml
 import datetime
+from pathlib import Path
 import numpy as np
-
+from astropy.io import fits
+    
 from synim import cpuArray, to_xp, cpu_float_dtype
 
 # Import all utility functions from utils
@@ -16,12 +18,18 @@ specula.init(device_idx=-1, precision=1)
 
 from specula.calib_manager import CalibManager
 from specula.data_objects.ifunc import IFunc
+from specula.data_objects.ifunc_inv import IFuncInv
 from specula.data_objects.m2c import M2C
 from specula.data_objects.simul_params import SimulParams
 from specula.data_objects.pupilstop import Pupilstop
 from specula.data_objects.subap_data import SubapData
+from specula.data_objects.intmat import Intmat
 from specula.lib.compute_zern_ifunc import compute_zern_ifunc
-
+from specula.lib.compute_zonal_ifunc import compute_zonal_ifunc
+from specula.lib.make_mask import make_mask
+from specula.lib.modal_base_generator import make_modal_base_from_ifs_fft
+from specula import np as specula_np, xp as specula_xp, cpuArray
+    
 
 def is_simple_config(config):
     """
@@ -289,7 +297,6 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False, is_inver
             return dm_array, dm_mask
 
     elif 'type_str' in dm_params:
-        # ... existing code for Zernike generation ...
         if verbose:
             print(f"     Loading influence function from type_str: {dm_params['type_str']}")
 
@@ -1925,6 +1932,662 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     return cpuArray(W_mmse)
 
 
+def compute_influence_functions_and_modalbases(
+    root_dir,
+    pixel_pupil,
+    pixel_pitch,
+    dm_altitudes,
+    dm_nacts,
+    layer_altitudes,
+    layer_nacts,
+    fov_arcsec=160,
+    n_petals=6,
+    obsratio=0.283,
+    r0=0.15,
+    L0=25.0,
+    overwrite=False,
+    verbose=False,
+    return_pupil_mask=True
+):
+    """
+    Compute influence functions and modal bases for DMs and atmospheric layers.
+    
+    This is a general-purpose function that can be used in workflows or standalone.
+    It generates:
+    - Pupil mask with spider (optional petals)
+    - Influence functions for DMs at specified altitudes
+    - Influence functions for atmospheric layers
+    - Modal bases (KL modes) and M2C matrices
+    - Inverse modal base for ground layer (altitude 0)
+    
+    Args:
+        root_dir (str or Path): Root directory for saving calibration files
+        pixel_pupil (int): Number of pixels across pupil diameter
+        pixel_pitch (float): Pixel size in meters
+        dm_altitudes (list): List of DM altitudes in meters
+        dm_nacts (list): List of number of actuators for each DM
+        layer_altitudes (list): List of atmospheric layer altitudes in meters
+        layer_nacts (list): List of number of actuators for each layer
+        fov_arcsec (float, optional): Field of view in arcseconds. Default: 160
+        n_petals (int, optional): Number of spider petals. Default: 6
+        obsratio (float, optional): Central obstruction ratio. Default: 0.283
+        r0 (float, optional): Fried parameter in meters. Default: 0.15
+        L0 (float, optional): Outer scale in meters. Default: 25.0
+        overwrite (bool, optional): Whether to overwrite existing files. Default: False
+        verbose (bool, optional): Whether to print detailed information. Default: False
+        return_pupil_mask (bool, optional): Whether to return the pupil mask. Default: True
+        
+    Returns:
+        dict: Dictionary with:
+            - 'pupil_mask_tag': Tag for the saved pupil mask
+            - 'pupil_mask': Pupil mask array (if return_pupil_mask=True)
+            - 'ifunc_tags': Dict mapping component names to ifunc tags
+            - 'm2c_tags': Dict mapping component names to m2c tags
+            - 'ifunc_inv_tag': Tag for the inverse basis (ground layer)
+            - 'dm_indices': List of DM indices
+            - 'layer_indices': List of layer indices
+            
+    Example:
+        >>> result = compute_influence_functions_and_modalbases(
+        ...     root_dir='/path/to/calib',
+        ...     pixel_pupil=160,
+        ...     pixel_pitch=0.2406,
+        ...     dm_altitudes=[600, 6500, 17500],
+        ...     dm_nacts=[41, 37, 37],
+        ...     layer_altitudes=[0, 2000, 4500, 11000, 15000, 18000, 22000],
+        ...     layer_nacts=[41, 41, 41, 37, 37, 37, 37]
+        ... )
+        >>> print(result['ifunc_tags'])
+        >>> print(result['m2c_tags'])
+    """
+    # Convert root_dir to Path
+    root_dir = Path(root_dir)
+
+    # Calculate telescope diameter
+    telescope_diameter = pixel_pupil * pixel_pitch
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"COMPUTING INFLUENCE FUNCTIONS AND MODAL BASES")
+        print(f"{'='*70}")
+        print(f"  Root directory: {root_dir}")
+        print(f"  Pupil: {pixel_pupil} px × {pixel_pitch:.4f} m = {telescope_diameter:.2f} m")
+        print(f"  FOV: {fov_arcsec} arcsec")
+        print(f"  Obstruction ratio: {obsratio}")
+        print(f"  Spider petals: {n_petals}")
+        print(f"  r0: {r0} m, L0: {L0} m")
+        print(f"{'='*70}\n")
+
+    # Validate inputs
+    if len(dm_altitudes) != len(dm_nacts):
+        raise ValueError(f"dm_altitudes ({len(dm_altitudes)}) and dm_nacts ({len(dm_nacts)}) "
+                        f"must have the same length")
+
+    if len(layer_altitudes) != len(layer_nacts):
+        raise ValueError(f"layer_altitudes ({len(layer_altitudes)}) and layer_nacts"
+                        f" ({len(layer_nacts)}) must have the same length")
+
+    # Combine all altitudes and actuator counts
+    all_altitudes = dm_altitudes + layer_altitudes
+    all_nacts = dm_nacts + layer_nacts
+    component_types = ['dm'] * len(dm_altitudes) + ['layer'] * len(layer_altitudes)
+    component_indices = list(range(1, len(dm_altitudes) + 1)) + \
+                       list(range(1, len(layer_altitudes) + 1))
+
+    # Calculate meta pupil sizes
+    ARCSEC2RAD = np.pi / (180.0 * 3600.0)
+    meta_pupil_size_m = fov_arcsec * ARCSEC2RAD * np.array(all_altitudes) + telescope_diameter
+    meta_pupil_size_px = (np.ceil(meta_pupil_size_m / pixel_pitch / 2) * 2).astype(int)
+
+    if verbose:
+        print(f"Meta pupil sizes:")
+        print(f"  In meters: {meta_pupil_size_m}")
+        print(f"  In pixels: {meta_pupil_size_px}")
+
+    # ==================== CREATE PUPIL MASK ====================
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"1. Creating Pupil Mask")
+        print(f"{'='*70}")
+
+    mask_name = f"mask_{pixel_pupil}px_{n_petals}petals"
+    mask_path = root_dir / "pupilstop" / f"{mask_name}.fits"
+
+    simul_params = SimulParams(
+        pixel_pupil=int(pixel_pupil),
+        pixel_pitch=float(pixel_pitch)
+    )
+
+    if mask_path.exists() and not overwrite:
+        # restore mask
+        pupilstop_obj = Pupilstop.restore(mask_path)
+        pupil_mask = pupilstop_obj.get_value()
+    else:
+        pupil_mask = make_mask(
+            int(pixel_pupil),
+            obsratio=obsratio,
+            diaratio=1.0,
+            xp=specula_np,
+            spider=True,
+            spider_width=1,
+            n_petals=n_petals
+        )
+
+        # Save pupil mask
+        pupilstop_obj = Pupilstop(simul_params, input_mask=pupil_mask)
+
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+        pupilstop_obj.save(str(mask_path), overwrite=overwrite)
+
+        if verbose:
+            print(f"  ✓ Saved pupil mask: {mask_name}")
+            print(f"    Valid pixels: {np.sum(pupil_mask > 0.5)}")
+
+    # ==================== COMPUTE INFLUENCE FUNCTIONS ====================
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"2. Computing Influence Functions and Modal Bases")
+        print(f"{'='*70}")
+
+    ifunc_tags = {}
+    m2c_tags = {}
+    ifunc_inv_tag = None
+
+    for i, (alt, nact, comp_type, comp_idx) in enumerate(
+        zip(all_altitudes, all_nacts, component_types, component_indices)
+    ):
+        meta_px = int(meta_pupil_size_px[i])
+
+        # Build base name
+        base_name = f"base_{meta_px}px_{nact}acts"
+        mask_for_ifunc = None
+
+        # Add petals only for ground layer (altitude 0)
+        if alt == 0:
+            base_name += f"_{n_petals}petals"
+            mask_for_ifunc = specula_xp.asarray(pupil_mask, dtype=specula_xp.float32)
+
+        comp_name = f"{comp_type}{comp_idx}"
+
+        # Check if already exists
+        ifunc_path = root_dir / "ifunc" / f"{base_name}.fits"
+
+        if ifunc_path.exists() and not overwrite:
+            if verbose:
+                print(f"\n  {comp_name} (altitude {alt} m, {nact} actuators):")
+                print(f"    ✓ {base_name} (already exists)")
+
+            # Look for M2C file first, then fallback to IFunc
+            n_modes = None
+            m2c_name = None
+
+            # Look for M2C files matching this base name
+            m2c_dir = root_dir / "m2c"
+            if m2c_dir.exists():
+                import glob
+                # Pattern: base_XXpx_YYacts_ZZZZmodes.fits or
+                # base_XXpx_YYacts_Npetals_ZZZZmodes.fits
+                pattern = str(m2c_dir / f"{base_name}_*modes.fits")
+                matching_m2c = glob.glob(pattern)
+
+                if matching_m2c:
+                    # Extract n_modes from filename
+                    m2c_file = Path(matching_m2c[0])
+                    m2c_name = m2c_file.stem
+
+                    # Parse filename: ..._1260modes.fits
+                    import re
+                    match = re.search(r'_(\d+)modes\.fits$', m2c_file.name)
+                    if match:
+                        n_modes = int(match.group(1))
+                        if verbose:
+                            print(f"    Found M2C: {m2c_file.name} ({n_modes} modes)")
+
+            # Fallback: load IFunc if M2C not found
+            if n_modes is None:
+                if verbose:
+                    print(f"    M2C not found, loading IFunc to determine n_modes")
+                ifunc_obj = IFunc.restore(str(ifunc_path))
+                n_modes = ifunc_obj.influence_function.shape[0]
+                m2c_name = f"{base_name}_{n_modes}modes"
+                if verbose:
+                    print(f"    IFunc shape: {ifunc_obj.influence_function.shape},"
+                          f" using {n_modes} modes")
+
+            # Store correct tags
+            ifunc_tags[comp_name] = base_name
+            m2c_tags[comp_name] = m2c_name
+
+            # For ground layer, check if inverse exists
+            if alt == 0:
+                inv_name = f"{base_name}_{n_modes}modes_inv"
+                inv_path = root_dir / "ifunc" / f"{inv_name}.fits"
+                if inv_path.exists():
+                    ifunc_inv_tag = inv_name
+                    if verbose:
+                        print(f"    ✓ Found inverse: {inv_name}")
+
+            if verbose:
+                print(f"    ifunc: {base_name}")
+                print(f"    m2c: {m2c_name} ({n_modes} modes)")
+
+            continue
+
+        if verbose:
+            print(f"\n  {comp_name} (altitude {alt} m, {nact} actuators):")
+            print(f"    Computing {base_name}...")
+
+        # Compute influence functions
+        influence_functions, meta_pupil_mask = compute_zonal_ifunc(
+            dim=meta_px,
+            n_act=nact,
+            circ_geom=True,
+            angle_offset=0,
+            mask=mask_for_ifunc,
+            xp=specula_xp,
+            dtype=specula_xp.float32,
+            return_coordinates=False
+        )
+
+        if verbose:
+            print(f"    Influence functions shape: {influence_functions.shape}")
+
+        # Calculate modal base
+        kl_basis, m2c, singular_values = make_modal_base_from_ifs_fft(
+            pupil_mask=meta_pupil_mask,
+            diameter=telescope_diameter,
+            influence_functions=influence_functions,
+            r0=r0,
+            L0=L0,
+            zern_modes=5,
+            oversampling=2,
+            if_max_condition_number=1e4,
+            xp=specula_xp,
+            dtype=specula_xp.float32,
+            verbose=False
+        )
+
+        n_modes = kl_basis.shape[0]
+
+        if verbose:
+            print(f"    Modal base: {n_modes} modes")
+
+        # Save ifunc
+        ifunc_path.parent.mkdir(parents=True, exist_ok=True)
+        IFunc(ifunc=influence_functions, mask=meta_pupil_mask).save(
+            str(ifunc_path),
+            overwrite=overwrite
+        )
+
+        # Save m2c
+        m2c_name = f"{base_name}_{n_modes}modes"
+        m2c_path = root_dir / "m2c" / f"{m2c_name}.fits"
+        m2c_path.parent.mkdir(parents=True, exist_ok=True)
+        M2C(m2c=m2c).save(
+            str(m2c_path),
+            overwrite=overwrite
+        )
+
+        ifunc_tags[comp_name] = base_name
+        m2c_tags[comp_name] = m2c_name
+
+        # For ground layer, also save inverse
+        if alt == 0:
+            kl_basis_inv = np.linalg.pinv(cpuArray(kl_basis))
+            inv_name = f"{base_name}_{n_modes}modes_inv"
+
+            inv_path = root_dir / "ifunc" / f"{inv_name}.fits"
+            IFuncInv(ifunc_inv=kl_basis_inv, mask=pupil_mask).save(
+                str(inv_path),
+                overwrite=overwrite
+            )
+            ifunc_inv_tag = inv_name
+
+            if verbose:
+                print(f"    ✓ Saved: {base_name}")
+                print(f"    ✓ Saved: {m2c_name}")
+                print(f"    ✓ Saved inverse: {inv_name}")
+        else:
+            if verbose:
+                print(f"    ✓ Saved: {base_name}")
+                print(f"    ✓ Saved: {m2c_name}")
+
+    # ==================== SUMMARY ====================
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"COMPUTATION COMPLETE")
+        print(f"{'='*70}")
+        print(f"  Generated {len(ifunc_tags)} influence function sets")
+
+        # Show what keys were generated
+        dm_keys = [k for k in ifunc_tags.keys() if k.startswith('dm')]
+        layer_keys = [k for k in ifunc_tags.keys() if k.startswith('layer')]
+        print(f"  DM keys: {dm_keys}")
+        print(f"  Layer keys: {layer_keys}")
+
+        if ifunc_inv_tag:
+            print(f"  Inverse basis: {ifunc_inv_tag}")
+        print(f"{'='*70}\n")
+
+    # ==================== RETURN RESULTS ====================
+    result = {
+        'pupil_mask_tag': mask_name,
+        'ifunc_tags': ifunc_tags,
+        'm2c_tags': m2c_tags,
+        'ifunc_inv_tag': ifunc_inv_tag,
+        'dm_indices': list(range(1, len(dm_altitudes) + 1)),
+        'layer_indices': list(range(1, len(layer_altitudes) + 1))
+    }
+
+    if return_pupil_mask:
+        result['pupil_mask'] = pupil_mask
+
+    return result
+
+
+def generate_filter_matrix_from_intmat(
+    intmat,
+    n_modes,
+    n_modes_filtered,
+    cut_modes=0,
+    w_vec=None,
+    smooth_tt=True,
+    verbose=False
+):
+    """
+    Generate a filter matrix from an interaction matrix.
+    
+    Creates a filtmat that can be used to filter specific modes (typically tip, tilt, focus)
+    from WFS slopes. The filtmat contains both the interaction matrix subset and the
+    corresponding reconstruction matrix.
+    
+    Args:
+        intmat (numpy.ndarray or Intmat): Interaction matrix [n_slopes, n_modes_total]
+                                          or SPECULA Intmat object
+        n_modes (int): Number of modes to use for reconstruction
+        n_modes_filtered (int): Number of modes to filter out (e.g., 3 for tip/tilt/focus)
+        cut_modes (int, optional): Number of singular values to cut in SVD. Default: 0
+        w_vec (numpy.ndarray, optional): Weight vector for reconstruction. Default: None
+        smooth_tt (bool, optional): Whether to smooth tip/tilt slopes by replacing with median.
+                                   Default: True
+        verbose (bool, optional): Whether to print detailed information. Default: False
+        
+    Returns:
+        tuple: (intmat_subset, recmat_subset)
+            - intmat_subset: Interaction matrix for filtered modes [n_slopes, n_modes_filtered]
+            - recmat_subset: Reconstruction matrix for filtered modes [n_modes_filtered, n_slopes]
+            
+    Example:
+        >>> from specula.data_objects.intmat import Intmat
+        >>> intmat_obj = Intmat.restore('intmat.fits')
+        >>> im_filt, rec_filt = generate_filter_matrix_from_intmat(
+        ...     intmat_obj, n_modes=1000, n_modes_filtered=3
+        ... )
+        >>> print(f"Filter IM: {im_filt.shape}, Filter rec: {rec_filt.shape}")
+    """
+
+    # Handle Intmat object
+    if isinstance(intmat, Intmat):
+        intmat_obj = intmat
+        intmat_array = cpuArray(intmat_obj.intmat)
+    else:
+        intmat_array = cpuArray(intmat)
+        # Create temporary Intmat object for generate_rec
+        intmat_obj = Intmat(intmat=intmat_array)
+
+    if verbose:
+        print(f"Generating filter matrix:")
+        print(f"  Original intmat shape: {intmat_array.shape}")
+        print(f"  Using {n_modes} modes for reconstruction")
+        print(f"  Filtering {n_modes_filtered} modes")
+
+    # Generate reconstruction matrix using the first n_modes
+    recmat_obj = intmat_obj.generate_rec(
+        nmodes=n_modes,
+        cut_modes=cut_modes,
+        w_vec=w_vec,
+        interactive=False
+    )
+
+    if verbose:
+        print(f"  Generated recmat shape: {recmat_obj.recmat.shape}")
+
+    # Extract subset of interaction matrix (first n_modes_filtered columns)
+    # Shape: [n_slopes, n_modes_filtered]
+    intmat_subset = intmat_array[:, :n_modes_filtered].copy()
+
+    # Smooth tip/tilt values if requested
+    if smooth_tt and n_modes_filtered >= 2:
+        n_slopes = intmat_subset.shape[0]
+        n_slopes_per_axis = n_slopes // 2
+
+        # Smooth first two modes (tip and tilt)
+        # X slopes (first half) and Y slopes (second half) are smoothed separately
+        for i in range(min(2, n_modes_filtered)):
+            # X slopes
+            intmat_subset[:n_slopes_per_axis, i] = np.median(
+                intmat_subset[:n_slopes_per_axis, i]
+            )
+            # Y slopes
+            intmat_subset[n_slopes_per_axis:, i] = np.median(
+                intmat_subset[n_slopes_per_axis:, i]
+            )
+
+        if verbose:
+            print(f"  Smoothed tip/tilt slopes using median values")
+
+    # Extract subset of reconstruction matrix (first n_modes_filtered rows)
+    # Shape: [n_modes_filtered, n_slopes]
+    recmat_subset = recmat_obj.recmat[:n_modes_filtered, :].copy()
+
+    if verbose:
+        print(f"  Filter intmat shape: {intmat_subset.shape}")
+        print(f"  Filter recmat shape: {recmat_subset.shape}")
+        print(f"  Intmat range: [{intmat_subset.min():.3e}, {intmat_subset.max():.3e}]")
+        print(f"  Recmat range: [{recmat_subset.min():.3e}, {recmat_subset.max():.3e}]")
+
+    return intmat_subset, recmat_subset
+
+
+def save_filter_matrix(
+    intmat_subset,
+    recmat_subset,
+    output_filename,
+    overwrite=False,
+    verbose=False
+):
+    """
+    Save the filtering matrix (filtmat) in FITS format.
+    Replicates the PASSATA/IDL format.
+    
+    The filtmat is saved as a 3D FITS array with shape [2, n_slopes, n_modes]:
+    - filtmat[0, :, :] = intmat_subset (interaction matrix for filtered modes)
+    - filtmat[1, :, :] = recmat_subset.T (transposed reconstruction matrix)
+    
+    Args:
+        intmat_subset (numpy.ndarray): Interaction matrix [n_slopes, n_modes_filtered]
+        recmat_subset (numpy.ndarray): Reconstruction matrix [n_modes_filtered, n_slopes]
+        output_filename (str or Path): FITS output filename
+        overwrite (bool, optional): Whether to overwrite existing file. Default: False
+        verbose (bool, optional): Whether to print detailed information. Default: False
+        
+    Example:
+        >>> im_filt, rec_filt = generate_filter_matrix_from_intmat(...)
+        >>> save_filter_matrix(im_filt, rec_filt, 'filtmat_lgs1.fits', overwrite=True)
+    """
+
+    # Convert to numpy if needed
+    im = cpuArray(intmat_subset)
+    rm = cpuArray(recmat_subset)
+
+    nslopes, n_modes = im.shape
+
+    # Check dimensions
+    if rm.shape != (n_modes, nslopes):
+        raise ValueError(f"Shape mismatch: intmat {im.shape}, recmat {rm.shape}")
+
+    # Create 3D array: [2, nslopes, n_modes]
+    # Axis 0: 0=intmat, 1=transposed recmat
+    filtmat = np.zeros((2, nslopes, n_modes), dtype=im.dtype)
+
+    # Fill the filtmat as in IDL
+    filtmat[0, :, :] = im                # intmat
+    filtmat[1, :, :] = rm.T              # transposed recmat [nslopes, n_modes]
+
+    if verbose:
+        print(f"Saving filter matrix:")
+        print(f"  Filtmat shape: {filtmat.shape}")
+        print(f"  Intmat min/max: {im.min():.3e}/{im.max():.3e}")
+        print(f"  Recmat transposed min/max: {rm.T.min():.3e}/{rm.T.max():.3e}")
+
+    # Check if file exists
+    if os.path.exists(output_filename) and not overwrite:
+        raise FileExistsError(f"{output_filename} already exists. Set overwrite=True to overwrite.")
+
+    # Save to FITS
+    hdu = fits.PrimaryHDU(filtmat)
+    hdu.header['NMODES'] = n_modes
+    hdu.header['NSLOPES'] = nslopes
+    hdu.header['COMMENT'] = 'Filtmat: [0,:,:]=intmat, [1,:,:]=recmat.T'
+
+    hdu.writeto(output_filename, overwrite=overwrite)
+
+    if verbose:
+        print(f"  ✓ Saved to {output_filename}")
+
+
+def load_filter_matrix(filename, verbose=False):
+    """
+    Load a filter matrix from FITS file.
+    
+    Args:
+        filename (str or Path): Path to FITS filtmat file
+        verbose (bool, optional): Whether to print detailed information. Default: False
+        
+    Returns:
+        tuple: (intmat_subset, recmat_subset)
+            - intmat_subset: Interaction matrix [n_slopes, n_modes_filtered]
+            - recmat_subset: Reconstruction matrix [n_modes_filtered, n_slopes]
+            
+    Example:
+        >>> im_filt, rec_filt = load_filter_matrix('filtmat_lgs1.fits')
+        >>> print(f"Loaded filter: IM {im_filt.shape}, Rec {rec_filt.shape}")
+    """
+    if verbose:
+        print(f"Loading filter matrix from {filename}")
+
+    with fits.open(filename) as hdul:
+        filtmat = hdul[0].data
+
+        if verbose:
+            print(f"  Filtmat shape: {filtmat.shape}")
+            if 'NMODES' in hdul[0].header:
+                print(f"  N modes: {hdul[0].header['NMODES']}")
+            if 'NSLOPES' in hdul[0].header:
+                print(f"  N slopes: {hdul[0].header['NSLOPES']}")
+
+        # Extract intmat and recmat
+        intmat_subset = filtmat[0, :, :].copy()       # [n_slopes, n_modes]
+        recmat_subset = filtmat[1, :, :].T.copy()     # [n_modes, n_slopes]
+
+        if verbose:
+            print(f"  Intmat shape: {intmat_subset.shape}")
+            print(f"  Recmat shape: {recmat_subset.shape}")
+
+    return intmat_subset, recmat_subset
+
+
+def generate_filter_matrix_from_intmat_file(
+    intmat_filename,
+    n_modes,
+    n_modes_filtered,
+    output_filename,
+    cut_modes=0,
+    w_vec=None,
+    smooth_tt=True,
+    overwrite=False,
+    verbose=False
+):
+    """
+    Convenience function to load an intmat from file, generate filter matrix, and save it.
+    
+    This is a high-level wrapper that combines:
+    1. Loading interaction matrix from FITS file
+    2. Generating filter matrix
+    3. Saving filter matrix to FITS file
+    
+    Args:
+        intmat_filename (str or Path): Path to interaction matrix FITS file
+        n_modes (int): Number of modes to use for reconstruction
+        n_modes_filtered (int): Number of modes to filter (e.g., 3 for tip/tilt/focus)
+        output_filename (str or Path): Path for output filtmat FITS file
+        cut_modes (int, optional): Number of singular values to cut. Default: 0
+        w_vec (numpy.ndarray, optional): Weight vector for reconstruction. Default: None
+        smooth_tt (bool, optional): Whether to smooth tip/tilt. Default: True
+        overwrite (bool, optional): Whether to overwrite existing output file. Default: False
+        verbose (bool, optional): Whether to print detailed information. Default: False
+        
+    Example:
+        >>> generate_filter_matrix_from_intmat_file(
+        ...     'intmat_lgs1_layer0.fits',
+        ...     n_modes=1000,
+        ...     n_modes_filtered=3,
+        ...     output_filename='filtmat_lgs1.fits',
+        ...     overwrite=True,
+        ...     verbose=True
+        ... )
+    """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"GENERATING FILTER MATRIX FROM INTMAT FILE")
+        print(f"{'='*70}")
+        print(f"  Input: {intmat_filename}")
+        print(f"  Output: {output_filename}")
+        print(f"  N modes: {n_modes}")
+        print(f"  N modes filtered: {n_modes_filtered}")
+        print(f"{'='*70}\n")
+
+    # Load intmat
+    if verbose:
+        print("1. Loading interaction matrix...")
+    intmat_obj = Intmat.restore(str(intmat_filename))
+
+    if verbose:
+        print(f"   ✓ Loaded intmat shape: {intmat_obj.intmat.shape}")
+
+    # Generate filter matrix
+    if verbose:
+        print("\n2. Generating filter matrix...")
+    intmat_subset, recmat_subset = generate_filter_matrix_from_intmat(
+        intmat_obj,
+        n_modes=n_modes,
+        n_modes_filtered=n_modes_filtered,
+        cut_modes=cut_modes,
+        w_vec=w_vec,
+        smooth_tt=smooth_tt,
+        verbose=verbose
+    )
+
+    # Save filter matrix
+    if verbose:
+        print("\n3. Saving filter matrix...")
+    save_filter_matrix(
+        intmat_subset,
+        recmat_subset,
+        output_filename,
+        overwrite=overwrite,
+        verbose=verbose
+    )
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"✓ FILTER MATRIX GENERATION COMPLETE")
+        print(f"{'='*70}\n")
+
+    return intmat_subset, recmat_subset
+
+
+# Update __all__ at the end
 __all__ = [
     'parse_params_file',
     'is_simple_config',
@@ -1951,4 +2614,9 @@ __all__ = [
     'generate_cov_filename',
     'compute_layer_weights_from_turbulence',
     'compute_mmse_reconstructor',
+    'compute_influence_functions_and_modalbases',
+    'generate_filter_matrix_from_intmat',
+    'save_filter_matrix',
+    'load_filter_matrix',
+    'generate_filter_matrix_from_intmat_file',
 ]

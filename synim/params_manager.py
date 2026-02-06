@@ -140,7 +140,8 @@ class ParamsManager:
         # *** Convert to xp with float_dtype ***
         pup_mask = to_xp(xp, pup_mask, dtype=float_dtype)
 
-        print('---> valid pixels: ', int(np.sum(pup_mask > 0.5)))
+        if self.verbose:
+            print('---> valid pixels: ', int(np.sum(pup_mask > 0.5)))
 
         return pup_mask
 

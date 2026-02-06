@@ -1,0 +1,70 @@
+
+sh_subaps_lgs1: &LGS_SA_SH
+  class: 'ShSubapCalibrator'
+  subap_on_diameter:  40
+  output_tag:        'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot6.2'
+  energy_th:         0.2
+  overwrite:        true
+  inputs:
+    in_i: 'sh_lgs1.out_i'
+
+sh_subaps_lgs2: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot14.2',
+          inputs: {in_i: sh_lgs2.out_i}}
+sh_subaps_lgs3: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot-6.2',
+          inputs: {in_i: sh_lgs3.out_i}}
+# lgs4, lgs5, lgs6 share rotations with lgs1, lgs2, lgs3
+sh_subaps_lgs4: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot6.2',
+          inputs: {in_i: sh_lgs4.out_i}}
+sh_subaps_lgs5: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot14.2',
+          inputs: {in_i: sh_lgs5.out_i}}
+sh_subaps_lgs6: {<<: *LGS_SA_SH, output_tag: 'morfeo_ps160p0.2406_shs40x40_wl589_fv6.9_np6_th0.20_rot-6.2',
+          inputs: {in_i: sh_lgs6.out_i}}
+
+sh_subaps_ngs1:
+  class: 'ShSubapCalibrator'
+  subap_on_diameter:  1
+  output_tag:        'morfeo_ps160p0.2406_shs1x1_wl1650_fv1.8_np240'
+  energy_th:         0.2
+  inputs:
+    in_i: 'sh_ngs1.out_i'
+
+sh_subaps_ref1:
+  class: 'ShSubapCalibrator'
+  subap_on_diameter:  8
+  output_tag:        'morfeo_ps160p0.2406_shs8x8_wl750_fv4.6_np30_th0.50'
+  energy_th:         0.5
+  inputs:
+    in_i: 'sh_ref1.out_i'
+
+main_override:
+  total_time:  0.002
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']
+
+remove: ['atmo',
+        'detector_lgs1', 'detector_lgs2', 'detector_lgs3', 'detector_lgs4', 'detector_lgs5', 'detector_lgs6',
+        'slopec_lgs1', 'slopec_lgs2', 'slopec_lgs3', 'slopec_lgs4', 'slopec_lgs5', 'slopec_lgs6',
+        'tomo_polc_lgs',
+        'iir_lgs',
+        'detector_ngs1', 'detector_ngs2', 'detector_ngs3',
+        'slopec_ngs1', 'slopec_ngs2', 'slopec_ngs3',
+        'tomo_ngs',
+        'iir_ngs',
+        'detector_ref1', 'detector_ref2', 'detector_ref3',
+        'slopec_ref1','slopec_ref2', 'slopec_ref3',
+        'rec_focus',
+        'slicer_focus',
+        'iir_focus',
+        'modal_combination',
+        'slicer1', 'slicer2', 'slicer3',
+        'dm1', 'dm2', 'dm3',
+        'psf',
+        'modal_analysis',
+        'data_store',
+        'layer1', 'layer2', 'layer3', 'layer4', 'layer5', 'layer6', 'layer7',
+        'reconstruction', 'projection'
+  ]
+  
+ 

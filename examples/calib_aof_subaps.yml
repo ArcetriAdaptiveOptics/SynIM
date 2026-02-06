@@ -1,0 +1,45 @@
+
+sh_subaps_lgs1: &LGS_SA_SH
+  class: 'ShSubapCalibrator'
+  subap_on_diameter:  40
+  output_tag:        'aof_ps160p0.05_shs40x40_wl589_fv5.1_np6_th0.20'
+  energy_th:         0.2
+  inputs:
+    in_i: 'sh_lgs1.out_i'
+
+sh_subaps_ngs:
+  class: 'ShSubapCalibrator'
+  subap_on_diameter:  1
+  output_tag:        'aof_ps160p0.05_shs1x1_wl1650_fv7.2_np240'
+  energy_th:         0.2
+  inputs:
+    in_i: 'sh_ngs.out_i'
+
+main_override:
+  total_time:  0.001
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']
+
+remove: ['atmo',
+        'sh_lgs2', 'sh_lgs3', 'sh_lgs4',
+        'detector_lgs1', 'detector_lgs2', 'detector_lgs3', 'detector_lgs4',
+        'slopec_lgs1', 'slopec_lgs2', 'slopec_lgs3', 'slopec_lgs4',
+        'tomo_polc_lgs',
+        'iir_lgs',
+        'detector_ngs',
+        'slopec_ngs',
+        'tomo_ngs',
+        'iir_ngs',
+        'modal_combination',
+        'slicer_lgs',
+        'dm',
+        'psf',
+        'modal_analysis',
+        'data_store',
+        'layer1', 'layer2', 'layer3', 'layer4', 'layer5', 'layer6',
+        'reconstruction','projection'
+  ]
+  
+ 
