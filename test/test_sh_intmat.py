@@ -8,6 +8,8 @@ specula.init(device_idx=-1, precision=1)
 from specula.simul import Simul
 from specula.data_objects.intmat import Intmat
 from synim.params_manager import ParamsManager
+from specula.data_objects.slopes import Slopes
+from specula.data_objects.subap_data import SubapData
 
 
 class TestShIntmatComparison(unittest.TestCase):
@@ -19,8 +21,6 @@ class TestShIntmatComparison(unittest.TestCase):
     def im_2d_map(self, im_mode):
         """Convert interaction matrix to 2D map for visualization."""
         # Load subapdata
-        from specula.data_objects.slopes import Slopes
-        from specula.data_objects.subap_data import SubapData
         subapdata = SubapData.restore(self.subap_path)
 
         # Create Slopes object for IM mode
@@ -43,65 +43,62 @@ class TestShIntmatComparison(unittest.TestCase):
         """Set up test directories and paths"""
         # Test directory (where SPECULA test files are located)
         self.current_dir = os.path.dirname(__file__)
-        self.specula_dir = os.path.dirname(os.path.abspath(specula.__file__))
-        self.specula_test_dir = os.path.join(self.specula_dir, '../test')
 
         # Calibration directories
-        self.specula_calib_dir = os.path.join(self.specula_test_dir, 'calib')
-        self.synim_calib_dir = os.path.join(os.path.dirname(__file__), 'calib')
+        self.calib_dir = os.path.join(self.current_dir, 'calib')
 
         # Make sure directories exist
-        os.makedirs(os.path.join(self.specula_calib_dir, 'subapdata'), exist_ok=True)
-        os.makedirs(os.path.join(self.specula_calib_dir, 'im'), exist_ok=True)
-        os.makedirs(self.synim_calib_dir, exist_ok=True)
+        os.makedirs(self.calib_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.calib_dir, 'subapdata'), exist_ok=True)
+        os.makedirs(os.path.join(self.calib_dir, 'im'), exist_ok=True)
 
         # File paths
         self.subap_path = os.path.join(
-            self.specula_calib_dir, 'subapdata', 'scao_subaps_n8_th0.5.fits'
+            self.calib_dir, 'subapdata', 'scao_subaps_n8_th0.5.fits'
         )
-        self.specula_im_path = os.path.join(
-            self.specula_calib_dir, 'im', 'scao_im_n8_th0.5.fits'
+        self.im_path = os.path.join(
+            self.calib_dir, 'im', 'scao_im_n8_th0.5.fits'
         )
-        self.synim_im_path = os.path.join(
-            self.synim_calib_dir, 'scao_im_n8_th0.5_synim.fits'
+        self.synim_path = os.path.join(
+            self.calib_dir, 'scao_im_n8_th0.5_synim.fits'
         )
-        self.specula_rec_path = os.path.join(
-            self.specula_calib_dir, 'rec', 'scao_rec_n8_th0.5.fits'
+        self.rec_path = os.path.join(
+            self.calib_dir, 'rec', 'scao_rec_n8_th0.5.fits'
         )
 
         # YAML files for SPECULA
-        self.subap_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test_subap.yml')
-        self.rec_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test_rec.yml')
+        self.subap_yml = os.path.join(self.current_dir, 'params_scao_sh_test_subap.yml')
+        self.rec_yml = os.path.join(self.current_dir, 'params_scao_sh_test_rec.yml')
 
         # Store current directory
         self.cwd = os.getcwd()
 
         # Clean up old files
-        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
 
-    def _clean_files(self, subap_path, specula_im_path, specula_rec_path):
+    def _clean_files(self, subap_path, im_path, rec_path):
         """Remove generated calibration files"""
-        for path in [subap_path, specula_im_path, specula_rec_path]:
+        for path in [subap_path, im_path, rec_path]:
             if os.path.exists(path):
                 os.remove(path)
 
     def tearDown(self):
         """Clean up and restore directory"""
-        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
         os.chdir(self.cwd)
 
     def test_intmat_specula_vs_synim(self):
-        base_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test.yml')
+        base_yml = os.path.join(self.current_dir, 'params_scao_sh_test.yml')
         self.function_intmat_specula_vs_synim(base_yml)
-        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
         base_yml2 = os.path.join(self.current_dir, 'params_scao_sh_rot_test.yml')
         self.function_intmat_specula_vs_synim(base_yml2)
-        self._clean_files(self.subap_path, self.specula_im_path, self.specula_rec_path)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
         base_yml3 = os.path.join(self.current_dir, 'params_scao_sh_shift_test.yml')
         self.function_intmat_specula_vs_synim(base_yml3)
 
     def test_intmat_workflow_selection(self):
-        base_yml = os.path.join(self.specula_test_dir, 'params_scao_sh_test.yml')
+        base_yml = os.path.join(self.current_dir, 'params_scao_sh_test.yml')
         self.function_intmat_workflow_selection(base_yml)
 
     def function_intmat_specula_vs_synim(self, base_yml):
@@ -123,7 +120,7 @@ class TestShIntmatComparison(unittest.TestCase):
         # Step 1: Generate subapdata with SPECULA
         # ============================================================
         print("\n[1/3] Generating subapdata with SPECULA...")
-        os.chdir(self.specula_test_dir)
+        os.chdir(self.current_dir)
 
         simul_subap = Simul(base_yml, self.subap_yml)
         simul_subap.run()
@@ -143,12 +140,12 @@ class TestShIntmatComparison(unittest.TestCase):
         simul_im.run()
 
         self.assertTrue(
-            os.path.exists(self.specula_im_path),
+            os.path.exists(self.im_path),
             "IM file was not generated by SPECULA"
         )
 
         # Load SPECULA IM
-        specula_im_obj = Intmat.restore(self.specula_im_path)
+        specula_im_obj = Intmat.restore(self.im_path)
         specula_im = specula_im_obj.intmat
 
         print(f"  ✓ SPECULA IM shape: {specula_im.shape}")
@@ -162,7 +159,7 @@ class TestShIntmatComparison(unittest.TestCase):
         # Create ParamsManager with the same YAML file
         params_mgr = ParamsManager(
             base_yml,
-            root_dir=self.specula_calib_dir,
+            root_dir=self.calib_dir,
             verbose=True
         )
 
@@ -187,8 +184,8 @@ class TestShIntmatComparison(unittest.TestCase):
             target_device_idx=None,
             precision=None
         )
-        synim_im_obj.save(self.synim_im_path)
-        print(f"  ✓ SynIM IM saved: {self.synim_im_path}")
+        synim_im_obj.save(self.synim_path)
+        print(f"  ✓ SynIM IM saved: {self.synim_path}")
 
         # ============================================================
         # Step 4: Compare the matrices
@@ -333,14 +330,14 @@ class TestShIntmatComparison(unittest.TestCase):
         print("="*60)
 
         # Generate subapdata first
-        os.chdir(self.specula_test_dir)
+        os.chdir(self.current_dir)
         simul_subap = Simul(base_yml, self.subap_yml)
         simul_subap.run()
 
         # Create ParamsManager
         params_mgr = ParamsManager(
             base_yml,
-            root_dir=self.specula_calib_dir,
+            root_dir=self.calib_dir,
             verbose=False
         )
 
