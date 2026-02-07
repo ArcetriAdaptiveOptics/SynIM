@@ -163,7 +163,7 @@ class TestCovariance(unittest.TestCase):
         print(f"    RMS relative difference: {rms_diag_rel_diff*100:.2f}%")
 
         # Visual comparison (optional)
-        plot_debug = True
+        plot_debug = False
         if plot_debug: # pragma: no cover
             import matplotlib.pyplot as plt
 

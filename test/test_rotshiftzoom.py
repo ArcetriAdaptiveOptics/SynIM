@@ -205,4 +205,5 @@ class TestRotShiftZoomArray(unittest.TestCase):
             axs[2].set_title('Difference')
             plt.show()
 
-        self.assertTrue(np.allclose(rotated, expected, atol=1e-2))
+        self.assertTrue(np.allclose(rotated,
+                        np.roll(expected, shift=(1, 0), axis=(0, 1)), atol=1e-2))

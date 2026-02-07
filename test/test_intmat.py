@@ -55,8 +55,8 @@ def update_dm_pup(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotatio
     trans_dm_mask  = rotshiftzoom_array(
         dm_mask, dm_translation=dm_translation,
         dm_rotation=dm_rotation, dm_magnification=dm_magnification,
-        wfs_translation=(0,0), wfs_rotation=0,
-        wfs_magnification=(1,1), output_size=output_size
+        wfs_translation=wfs_translation, wfs_rotation=wfs_rotation,
+        wfs_magnification=wfs_magnification, output_size=output_size
     )
     trans_dm_mask[trans_dm_mask<0.5] = 0
     if np.max(trans_dm_mask) <= 0:
@@ -89,9 +89,14 @@ def interaction_matrix_former(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height
     Computes a single interaction matrix using the old method.
     """
 
+    if specula_convention:
+        wfs_translation_local = (-1*wfs_translation[1], -1*wfs_translation[0])
+    else:
+        wfs_translation_local = wfs_translation
+
     trans_dm_array, trans_dm_mask, trans_pup_mask = update_dm_pup(
                   pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
-                  wfs_rotation, wfs_translation, wfs_magnification,
+                  wfs_rotation, wfs_translation_local, wfs_magnification,
                   gs_pol_coo, gs_height, verbose=verbose, specula_convention=specula_convention)
 
     der_dx, der_dy = compute_derivatives_with_extrapolation(trans_dm_array,mask=trans_dm_mask)
@@ -136,7 +141,7 @@ def interaction_matrix_former(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height
             sa2D[idx_valid_sa[:,0], idx_valid_sa[:,1]] = 1
             sa2D = np.transpose(sa2D)
             idx_temp = np.where(sa2D>0)
-            idx_valid_sa_new = idx_valid_sa*0.
+            idx_valid_sa_new = np.zeros_like(idx_valid_sa, dtype=int)
             idx_valid_sa_new[:,0] = idx_temp[0]
             idx_valid_sa_new[:,1] = idx_temp[1]
         else:
@@ -215,7 +220,7 @@ class TestIntmat(unittest.TestCase):
         gs_height = np.inf
 
         wfs_rotation = 0.0
-        wfs_translation = (0.5, 0.0)
+        wfs_translation = (1.0, 0.0)
         wfs_magnification = (1.0, 1.0)
 
         # Compute with former method
@@ -232,7 +237,7 @@ class TestIntmat(unittest.TestCase):
         wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
         wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
             if wfs_magnification[0] != 0 else 1.0
-      
+
         # Compute with new method
         im_new = interaction_matrix(
             pup_diam_m=self.pup_diam_m,
@@ -310,7 +315,7 @@ class TestIntmat(unittest.TestCase):
             {
                 'nsubaps': self.wfs_nsubaps,
                 'rotation': 0.0,
-                'translation': (0.5, 0.0),
+                'translation': (1.0, 0.0),
                 'magnification': (1.0, 1.0),
                 'fov_arcsec': self.wfs_fov_arcsec,
                 'idx_valid_sa': self.idx_valid_sa,
@@ -395,7 +400,7 @@ class TestIntmat(unittest.TestCase):
         if plot_debug:
             import matplotlib.pyplot as plt
             modes_to_plot = [0, 2, 10, 25, 49]
-            idx_gs = 1
+            idx_gs = 2
             for mode in modes_to_plot:
                 plt.figure(figsize=(12, 4))
                 plt.suptitle(f"WFS {idx_gs} - Mode {mode}")
@@ -452,7 +457,7 @@ class TestIntmat(unittest.TestCase):
         gs_height = 90000.0  # meters
 
         wfs_rotation = 15.0
-        wfs_translation = (0.2, 0.3)
+        wfs_translation = (0.5, -0.5)
         wfs_magnification = (1.0, 1.0)
         wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
         wfs_anamorphosis_90 = wfs_magnification[1] / wfs_magnification[0] \
