@@ -74,28 +74,49 @@ SynIM is organized into several main modules:
    - Zernike polynomials
    - FITS I/O helpers
 
+.. _computation_workflows:
+
 Computation Workflows
 ~~~~~~~~~~~~~~~~~~~~~
 
-SynIM implements two main workflows for interaction matrix computation:
+SynIM implements two main workflows for interaction matrix computation, automatically selected based on system geometry to optimize accuracy and performance.
 
 **SEPARATED Workflow**
-   Used when transformations exist only in DM OR WFS:
+   Used when transformations exist only in DM or WFS (not both):
    
-   1. Apply DM transformations to influence function
-   2. Compute numerical derivatives
-   3. Apply WFS transformations to derivatives
-   4. **Advantage**: Single interpolation step, maximum accuracy
+   **Process:**
+   
+   1. Apply DM transformations to influence functions (rotation, magnification, source altitude projection)
+   2. Compute numerical derivatives with edge extrapolation
+   3. Apply WFS transformations to derivatives (rotation, translation, magnification)
+   4. Bin derivatives to subaperture resolution
+   5. Extract slopes for valid subapertures
+   
+   **Advantages:**
+   
+   - Single interpolation step per transformation type
+   - Maximum accuracy (no cumulative interpolation errors)
+   - Can reuse derivatives for multiple WFS with same geometry
 
 **COMBINED Workflow**
    Used when both DM and WFS have transformations:
    
-   1. Combine all transformations into single operation
-   2. Apply combined transformation to influence function
-   3. Compute derivatives on final grid
-   4. **Advantage**: Avoids double interpolation artifacts
+   **Process:**
+   
+   1. Combine all DM and WFS transformations into single composite operation
+   2. Apply combined transformation to influence functions in one interpolation step
+   3. Compute derivatives on final transformed grid
+   4. Bin and extract slopes
+   
+   **Advantages:**
+   
+   - Avoids double interpolation artifacts that occur when transformations are coupled
+   - Single interpolation step when both DM and WFS rotate/translate
+   - Consistent handling of complex geometric configurations
 
-The workflow is automatically selected based on system geometry.
+**Automatic Workflow Selection**
+
+The workflow is automatically selected based on system geometry analyzing transformation parameters.
 
 GPU Architecture
 ~~~~~~~~~~~~~~~~
