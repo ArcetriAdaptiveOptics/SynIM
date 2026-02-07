@@ -51,6 +51,15 @@ If you have a CUDA-compatible GPU and want to benefit from GPU acceleration, ins
 Step 3: Install SynIM
 ---------------------
 
+**A) Install from PyPI (recommended for most users):**
+
+.. code-block:: bash
+
+   # Install SynIM from PyPI
+   pip install synim
+
+**B) Install from source (for development or latest features):**
+
 Clone the SynIM repository from GitHub:
 
 .. code-block:: bash

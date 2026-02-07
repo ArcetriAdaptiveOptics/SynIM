@@ -31,8 +31,16 @@ User Guide
 .. toctree::
    :maxdepth: 2
 
-   installation
-   general
+
+   Installation <installation>
+   Overview <general>
+
+Tutorials
+---------
+.. toctree::
+   :maxdepth: 2
+
+   SCAO calibration tutorial <tutorials/scao_calibration_tutorial>
 
 API Reference
 -------------
