@@ -31,9 +31,8 @@ User Guide
 .. toctree::
    :maxdepth: 2
 
-
    Installation <installation>
-   Overview <general>
+   Basics <general>
 
 Tutorials
 ---------
