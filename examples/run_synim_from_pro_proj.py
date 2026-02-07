@@ -91,7 +91,7 @@ plt.figure(figsize=(12, 8))
 plt.imshow(p_opt, cmap='seismic', aspect='auto', vmin=-0.1, vmax=0.1)
 plt.colorbar(label='Projection coefficient')
 plt.title(f"Tomographic Projection Matrix (p_opt)\n"
-          f"DM modes → Layer modes (reg_factor={reg_factor})")
+          f"DM modes → Layer modes\n")
 plt.xlabel("Layer Mode Index")
 plt.ylabel("DM Mode Index")
 plt.tight_layout()
