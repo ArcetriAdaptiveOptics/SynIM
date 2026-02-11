@@ -17,7 +17,15 @@ import synim.synpm as synpm
 from synim.utils import *
 from synim.params_utils import *
 
-import specula
+try:
+    import specula
+except ImportError as exc:
+    raise ImportError(
+        "ParamsManager requires SPECULA.\n"
+        "Install it with: pip install specula\n"
+        "or from: https://github.com/ArcetriAdaptiveOptics/SPECULA"
+    ) from exc
+
 specula.init(device_idx=-1, precision=1)
 
 from specula.calib_manager import CalibManager

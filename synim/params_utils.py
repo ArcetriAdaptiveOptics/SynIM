@@ -7,13 +7,21 @@ import datetime
 from pathlib import Path
 import numpy as np
 from astropy.io import fits
-    
+
 from synim import cpuArray, to_xp, cpu_float_dtype
 
 # Import all utility functions from utils
 from synim.utils import *
 
-import specula
+try:
+    import specula
+except ImportError as exc:
+    raise ImportError(
+        "params_utils requires SPECULA.\n"
+        "Install it with: pip install specula\n"
+        "or from: https://github.com/ArcetriAdaptiveOptics/SPECULA"
+    ) from exc
+
 specula.init(device_idx=-1, precision=1)
 
 from specula.calib_manager import CalibManager
@@ -29,7 +37,7 @@ from specula.lib.compute_zonal_ifunc import compute_zonal_ifunc
 from specula.lib.make_mask import make_mask
 from specula.lib.modal_base_generator import make_modal_base_from_ifs_fft
 from specula import np as specula_np, xp as specula_xp, cpuArray
-    
+
 
 def is_simple_config(config):
     """
