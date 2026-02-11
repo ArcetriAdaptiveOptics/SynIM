@@ -84,7 +84,33 @@ All required dependencies will be installed automatically, including:
 * **numpy**: Numerical computing foundation
 * **scipy**: Scientific computing and interpolation
 * **matplotlib**: Plotting and visualization
-* **specula**: Adaptive optics simulation framework
+
+**Additional Requirements for ParamsManager:**
+
+If you plan to use the ``ParamsManager`` class for interaction matrix computation, 
+you must install SPECULA separately:
+
+.. code-block:: bash
+
+   pip install specula
+
+Or install from source:
+
+.. code-block:: bash
+
+   git clone https://github.com/ArcetriAdaptiveOptics/SPECULA.git
+   cd SPECULA
+   pip install -e .
+
+.. note::
+   ``ParamsManager`` provides high-level utilities for computing interaction matrices
+   in the context of adaptive optics simulations. The core SynIM functionality
+   (``synim.synim``, ``synim.synpm``, ``synim.utils``) does not require SPECULA.
+
+.. warning::
+   ``ParamsManager`` will be moved to the SPECULA package in a future release (v2.0.0).
+   Users are encouraged to migrate to ``specula.utils.ParamsManager`` when available.
+
 
 **Optional Dependencies:**
 
