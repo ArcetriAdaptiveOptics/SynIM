@@ -559,10 +559,17 @@ layer7:
   height:            22000                     # DM height [m]
 
 reconstruction:
-  sigma2inNm2:  2e4
-  noise_elong_model:  false
-  naThicknessInM: 10.0
-  tGparameter: 0.0
+  lgs:
+    sigma2inNm2: 2e4
+    noise_elong_model: false
+    naThicknessInM: 10000.0
+    tGparameter: 0.5
+
+  ngs:
+    sigma2inNm2: 1e4
+
+  ref:
+    sigma2inNm2: 1.11e5
 
   # Modes to use for NGS reconstruction
   ngs_n_modes_dm:  [2, 0, 3]      # Number of modes per DM for NGS (tip-tilt only)
