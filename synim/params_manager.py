@@ -111,6 +111,7 @@ class ParamsManager:
         self.dm_cache = {}  # Key: dm_index, Value: dict with dm_array, dm_mask, etc.
         self.wfs_cache = {}  # Key: (wfs_type, wfs_index), Value: dict with wfs params
 
+
     def _load_pupil_mask(self):
         """
         Load or create the pupil mask.
@@ -215,7 +216,7 @@ class ParamsManager:
             recon_section = self.params['reconstruction']
             self.sigma2_in_nm2 = float(recon_section.get('sigma2inNm2', 2e4))
             self.noise_elong_model = recon_section.get('noise_elong_model', False)
-            self.naThicknessInM = float(recon_section.get('naThicknessInM', 10.0))
+            self.naThicknessInM = float(recon_section.get('naThicknessInM', 10000.0))
             self.tGparameter = float(recon_section.get('tGparameter', 0.0))
 
             # Extract NGS and REF mode configurations ***
@@ -273,6 +274,21 @@ class ParamsManager:
             print(f"        Total: {mempool.total_bytes() / 1024**3:.2f} GB")
         except:
             pass
+
+
+    def _resolve_component_key(self, component_type, comp_idx):
+        """Resolve component key with dm/dm1 fallback."""
+        key = f'{component_type}{comp_idx}'
+        if key not in self.params:
+            if component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
+                return 'dm'
+            raise ValueError(f"Component {key} not found in configuration")
+        return key
+
+
+    def _count_wfs(self, wfs_type):
+        out = self.count_mcao_stars()
+        return out.get(f'n_{wfs_type}', 0)
 
 
     def count_mcao_stars(self):
@@ -367,7 +383,8 @@ class ParamsManager:
         component_params = self.params[component_key]
 
         dm_array, dm_mask = load_influence_functions(
-            self.cm, component_params, self.pixel_pupil, verbose=self.verbose
+            self.cm, component_params, self.pixel_pupil, verbose=self.verbose,
+            full_config=self.params
         )
 
         # *** Select modes from start_mode to start_mode+n_modes ***
@@ -1101,14 +1118,7 @@ class ParamsManager:
 
             for comp in component_list:
                 comp_idx = int(comp['index'])
-
-                comp_key = f'{component_type}{comp_idx}'
-                if comp_key not in self.params:
-                    # Fallback: if dm1 does not exist but dm does and comp_idx==1
-                    if component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
-                        comp_key = 'dm'
-                    else:
-                        raise ValueError(f"Component {comp_key} not found in configuration")
+                comp_key = self._resolve_component_key(component_type, comp_idx)
 
                 comp_config = self.params[comp_key]
 
@@ -1362,62 +1372,35 @@ class ParamsManager:
 
     def _load_base_inv_array(self, verbose):
         """Extract base_inv_array loading logic."""
-        base_inv_array = None
+        
+        # Build (ifunc_tag, m2c_tag) from various config sources
+        inv_params = None
 
-        # Priority 1: projection.ifunc_inverse_tag (YAML style)**
-        if self.projection_params is not None and 'ifunc_inverse_tag' in self.projection_params:
-            if verbose:
-                print(f"Loading from projection.ifunc_inverse_tag")
-            ifunc_inv_tag = self.projection_params['ifunc_inverse_tag']
-            dm_inv_params = {'ifunc_tag': ifunc_inv_tag}
-            base_inv_array, _ = load_influence_functions(
-                self.cm, dm_inv_params, self.pixel_pupil,
-                verbose=verbose, is_inverse_basis=True
-            )
-            return to_xp(xp, base_inv_array, dtype=float_dtype)
+        if self.projection_params and 'ifunc_inverse_tag' in self.projection_params:
+            inv_params = {'ifunc_tag': self.projection_params['ifunc_inverse_tag']}
+        elif 'modal_analysis' in self.params:
+            inv_params = self.params['modal_analysis']
+        else:
+            # Try modalrec1 then modalrec
+            for rec_key in ('modalrec1', 'modalrec'):
+                rec = self.params.get(rec_key, {})
+                if 'tag_ifunc4proj' in rec:
+                    inv_params = {
+                        'ifunc_tag': f"{rec['tag_ifunc4proj']}_inv",
+                        **({'m2c_tag': rec['tag_m2c4proj']} if 'tag_m2c4proj' in rec else {})
+                    }
+                    if verbose:
+                        print(f"Loading from {rec_key}.tag_ifunc4proj")
+                    break
 
-        # Priority 2: modal_analysis
-        if 'modal_analysis' in self.params:
-            if verbose:
-                print("Loading from modal_analysis")
-            base_inv_array, _ = load_influence_functions(
-                self.cm, self.params['modal_analysis'], self.pixel_pupil,
-                verbose=verbose, is_inverse_basis=True
-            )
-
-        # Priority 3: modalrec1.tag_ifunc4proj
-        elif 'modalrec1' in self.params and 'tag_ifunc4proj' in self.params['modalrec1']:
-            if verbose:
-                print("Loading from modalrec1.tag_ifunc4proj")
-            inv_tag = f"{self.params['modalrec1']['tag_ifunc4proj']}_inv"
-            dm_inv_params = {'ifunc_tag': inv_tag}
-            if 'tag_m2c4proj' in self.params['modalrec1']:
-                dm_inv_params['m2c_tag'] = self.params['modalrec1']['tag_m2c4proj']
-            base_inv_array, _ = load_influence_functions(
-                self.cm, dm_inv_params, self.pixel_pupil,
-                verbose=verbose, is_inverse_basis=True
-            )
-
-        # Priority 4: modalrec.tag_ifunc4proj
-        elif 'modalrec' in self.params and 'tag_ifunc4proj' in self.params['modalrec']:
-            if verbose:
-                print("Loading from modalrec.tag_ifunc4proj")
-            inv_tag = f"{self.params['modalrec']['tag_ifunc4proj']}_inv"
-            dm_inv_params = {'ifunc_tag': inv_tag}
-            if 'tag_m2c4proj' in self.params['modalrec']:
-                dm_inv_params['m2c_tag'] = self.params['modalrec']['tag_m2c4proj']
-            base_inv_array, _ = load_influence_functions(
-                self.cm, dm_inv_params, self.pixel_pupil,
-                verbose=verbose, is_inverse_basis=True
-            )
-
-        if base_inv_array is None:
+        if inv_params is None:
             raise ValueError("No valid base_inv_array found in configuration")
 
-        # *** Convert to xp with float_dtype ***
-        base_inv_array = to_xp(xp, base_inv_array, dtype=float_dtype)
-
-        return base_inv_array
+        base_inv_array, _ = load_influence_functions(
+            self.cm, inv_params, self.pixel_pupil,
+            verbose=verbose, is_inverse_basis=True, full_config=self.params
+        )
+        return to_xp(xp, base_inv_array, dtype=float_dtype)
 
 
     def _save_projection_matrix(self, pm, source_info, comp_name, saved_matrices, verbose):
@@ -2538,10 +2521,7 @@ class ParamsManager:
             )
 
             # Get start_mode
-            comp_key = f'{component_type}{comp_idx}'
-            if comp_key not in self.params and component_type == 'dm' \
-                and comp_idx == 1 and 'dm' in self.params:
-                comp_key = 'dm'
+            comp_key = self._resolve_component_key(component_type, comp_idx)
 
             # Total modes available
             total_modes = comp_params['dm_array'].shape[2]
@@ -2572,7 +2552,9 @@ class ParamsManager:
                     print(f"    Shape: {C_atm.shape}")
 
                 # Check that loaded covariance has correct shape
-                if C_atm.shape[0] != total_modes or C_atm.shape[1] != total_modes:
+                if C_atm.shape[0] > total_modes or C_atm.shape[1] > total_modes:
+                    C_atm = C_atm[:total_modes, :total_modes]
+                elif C_atm.shape[0] < total_modes or C_atm.shape[1] < total_modes:
                     raise ValueError(
                         f"Loaded covariance matrix shape {C_atm.shape} does not match "
                         f"expected shape ({total_modes}, {total_modes}) for "
@@ -2718,9 +2700,7 @@ class ParamsManager:
             for i, (comp_idx, n_modes_cfg) in enumerate(zip(component_indices, modes_config)):
                 if n_modes_cfg > 0:
                     # Get start_mode
-                    comp_key = f'{component_type}{comp_idx}'
-                    if comp_key not in self.params and component_type == 'dm' and comp_idx == 1 and 'dm' in self.params:
-                        comp_key = 'dm'
+                    comp_key = self._resolve_component_key(component_type, comp_idx)
                     if comp_key in self.params and 'start_mode' in self.params[comp_key]:
                         start_mode = self.params[comp_key]['start_mode']
                     else:
@@ -2827,17 +2807,11 @@ class ParamsManager:
         zenith_angle_in_deg = main_params.get('zenithAngleInDeg', 0.0)
 
         # Global parameters for LGS
-        na_thickness_in_m = getattr(self, 'naThicknessInM', 10.0)
+        na_thickness_in_m = getattr(self, 'naThicknessInM', 10000.0)
         t_g_parameter = getattr(self, 'tGparameter', 0.0)
 
         # Auto-detect number of WFS from configuration
-        out = self.count_mcao_stars()
-        if wfs_type == 'lgs':
-            n_wfs = out['n_lgs']
-        elif wfs_type == 'ngs':
-            n_wfs = out['n_ngs']
-        else:
-            n_wfs = out['n_ref']
+        n_wfs = self._count_wfs(wfs_type)
 
         # Get actual number of slopes per WFS
         n_slopes_list = []
@@ -3051,13 +3025,7 @@ class ParamsManager:
 
         # ==================== GET N_WFS AND N_SLOPES ====================
         if n_wfs is None:
-            out = self.count_mcao_stars()
-            if wfs_type == 'lgs':
-                n_wfs = out['n_lgs']
-            elif wfs_type == 'ngs':
-                n_wfs = out['n_ngs']
-            else:
-                n_wfs = out['n_ref']
+            n_wfs = self._count_wfs(wfs_type)
 
         if im_full is None:
             raise ValueError("im_full must be provided if C_noise is not given")
