@@ -273,10 +273,12 @@ class ParamsManager:
             self.tGparameter = 0.0
 
             if self.verbose:
-                print(f"  Using default sigma2_in_nm2: {self.sigma2_in_nm2}")
-                print(f"  noise_elong_model: {self.noise_elong_model}")
-                print(f"  naThicknessInM: {self.naThicknessInM}")
-                print(f"  tGparameter: {self.tGparameter}")
+                for wt in ['lgs', 'ngs', 'ref']:
+                    p = getattr(self, f'{wt}_recon_params')
+                    print(f"  [{wt.upper()}] sigma2={p['sigma2_in_nm2']:.2e},"
+                          f" elong={p['noise_elong_model']},"
+                          f" naThick={p['naThicknessInM']},"
+                          f" tG={p['tGparameter']}")
 
 
     def _get_recon_params(self, wfs_type):
@@ -2184,7 +2186,8 @@ class ParamsManager:
                 rec_filename += f"_Cnoise"
             else:
                 if noise_variance is None:
-                    rec_filename += f"_var{self.sigma2_in_nm2:.3f}nm2"
+                    sigma2_in_nm2 = recon_params['sigma2_in_nm2']
+                    rec_filename += f"_var{sigma2_in_nm2:.3f}nm2"
                 else:
                     rec_filename += f"_var{noise_variance:.3f}uSl2"
             rec_filename += ".fits"
