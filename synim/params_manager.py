@@ -274,11 +274,12 @@ class ParamsManager:
 
             if self.verbose:
                 for wt in ['lgs', 'ngs', 'ref']:
-                    p = getattr(self, f'{wt}_recon_params')
-                    print(f"  [{wt.upper()}] sigma2={p['sigma2_in_nm2']:.2e},"
-                          f" elong={p['noise_elong_model']},"
-                          f" naThick={p['naThicknessInM']},"
-                          f" tG={p['tGparameter']}")
+                    if hasattr(self, f'{wt}_recon_params'):
+                        p = getattr(self, f'{wt}_recon_params')
+                        print(f"  [{wt.upper()}] sigma2={p['sigma2_in_nm2']:.2e},"
+                            f" elong={p['noise_elong_model']},"
+                            f" naThick={p['naThicknessInM']},"
+                            f" tG={p['tGparameter']}")
 
 
     def _get_recon_params(self, wfs_type):
