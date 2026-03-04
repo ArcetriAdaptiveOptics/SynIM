@@ -1419,7 +1419,7 @@ class ParamsManager:
 
     def _load_base_inv_array(self, verbose):
         """Extract base_inv_array loading logic."""
-        
+
         # Build (ifunc_tag, m2c_tag) from various config sources
         inv_params = None
 
@@ -1440,6 +1440,10 @@ class ParamsManager:
                         print(f"Loading from {rec_key}.tag_ifunc4proj")
                     break
 
+        nmodes = self.projection_params['nmodes']
+        if nmodes is not None:
+            inv_params['nmodes'] = nmodes
+
         if inv_params is None:
             raise ValueError("No valid base_inv_array found in configuration")
 
@@ -1447,6 +1451,7 @@ class ParamsManager:
             self.cm, inv_params, self.pixel_pupil,
             verbose=verbose, is_inverse_basis=True, full_config=self.params
         )
+
         return to_xp(xp, base_inv_array, dtype=float_dtype)
 
 

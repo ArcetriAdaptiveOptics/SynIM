@@ -258,10 +258,6 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
             # multiply the influence function by the M2C
             ifunc.influence_function = m2c.m2c.T @ ifunc.influence_function
 
-        if 'nmodes' in dm_params:
-            if ifunc.influence_function.shape[0] > dm_params['nmodes']:
-                ifunc.influence_function = ifunc.influence_function[:dm_params['nmodes'],:]
-
         # Check dimensions to determine if this is an inverse basis
         n_rows = ifunc.influence_function.shape[0]
         n_cols = ifunc.influence_function.shape[1]
@@ -274,7 +270,7 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
 
         # If n_rows >> n_cols, this is likely an inverse basis (pixels x modes)
         # If n_cols >> n_rows, this is a normal basis (modes x pixels)
-        is_inverse = (n_rows > n_cols * 2)  # Heuristic: if rows >> cols
+        is_inverse = n_rows > n_cols * 2  # Heuristic: if rows >> cols
 
         if verbose:
             print(f"     Influence function shape: {ifunc.influence_function.shape}")
@@ -286,6 +282,10 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
             if verbose:
                 print(f"     Returning 2D inverse basis (optimized format)")
 
+            if 'nmodes' in dm_params:
+                if ifunc.influence_function.shape[1] > dm_params['nmodes']:
+                    ifunc.influence_function = ifunc.influence_function[:, :dm_params['nmodes']]
+
             # Make sure it's (n_modes, n_pixels) format
             if ifunc.influence_function.shape[0] < ifunc.influence_function.shape[1]:
                 # Already correct: n_modes x n_pixels
@@ -296,6 +296,10 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
 
         # For normal basis, convert to 3D
         else:
+            if 'nmodes' in dm_params:
+                if ifunc.influence_function.shape[0] > dm_params['nmodes']:
+                    ifunc.influence_function = ifunc.influence_function[:dm_params['nmodes'],:]
+
             # Convert influence function from 2D to 3D
             dm_array = dm2d_to_3d(ifunc.influence_function, ifunc.mask_inf_func,
                                   xp_local=np, float_dtype_local=cpu_float_dtype)
@@ -1204,6 +1208,7 @@ def extract_projection_params(params):
 
     reg_factor = proj_params.get('reg_factor', 1e-6)
     ifunc_inv_tag = proj_params['ifunc_inverse_tag']
+    nmodes = proj_params.get('nmodes', None)
 
     opt_sources = proj_params['opt_sources']
     polar_coordinates = opt_sources['polar_coordinates']  # list of [r, theta]
@@ -1224,6 +1229,7 @@ def extract_projection_params(params):
     return {
         'reg_factor': reg_factor,
         'ifunc_inverse_tag': ifunc_inv_tag,
+        'nmodes': nmodes,
         'opt_sources': source_list
     }
 
@@ -1352,11 +1358,13 @@ def generate_pm_filename(config_file, opt_index=None,
             parts.append(f"mn{component_nmodes}")
 
     # Add ifunc/m2c tags
-    ifunc_tag = get_tag_or_object(component_config, 'ifunc')
+    ifunc_tag = get_tag_or_object(component_config, 'ifunc',
+                                  full_config=config)
     if ifunc_tag is not None:
         parts.append(f"ifunc_{ifunc_tag}")
 
-    m2c_tag = get_tag_or_object(component_config, 'm2c')
+    m2c_tag = get_tag_or_object(component_config, 'm2c',
+                                full_config=config)
     if m2c_tag is not None:
         parts.append(f"m2c_{m2c_tag}")
 
