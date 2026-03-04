@@ -214,10 +214,26 @@ class ParamsManager:
         # Try YAML format first (reconstruction section)
         if 'reconstruction' in self.params:
             recon_section = self.params['reconstruction']
-            self.sigma2_in_nm2 = float(recon_section.get('sigma2inNm2', 2e4))
-            self.noise_elong_model = recon_section.get('noise_elong_model', False)
-            self.naThicknessInM = float(recon_section.get('naThicknessInM', 10000.0))
-            self.tGparameter = float(recon_section.get('tGparameter', 0.0))
+
+            # Default values (top-level, backward compatible)
+            default_sigma2      = float(recon_section.get('sigma2inNm2', 2e4))
+            default_elong       = recon_section.get('noise_elong_model', False)
+            default_na_thick    = float(recon_section.get('naThicknessInM', 10.0))
+            default_tg          = float(recon_section.get('tGparameter', 0.0))
+
+            def _get_wfs_recon_params(wfs_type):
+                """Get reconstruction noise params for a specific WFS type."""
+                sub = recon_section.get(wfs_type, {})
+                return {
+                    'sigma2_in_nm2':    float(sub.get('sigma2inNm2', default_sigma2)),
+                    'noise_elong_model': sub.get('noise_elong_model', default_elong),
+                    'naThicknessInM':   float(sub.get('naThicknessInM', default_na_thick)),
+                    'tGparameter':      float(sub.get('tGparameter', default_tg)),
+                }
+
+            self.lgs_recon_params = _get_wfs_recon_params('lgs')
+            self.ngs_recon_params = _get_wfs_recon_params('ngs')
+            self.ref_recon_params = _get_wfs_recon_params('ref')
 
             # Extract NGS and REF mode configurations ***
             self.ngs_n_modes_dm = recon_section.get('ngs_n_modes_dm', [])
@@ -227,10 +243,12 @@ class ParamsManager:
 
             if self.verbose:
                 print(f"  Using YAML 'reconstruction' section")
-                print(f"  sigma2_in_nm2: {self.sigma2_in_nm2}")
-                print(f"  noise_elong_model: {self.noise_elong_model}")
-                print(f"  naThicknessInM: {self.naThicknessInM}")
-                print(f"  tGparameter: {self.tGparameter}")
+                for wt in ['lgs', 'ngs', 'ref']:
+                    p = getattr(self, f'{wt}_recon_params')
+                    print(f"  [{wt.upper()}] sigma2={p['sigma2_in_nm2']:.2e},"
+                          f" elong={p['noise_elong_model']},"
+                          f" naThick={p['naThicknessInM']},"
+                          f" tG={p['tGparameter']}")
 
         # Fallback to IDL-style modalrec1
         elif 'modalrec1' in self.params:
@@ -259,6 +277,33 @@ class ParamsManager:
                 print(f"  noise_elong_model: {self.noise_elong_model}")
                 print(f"  naThicknessInM: {self.naThicknessInM}")
                 print(f"  tGparameter: {self.tGparameter}")
+
+
+    def _get_recon_params(self, wfs_type):
+        """
+        Get reconstruction noise parameters for a specific WFS type,
+        with fallback to general scalar attributes.
+        
+        Priority:
+        1. {wfs_type}_recon_params (from YAML 'reconstruction' section)
+        2. Scalar attributes (from IDL 'modalrec1' or defaults)
+        
+        Args:
+            wfs_type (str): WFS type ('lgs', 'ngs', 'ref')
+            
+        Returns:
+            dict: Reconstruction parameters with keys:
+                - 'sigma2_in_nm2'
+                - 'noise_elong_model'
+                - 'naThicknessInM'
+                - 'tGparameter'
+        """
+        return getattr(self, f'{wfs_type}_recon_params', {
+            'sigma2_in_nm2':    getattr(self, 'sigma2_in_nm2',    2e4),
+            'noise_elong_model': getattr(self, 'noise_elong_model', False),
+            'naThicknessInM':   getattr(self, 'naThicknessInM',   10000.0),
+            'tGparameter':      getattr(self, 'tGparameter',       0.0),
+        })
 
 
     def _print_gpu_memory(self, label="", verbose=True):
@@ -2065,6 +2110,8 @@ class ParamsManager:
         else:
             C_noise_from_input = False
 
+        recon_params = self._get_recon_params(wfs_type)
+
         # *** USE CENTRALIZED METHOD ***
         C_noise_inv = self.build_noise_covariance(
             wfs_type=wfs_type,
@@ -2072,7 +2119,7 @@ class ParamsManager:
             im_full=im_full,
             noise_variance=noise_variance,
             C_noise=C_noise,
-            use_elongation=self.noise_elong_model,
+            use_elongation=recon_params['noise_elong_model'],
             verbose=verbose_flag
         )
 
@@ -2807,7 +2854,7 @@ class ParamsManager:
         zenith_angle_in_deg = main_params.get('zenithAngleInDeg', 0.0)
 
         # Global parameters for LGS
-        na_thickness_in_m = getattr(self, 'naThicknessInM', 10000.0)
+        na_thickness_in_m = getattr(self, 'naThicknessInM', 10.0)
         t_g_parameter = getattr(self, 'tGparameter', 0.0)
 
         # Auto-detect number of WFS from configuration
@@ -2880,11 +2927,12 @@ class ParamsManager:
             idx_valid_sa = wfs_params['idx_valid_sa']
 
             # Get sigma2 in nm^2
-            if np.isscalar(self.sigma2_in_nm2):
-                sigma2_nm2 = float(self.sigma2_in_nm2)
-            elif isinstance(self.sigma2_in_nm2, (list, np.ndarray)):
-                sigma2_nm2 = float(self.sigma2_in_nm2[i] if i < len(self.sigma2_in_nm2)
-                                else self.sigma2_in_nm2[0])
+            sigma2_in_nm2 = recon_params['sigma2_in_nm2']
+            if np.isscalar(sigma2_in_nm2):
+                sigma2_nm2 = float(sigma2_in_nm2)
+            elif isinstance(sigma2_in_nm2, (list, np.ndarray)):
+                sigma2_nm2 = float(sigma2_in_nm2[i] if i < len(sigma2_in_nm2)
+                                else sigma2_in_nm2[0])
 
             # Convert to slope units (same as diagonal model)
             wfs_config = params[f'sh_{wfs_type}{i+1}']
@@ -3157,10 +3205,12 @@ class ParamsManager:
         rad2arcsec = 3600. * 180. / np.pi
 
         # Convert sigma2_in_nm2 to slope units
-        if np.isscalar(self.sigma2_in_nm2):
-            sigma2_in_nm2 = cpu_float_dtype(self.sigma2_in_nm2)
+        recon_params = self._get_recon_params(wfs_type)
+        sigma2_in_nm2 = recon_params['sigma2_in_nm2']
+        if np.isscalar(sigma2_in_nm2):
+            sigma2_in_nm2 = cpu_float_dtype(sigma2_in_nm2)
         else:
-            sigma2_in_nm2 = np.array(self.sigma2_in_nm2, dtype=cpu_float_dtype)
+            sigma2_in_nm2 = np.array(sigma2_in_nm2, dtype=cpu_float_dtype)
 
         sigma2_in_arcsec2 = sigma2_in_nm2 / (1./rad2arcsec * sa_side_in_m / 4. * 1e9)**2
         sigma2_in_slope = sigma2_in_arcsec2 * 1./(sensor_fov/2.)**2
