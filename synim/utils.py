@@ -1,4 +1,4 @@
-""""Utility functions for SynIM simulations, including mask extrapolation"""
+"""Utility functions for SynIM simulations, including mask extrapolation"""
 
 import numpy as np
 import matplotlib.pyplot as plt
