@@ -2587,7 +2587,8 @@ class ParamsManager:
 
             # ========== GENERATE FILENAME (EXACTLY LIKE IDL) ==========
             cov_filename, base_tag = generate_cov_filename(
-                self.params[comp_key], self.pup_diam_m, r0, L0
+                self.params[comp_key], self.pup_diam_m, r0, L0,
+                full_config=self.params
             )
             cov_path = os.path.join(output_dir, cov_filename)
             cov_files.append(cov_path)

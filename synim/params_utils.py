@@ -1453,7 +1453,8 @@ def generate_pm_filenames(config_file, timestamp=False):
     return filenames
 
 
-def generate_cov_filename(component_config, pup_diam_m, r0, L0):
+def generate_cov_filename(component_config, pup_diam_m, r0, L0,
+                          full_config=None):
     """
     Generate a unique filename for a covariance matrix, handling _tag/_object.
     Args:
@@ -1462,13 +1463,16 @@ def generate_cov_filename(component_config, pup_diam_m, r0, L0):
         pup_diam_m (float): pupil diameter in meters
         r0 (float): Fried parameter
         L0 (float): Outer scale
+        full_config (dict): overall config
     Returns:
         str: filename
     """
     # Prefer m2c_tag, then ifunc_tag, then fallback
-    base_tag = get_tag_or_object(component_config, 'm2c')
+    base_tag = get_tag_or_object(component_config, 'm2c',
+                                 full_config=full_config)
     if base_tag is None:
-        base_tag = get_tag_or_object(component_config, 'ifunc')
+        base_tag = get_tag_or_object(component_config, 'ifunc',
+                                     full_config=full_config)
 
     diam_str = f"{pup_diam_m:.1f}".strip()
     r0_str = f"{r0:.3f}".strip()
