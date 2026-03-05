@@ -7,8 +7,8 @@ specula.init(device_idx=-1, precision=1)
 
 # -------------------------------------------------------------------
 # Configurazione file e directory
-yaml_file = "/raid1/guido/pythonLib/SPECULA_scripts/params_aof/params_aof.yml"
-root_dir = "/raid1/guido/PASSATA/AOF/"
+yaml_file = "params_aof.yml"
+root_dir = "calib_aof/"
 output_pm_dir = os.path.join(root_dir, "synpm/")
 print(f"YAML file: {yaml_file}")
 print(f"Output PM directory: {output_pm_dir}")
