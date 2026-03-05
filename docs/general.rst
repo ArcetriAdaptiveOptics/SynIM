@@ -146,8 +146,11 @@ GPU support is implemented through a flexible backend system:
 Configuration Files
 ===================
 
-SynIM supports both YAML and PRO (IDL-style) configuration files for defining AO system parameters.
-IDL-style parameter files are supported for compatibility with `PASSATA <https://arxiv.org/abs/1607.07624>`_.
+SynIM uses **YAML** configuration files for defining AO system parameters, ensuring full compatibility with SPECULA. 
+
+Legacy IDL-style parameter files (``.pro``) from `PASSATA <https://arxiv.org/abs/1607.07624>`_ are fully supported via an offline conversion tool. 
+
+For details on how to format your YAML or how to convert your old ``.pro`` files, see the dedicated :ref:`Configuration <configuration>` page.
 
 Loading Configurations
 ----------------------
