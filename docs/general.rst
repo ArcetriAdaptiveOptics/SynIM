@@ -183,9 +183,6 @@ For custom workflows:
    
    # Parse any supported format
    params = parse_params_file('config.yml')
-   
-   # Or PRO file
-   params = parse_params_file('config.pro')
 
 Validation
 ----------
