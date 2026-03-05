@@ -45,8 +45,8 @@ specula_package_dir = os.path.dirname(specula_init_path)
 specula_repo_path = os.path.dirname(specula_package_dir)
 
 # PRO file and directories
-yaml_file = "/raid1/guido/pythonLib/SPECULA_scripts/params_aof/params_aof.yml"
-root_dir = "/raid1/guido/PASSATA/AOF/"
+yaml_file = "params_aof.yml"
+root_dir = "calib_aof/"
 
 print(f"\n{'='*70}")
 print(f"TOMOGRAPHIC RECONSTRUCTOR COMPUTATION")
