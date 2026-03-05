@@ -33,6 +33,7 @@ User Guide
 
    Installation <installation>
    Basics <general>
+   Configuration & Legacy Migration <configuration>
 
 Tutorials
 ---------
