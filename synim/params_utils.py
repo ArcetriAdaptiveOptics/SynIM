@@ -667,166 +667,6 @@ def build_component_filename_part(component_config, component_type='dm',
     return "_".join(parts) if parts else component_type
 
 
-def parse_pro_file(pro_file_path):
-    """
-    Parse a .pro file and extract its structure into a Python dictionary.
-    Improved version to handle IDL-style syntax better.
-
-    Args:
-        pro_file_path (str): Path to the .pro file.
-
-    Returns:
-        dict: Parsed data as a dictionary.
-    """
-    data = {}
-    current_section = None
-
-    with open(pro_file_path, 'r') as file:
-        for line_num, line in enumerate(file, 1):
-            # Remove comments (everything after ;)
-            comment_pos = line.find(';')
-            if comment_pos != -1:
-                line = line[:comment_pos]
-
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                # Recognize the start of a new section (e.g., {main, {dm1, etc.)
-                # Allow empty spaces before parenthesis and after comma
-                section_match = re.match(r'^\{\s*(\w+)\s*,?', line)
-                if section_match:
-                    current_section = section_match.group(1).lower()
-                    data[current_section] = {}
-                    continue
-
-                # Recognize the end of a section
-                if line == '}':
-                    current_section = None
-                    continue
-
-                # If we're in a section, process key-value pairs
-                if current_section:
-                    # Match both : and = assignments
-                    key_value_match = re.match(r'(\w+)\s*[:=]\s*(.+)', line)
-                    if key_value_match:
-                        key = key_value_match.group(1).strip()
-                        value = key_value_match.group(2).strip()
-
-                        # Remove trailing comma
-                        if value.endswith(','):
-                            value = value[:-1].strip()
-
-                        # Parse the value
-                        parsed_value = _parse_pro_value(value)
-                        data[current_section][key] = parsed_value
-
-            except Exception as e:
-                print(f"Warning: Error parsing line {line_num}: '{line}' - {e}")
-                continue
-
-    return data
-
-def _parse_pro_value(value):
-    """
-    Parse a single value from a PRO file, handling IDL-specific syntax.
-    """
-    value = value.strip()
-
-    # Handle special IDL values
-    if value == '!VALUES.F_INFINITY':
-        return float('inf')
-
-    # Handle boolean values (IDL style)
-    if value.lower() in ['0b', 'false']:
-        return False
-    elif value.lower() in ['1b', 'true']:
-        return True
-
-    # Handle quoted strings
-    if (value.startswith("'") and value.endswith("'")) or \
-       (value.startswith('"') and value.endswith('"')):
-        return value[1:-1]
-
-    # Handle arrays [val1, val2, ...]
-    if value.startswith('[') and value.endswith(']'):
-        return _parse_pro_array(value)
-
-    # Handle replicate function: replicate(val, n)
-    replicate_match = re.match(r'replicate\(([^,]+),\s*(\d+)\)', value, re.IGNORECASE)
-    if replicate_match:
-        val = _parse_pro_value(replicate_match.group(1))
-        num = int(replicate_match.group(2))
-        return [val] * num
-
-    # *** MIGLIORAMENTO: Pattern per numeri più flessibile ***
-    # Handle integers (with optional L suffix)
-    if re.match(r'^-?\d+[lL]?$', value):
-        return int(value.rstrip('lL'))
-
-    # Handle floats (inclusi quelli che finiscono con .)
-    if re.match(r'^-?\d*\.?\d*([eE][+-]?\d+)?[dD]?$', value) and any(c.isdigit() for c in value):
-        try:
-            return float(value.rstrip('dD'))
-        except ValueError:
-            pass
-
-    # Handle scientific notation
-    if re.match(r'^-?\d+[eE][+-]?\d+$', value):
-        return float(value)
-
-    # Handle mathematical expressions (e.g., 38.5/480)
-    if '/' in value and re.match(r'^[\d\.\+\-\*/\(\)\s]+$', value):
-        try:
-            return eval(value)
-        except:
-            pass
-
-    # Handle 'auto' and other special string values without quotes
-    if value.lower() in ['auto']:
-        return value.lower()
-
-    # Default: return as string
-    return value
-
-def _parse_pro_array(array_str):
-    """
-    Parse a PRO array string like [val1, val2, val3].
-    
-    Args:
-        array_str (str): Array string including brackets
-        
-    Returns:
-        list: Parsed array
-    """
-    # Remove brackets
-    content = array_str[1:-1].strip()
-    if not content:
-        return []
-
-    # Split by comma
-    elements = []
-    parts = content.split(',')
-
-    for part in parts:
-        part = part.strip()
-        if part:
-            # Handle replicate within arrays
-            if 'replicate(' in part.lower():
-                replicate_match = re.match(r'replicate\(([^,]+),\s*(\d+)\)', part, re.IGNORECASE)
-                if replicate_match:
-                    val = _parse_pro_value(replicate_match.group(1))
-                    num = int(replicate_match.group(2))
-                    elements.extend([val] * num)
-                    continue
-
-            # Parse individual element
-            elements.append(_parse_pro_value(part))
-
-    return elements
-
-
 def parse_params_file(file_path):
     """
     Parse a parameters file (YAML or .pro) and return its contents as a dictionary.
@@ -841,7 +681,10 @@ def parse_params_file(file_path):
         with open(file_path, 'r') as file:
             return yaml.safe_load(file)
     elif file_path.endswith('.pro'):
-        return parse_pro_file(file_path)
+        raise ValueError(
+            f"Unsupported file format: {file_path}. SynIM now uses standard .yaml files. "
+            "Please convert your legacy .pro file using the provided 'convert_pro_file.py' tool."
+        )
     else:
         raise ValueError(f"Unsupported file format: {file_path}")
 

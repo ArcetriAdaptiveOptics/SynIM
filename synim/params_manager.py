@@ -47,7 +47,7 @@ class ParamsManager:
         Initialize the manager and load all common parameters.
         
         Args:
-            params_file (str or dict): Path to YAML/PRO configuration file or dictionary
+            params_file (str or dict): Path to YAML configuration file or dictionary
             root_dir (str, optional): Root directory to override in params
             verbose (bool): Whether to print detailed information
         """
