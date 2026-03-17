@@ -211,7 +211,6 @@ tomo_polc_lgs:
   projmat_object:     'synpm/rec_params_aof_tomographic_r1e-04' # 6851 modes x  1253 modes
   intmat_object:      'synim/im_full_params_aof_lgs_to_dm_filtered' # 1253 modes x 10192 slopes tip/tilt filtered
   polc:   true
-  input_modes_slice:  [0, 1253] 
   in_commands_size:   1253
   inputs:
     in_slopes_list:        ['slopec_lgs1.out_slopes',

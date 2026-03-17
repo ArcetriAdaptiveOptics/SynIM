@@ -1810,15 +1810,14 @@ def compute_influence_functions_and_modalbases(
             print(f"    Computing {base_name}...")
 
         # Compute influence functions
-        influence_functions, meta_pupil_mask = compute_zonal_ifunc(
+        influence_functions, meta_pupil_mask, _, _ = compute_zonal_ifunc(
             dim=meta_px,
             n_act=nact,
             circ_geom=True,
             angle_offset=0,
             mask=mask_for_ifunc,
             xp=specula_xp,
-            dtype=specula_xp.float32,
-            return_coordinates=False
+            dtype=specula_xp.float32
         )
 
         if verbose:
