@@ -41,6 +41,7 @@ Tutorials
    :maxdepth: 2
 
    SCAO calibration tutorial <tutorials/scao_calibration_tutorial>
+   MCAO calibration tutorial (MORFEO) <tutorials/mcao_calibration_tutorial>
 
 API Reference
 -------------
