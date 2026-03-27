@@ -1331,7 +1331,9 @@ class ParamsManager:
         """
         # Determine slopec key
         if wfs_type == 'lgs':
-            slopec_key = f'slopec{wfs_index}'
+            slopec_key = f'slopec_lgs{wfs_index}'
+            if slopec_key not in self.params:
+                  slopec_key = f'slopec{wfs_index}'
         elif wfs_type == 'ngs':
             slopec_key = f'slopec_ngs{wfs_index}'
         elif wfs_type == 'ref':
@@ -1343,11 +1345,7 @@ class ParamsManager:
 
         # Check if filtmat_tag exists
         if slopec_key not in self.params:
-            slopec_key = f'slopec_lgs{wfs_index}'  # Fallback key
-            if slopec_key not in self.params:
-                if verbose:
-                    print(f"  No slopec parameters for key: {slopec_key}")
-                return im
+            raise ValueError(f"No slopec parameters found for {wfs_type} WFS {wfs_index}")
 
         slopec_params = self.params[slopec_key]
 
@@ -2858,6 +2856,7 @@ class ParamsManager:
 
         params = self.params
         main_params = params['main']
+        recon_params = self._get_recon_params(wfs_type)
 
         # Get common parameters
         diameter_in_m = main_params['pixel_pupil'] * main_params['pixel_pitch']
