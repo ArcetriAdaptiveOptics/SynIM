@@ -2885,6 +2885,7 @@ class ParamsManager:
 
         params = self.params
         main_params = params['main']
+
         if wfs_type != 'lgs':
             raise ValueError(f"Invalid wfs_type: {wfs_type}")
         else:
