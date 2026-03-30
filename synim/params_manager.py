@@ -216,24 +216,37 @@ class ParamsManager:
             recon_section = self.params['reconstruction']
 
             # Default values (top-level, backward compatible)
-            default_sigma2      = float(recon_section.get('sigma2inNm2', 2e4))
-            default_elong       = recon_section.get('noise_elong_model', False)
-            default_na_thick    = float(recon_section.get('naThicknessInM', 10.0))
-            default_tg          = float(recon_section.get('tGparameter', 0.0))
+            if 'sigma2inNm2' in recon_section and 'lgs' not in recon_section \
+                and 'ngs' not in recon_section and 'ref' not in recon_section:
 
-            def _get_wfs_recon_params(wfs_type):
-                """Get reconstruction noise params for a specific WFS type."""
-                sub = recon_section.get(wfs_type, {})
-                return {
-                    'sigma2_in_nm2':    float(sub.get('sigma2inNm2', default_sigma2)),
-                    'noise_elong_model': sub.get('noise_elong_model', default_elong),
-                    'naThicknessInM':   float(sub.get('naThicknessInM', default_na_thick)),
-                    'tGparameter':      float(sub.get('tGparameter', default_tg)),
-                }
+                print('A single general section is set for reconstruction noise parameters.'
+                      ' It will be applied to all WFS types (LGS, NGS, REF).')
+                default_sigma2      = float(recon_section.get('sigma2inNm2', 0.0))
+                default_elong       = recon_section.get('noise_elong_model', False)
+                default_na_thick    = float(recon_section.get('naThicknessInM', 0.0))
+                default_tg          = float(recon_section.get('tGparameter', 0.0))
+                self.lgs_recon_params = {'sigma2_in_nm2': default_sigma2,
+                                        'noise_elong_model': default_elong,
+                                        'naThicknessInM': default_na_thick,
+                                        'tGparameter': default_tg}
+                self.ngs_recon_params = {'sigma2_in_nm2': default_sigma2}
+                self.ref_recon_params = {'sigma2_in_nm2': default_sigma2}
 
-            self.lgs_recon_params = _get_wfs_recon_params('lgs')
-            self.ngs_recon_params = _get_wfs_recon_params('ngs')
-            self.ref_recon_params = _get_wfs_recon_params('ref')
+            else:
+
+                def _get_wfs_recon_params(wfs_type):
+                    """Get reconstruction noise params for a specific WFS type."""
+                    sub = recon_section.get(wfs_type, {})
+                    return {
+                        'sigma2_in_nm2':    float(sub.get('sigma2inNm2', 0.0)),
+                        'noise_elong_model': sub.get('noise_elong_model', False),
+                        'naThicknessInM':   float(sub.get('naThicknessInM', 0.0)),
+                        'tGparameter':      float(sub.get('tGparameter', 0.0)),
+                    }
+
+                self.lgs_recon_params = _get_wfs_recon_params('lgs')
+                self.ngs_recon_params = _get_wfs_recon_params('ngs')
+                self.ref_recon_params = _get_wfs_recon_params('ref')
 
             # Extract NGS and REF mode configurations ***
             self.ngs_n_modes_dm = recon_section.get('ngs_n_modes_dm', [])
@@ -2116,7 +2129,14 @@ class ParamsManager:
         else:
             C_noise_from_input = False
 
-        recon_params = self._get_recon_params(wfs_type)
+        if wfs_type == 'lgs':
+            recon_params = self.lgs_recon_params
+        elif wfs_type == 'ngs':
+            recon_params = self.ngs_recon_params
+        elif wfs_type == 'ref':
+            recon_params = self.ref_recon_params
+        else:
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
 
         # *** USE CENTRALIZED METHOD ***
         C_noise_inv = self.build_noise_covariance(
@@ -2194,6 +2214,15 @@ class ParamsManager:
                     rec_filename += f"_var{sigma2_in_nm2:.3f}nm2"
                 else:
                     rec_filename += f"_var{noise_variance:.3f}uSl2"
+            if recon_params['noise_elong_model']:
+                naThicknessInM = recon_params.get('naThicknessInM', None)
+                tGparameter = recon_params.get('tGparameter', None)
+                rec_filename += "_el"
+                if naThicknessInM is not None and naThicknessInM > 0:
+                    rec_filename += f"_Na{naThicknessInM/1000:.1f}km"
+                if tGparameter is not None and tGparameter > 0:
+                    rec_filename += f"_tg{tGparameter:.2f}"
+
             rec_filename += ".fits"
             rec_path = os.path.join(output_dir, rec_filename)
 
@@ -2856,15 +2885,18 @@ class ParamsManager:
 
         params = self.params
         main_params = params['main']
-        recon_params = self._get_recon_params(wfs_type)
+        if wfs_type != 'lgs':
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
+        else:
+            recon_params = self.lgs_recon_params
 
         # Get common parameters
         diameter_in_m = main_params['pixel_pupil'] * main_params['pixel_pitch']
         zenith_angle_in_deg = main_params.get('zenithAngleInDeg', 0.0)
 
         # Global parameters for LGS
-        na_thickness_in_m = getattr(self, 'naThicknessInM', 10.0)
-        t_g_parameter = getattr(self, 'tGparameter', 0.0)
+        na_thickness_in_m = recon_params['naThicknessInM']
+        t_g_parameter = recon_params['tGparameter']
 
         # Auto-detect number of WFS from configuration
         n_wfs = self._count_wfs(wfs_type)
@@ -2979,6 +3011,7 @@ class ParamsManager:
                 print(f"    Noise variance: {sigma_noise2:.2e}")
                 print(f"    Launcher position: {launcher_coord_in_m}")
                 print(f"    LGS altitude: {h_in_m}")
+                print(f"    Zenith angle: {zenith_angle_in_deg} deg")
                 print(f"    Na layer thickness (FWHM): {na_thickness_in_m}")
                 print(f"    tGparameter: {t_g_parameter}")
 
@@ -3189,6 +3222,12 @@ class ParamsManager:
             C_noise_inv = illumination_inv_array @ C_noise_inv
 
             if verbose_flag:
+                diag_vals = np.diag(C_noise_inv)
+                non_zero = diag_vals[diag_vals > 0]
+                if len(non_zero) > 0:
+                    print(f"\n  ✓ Noise covariance (inverse) built: {C_noise_inv.shape}")
+                    print(f"    Precision range: [{np.min(non_zero):.2e}, {np.max(non_zero):.2e}]")
+                    print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
                 print(f"{'='*60}\n")
 
             return C_noise_inv
@@ -3214,7 +3253,14 @@ class ParamsManager:
         rad2arcsec = 3600. * 180. / np.pi
 
         # Convert sigma2_in_nm2 to slope units
-        recon_params = self._get_recon_params(wfs_type)
+        if wfs_type == 'lgs':
+            recon_params = self.lgs_recon_params
+        elif wfs_type == 'ngs':
+            recon_params = self.ngs_recon_params
+        elif wfs_type == 'ref':
+            recon_params = self.ref_recon_params
+        else:
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
         sigma2_in_nm2 = recon_params['sigma2_in_nm2']
         if np.isscalar(sigma2_in_nm2):
             sigma2_in_nm2 = cpu_float_dtype(sigma2_in_nm2)
