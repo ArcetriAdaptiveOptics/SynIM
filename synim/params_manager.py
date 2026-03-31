@@ -2024,7 +2024,6 @@ class ParamsManager:
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
                                         active_wfs_mask=None,
-                                        pad_to_total_modes=None,
                                         verbose=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
@@ -2046,7 +2045,6 @@ class ParamsManager:
             overwrite (bool): Whether to overwrite existing files
             skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
             active_wfs_mask (list of bool, optional): Mask indicating active WFSs
-            pad_to_total_modes (int, optional): Pad the reconstructor to a total number of modes
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2200,18 +2198,6 @@ class ParamsManager:
             print(f"  ✓ Reconstructor computed: {reconstructor.shape}")
             print()
 
-        # ==================== MODES PADDING ====================
-        if pad_to_total_modes is not None:
-            flat_indices = [item for sublist in mode_indices for item in sublist]
-            if len(flat_indices) > 0:
-                padded_rec = np.zeros((pad_to_total_modes, reconstructor.shape[1]),
-                                      dtype=cpu_float_dtype)
-                padded_rec[flat_indices, :] = reconstructor
-                reconstructor = padded_rec
-                if verbose_flag:
-                    print(f"  ✓ Reconstructor zero-padded to fixed size:"
-                          f" {pad_to_total_modes} modes.")
-
         # ==================== STEP 5: Save if requested ====================
         rec_filename = None
         rec_path = None
@@ -2297,7 +2283,7 @@ class ParamsManager:
 
     def compute_multirate_reconstructors(self, r0, L0,
                                          wfs_type='ngs', component_type='dm',
-                                         total_modes=None, **kwargs):
+                                         **kwargs):
         """
         Computes all 2^N - 1 reconstruction matrices for multirate dynamic scheduling.
         Generates binary suffixes (e.g., _v101) representing the active WFS tuple.
@@ -2320,7 +2306,6 @@ class ParamsManager:
                 r0=r0, L0=L0,
                 wfs_type=wfs_type, component_type=component_type,
                 active_wfs_mask=active_mask,
-                pad_to_total_modes=total_modes,
                 **kwargs
             )
             results[tuple(active_mask)] = res

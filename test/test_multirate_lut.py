@@ -54,12 +54,10 @@ class TestMultirateLUTGeneration(unittest.TestCase):
         }
 
         # 2. Call the function we want to test
-        total_modes_target = 9
         results = self.pm.compute_multirate_reconstructors(
             r0=0.15, L0=25.0,
             wfs_type='ngs',
             component_type='dm',
-            total_modes=total_modes_target,
             save=False,
             verbose=False
         )
@@ -85,7 +83,3 @@ class TestMultirateLUTGeneration(unittest.TestCase):
         self.assertIn([False, True], masks_passed)
         self.assertIn([True, False], masks_passed)
         self.assertIn([True, True], masks_passed)
-
-        # Check that the padding parameter was correctly forwarded
-        for call in calls:
-            self.assertEqual(call.kwargs['pad_to_total_modes'], total_modes_target)
