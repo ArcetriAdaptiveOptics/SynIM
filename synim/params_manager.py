@@ -1023,7 +1023,7 @@ class ParamsManager:
 
     def assemble_interaction_matrices(self, wfs_type='ngs', output_im_dir=None,
                                     component_type='dm', save=False,
-                                    apply_filter=True):
+                                    apply_filter=True, active_wfs_mask=None):
         """
         Assemble interaction matrices for a specific type of WFS into
         a single full interaction matrix.
@@ -1037,6 +1037,8 @@ class ParamsManager:
             component_type (str): Type of component to assemble ('dm' or 'layer')
             save (bool): Whether to save the assembled matrix to disk
             apply_filter (bool): Whether to apply filtmat_tag filtering if present
+            active_wfs_mask (list of bool, optional): Mask to select active WFSs for assembly.
+                If None, all WFSs of the specified type are included.
             
         Returns:
             tuple: (im_full, n_slopes_per_wfs, mode_indices, component_indices) -
@@ -1050,8 +1052,13 @@ class ParamsManager:
         if component_type not in ['dm', 'layer']:
             raise ValueError("component_type must be either 'dm' or 'layer'")
 
-        # Count WFSs of the specified type in the configuration
-        wfs_list = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
+        # Count WFSs of the specified type in the configuration       
+        wfs_list_full = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
+        if active_wfs_mask is not None:
+            wfs_list = [wfs for i, wfs in enumerate(wfs_list_full) if active_wfs_mask[i]]
+        else:
+            wfs_list = wfs_list_full
+
         n_wfs = len(wfs_list)
 
         if self.verbose:
@@ -1230,7 +1237,8 @@ class ParamsManager:
 
         # ==================== ASSEMBLE MATRICES ====================
         # Load and assemble the interaction matrices
-        for ii in range(n_wfs):
+        for ii, wfs in enumerate(wfs_list):
+            wfs_idx = int(wfs['index'])
             for jj, comp_ind in enumerate(component_indices):
                 # Get the appropriate mode indices for this component
                 mode_idx = mode_indices[jj] # absolute mode indices
@@ -1240,7 +1248,7 @@ class ParamsManager:
                 im_filename = generate_im_filename(
                     self.params_file,
                     wfs_type=wfs_type,
-                    wfs_index=ii+1,
+                    wfs_index=wfs_idx,
                     dm_index=comp_ind if component_type == 'dm' else None,
                     layer_index=comp_ind if component_type == 'layer' else None
                 )
@@ -2015,6 +2023,7 @@ class ParamsManager:
                                         C_noise=None, output_dir=None,
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
+                                        active_wfs_mask=None,
                                         verbose=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
@@ -2035,6 +2044,7 @@ class ParamsManager:
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
             skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
+            active_wfs_mask (list of bool, optional): Mask indicating active WFSs
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2080,6 +2090,7 @@ class ParamsManager:
                 wfs_type=wfs_type,
                 output_im_dir=self.im_dir,
                 component_type=component_type,
+                active_wfs_mask=active_wfs_mask,
                 save=False  # Don't save assembled IM
             )
 
@@ -2146,6 +2157,7 @@ class ParamsManager:
             noise_variance=noise_variance,
             C_noise=C_noise,
             use_elongation=recon_params['noise_elong_model'],
+            active_wfs_mask=active_wfs_mask,
             verbose=verbose_flag
         )
 
@@ -2223,6 +2235,11 @@ class ParamsManager:
                 if tGparameter is not None and tGparameter > 0:
                     rec_filename += f"_tg{tGparameter:.2f}"
 
+            # ==================== BINARY SUFFIX ====================
+            if active_wfs_mask is not None:
+                binary_str = "".join(["1" if m else "0" for m in active_wfs_mask])
+                rec_filename += f"_v{binary_str}"
+
             rec_filename += ".fits"
             rec_path = os.path.join(output_dir, rec_filename)
 
@@ -2262,6 +2279,38 @@ class ParamsManager:
             'r0': r0,
             'L0': L0
         }
+
+
+    def compute_multirate_reconstructors(self, r0, L0,
+                                         wfs_type='ngs', component_type='dm',
+                                         **kwargs):
+        """
+        Computes all 2^N - 1 reconstruction matrices for multirate dynamic scheduling.
+        Generates binary suffixes (e.g., _v101) representing the active WFS tuple.
+        """
+        wfs_list = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
+        n_sensors = len(wfs_list)
+
+        results = {}
+        # Iterate from 1 to 2^N - 1 (skip 0 which means no sensors)
+        for i in range(1, 2**n_sensors):
+            # Create boolean mask (e.g. 5 -> '101' -> [True, False, True])
+            binary_str = format(i, f'0{n_sensors}b')
+            active_mask = [char == '1' for char in binary_str]
+
+            print(f"\n{'#'*70}")
+            print(f"COMPUTING LUT MATRIX {i}/{2**n_sensors - 1} | VALIDITY: {binary_str}")
+            print(f"{'#'*70}")
+
+            res = self.compute_tomographic_reconstructor(
+                r0=r0, L0=L0,
+                wfs_type=wfs_type, component_type=component_type,
+                active_wfs_mask=active_mask,
+                **kwargs
+            )
+            results[tuple(active_mask)] = res
+
+        return results
 
 
     def compute_tomographic_projection_matrix(self, output_dir=None, save=False,
@@ -2992,8 +3041,7 @@ class ParamsManager:
                 # Convert 2D indices to 1D
                 sub_aps_index = np.ravel_multi_index(
                     (idx_valid_sa[:, 0], idx_valid_sa[:, 1]),
-                    (n_sub_aps, n_sub_aps)
-                )
+                    (n_sub_aps, n_sub_aps))
             elif idx_valid_sa is not None:
                 sub_aps_index = idx_valid_sa
             else:
@@ -3033,7 +3081,7 @@ class ParamsManager:
                     user_pofile_xy=None,
                     theta=None,
                     only_diag=False,
-                    eta_is_not_one=True,
+                    eta_is_not_one=False,
                     display=False,
                     verbose=verbose
                 )
@@ -3069,7 +3117,7 @@ class ParamsManager:
     def build_noise_covariance(self, wfs_type='lgs', n_wfs=None,
                             im_full=None, noise_variance=None,
                             C_noise=None, use_elongation=False,
-                            verbose=None):
+                            active_wfs_mask=None, verbose=None):
         """
         Build noise covariance matrix with multiple strategies:
         1. Use provided C_noise (highest priority)
@@ -3084,6 +3132,7 @@ class ParamsManager:
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Pre-computed full noise covariance matrix
             use_elongation (bool): Whether to use elongated spot model for LGS
+            active_wfs_mask (array-like, optional): Mask to indicate active WFS
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -3115,13 +3164,19 @@ class ParamsManager:
             return C_noise
 
         # ==================== GET N_WFS AND N_SLOPES ====================
+        wfs_list_full = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
+        if active_wfs_mask is not None:
+            active_indices = [i for i, mask in enumerate(active_wfs_mask) if mask]
+        else:
+            active_indices = list(range(len(wfs_list_full)))
+
         if n_wfs is None:
-            n_wfs = self._count_wfs(wfs_type)
+            n_wfs = len(active_indices)
+
+        n_slopes_total = im_full.shape[0]
 
         if im_full is None:
             raise ValueError("im_full must be provided if C_noise is not given")
-
-        n_slopes_total = im_full.shape[0]
 
         if verbose_flag:
             print(f"  Number of {wfs_type.upper()} WFS: {n_wfs}")
@@ -3165,8 +3220,9 @@ class ParamsManager:
         n_slopes_list = []
         illumination_list = []
 
-        for i in range(n_wfs):
-            wfs_params_i = self.get_wfs_params(wfs_type, i+1, xp_local=np)
+        for i, original_idx in enumerate(active_indices):
+            actual_wfs_idx = int(wfs_list_full[original_idx]['index'])
+            wfs_params_i = self.get_wfs_params(wfs_type, actual_wfs_idx, xp_local=np)
 
             if wfs_params_i['idx_valid_sa'] is not None:
                 n_slopes_this_wfs = len(wfs_params_i['idx_valid_sa']) * 2
