@@ -2249,13 +2249,13 @@ class ParamsManager:
                 if tGparameter is not None and tGparameter > 0:
                     rec_filename += f"_tg{tGparameter:.2f}"
 
-            rec_filename += ".fits"
-            rec_path = os.path.join(output_dir, rec_filename)
-
             # ==================== BINARY SUFFIX ====================
             if active_wfs_mask is not None:
                 binary_str = "".join(["1" if m else "0" for m in active_wfs_mask])
                 rec_filename += f"_v{binary_str}"
+
+            rec_filename += ".fits"
+            rec_path = os.path.join(output_dir, rec_filename)
 
             # Save as Recmat (SPECULA format)
             recmat_obj = Recmat(
