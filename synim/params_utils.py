@@ -425,8 +425,16 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False):
         if verbose:
             print("     Loading subapdata from file:", subap_path)
         subap_data = SubapData.restore(subap_path)
-        # *** Returns numpy from FITS file ***
-        return np.transpose(np.asarray(np.where(subap_data.single_mask())))
+
+        # 1. Get raw (Y, X) coordinates
+        coords = np.transpose(np.asarray(np.where(subap_data.single_mask())))
+
+        # 2. Sort by Y (primary) and then by X (secondary)
+        # In np.lexsort, the primary key is the last one in the tuple, so we put Y first and then X.
+        # coords[:, 1] is X, coords[:, 0] is Y.
+        sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))
+
+        return coords[sort_idx]
 
     return None
 
