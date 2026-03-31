@@ -3056,9 +3056,7 @@ class ParamsManager:
                 # Convert 2D indices to 1D
                 sub_aps_index = np.ravel_multi_index(
                     (idx_valid_sa[:, 0], idx_valid_sa[:, 1]),
-                    (n_sub_aps, n_sub_aps),
-                    order='F'
-                )
+                    (n_sub_aps, n_sub_aps))
             elif idx_valid_sa is not None:
                 sub_aps_index = idx_valid_sa
             else:
@@ -3098,7 +3096,7 @@ class ParamsManager:
                     user_pofile_xy=None,
                     theta=None,
                     only_diag=False,
-                    eta_is_not_one=True,
+                    eta_is_not_one=False,
                     display=False,
                     verbose=verbose
                 )
