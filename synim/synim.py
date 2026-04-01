@@ -873,8 +873,9 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_fov_arcsec,
             pup_diam_m,
             idx_valid_sa=idx_valid_sa,
-            verbose=False,
-            specula_convention=specula_convention
+            slope_method=slope_method,
+            specula_convention=specula_convention,
+            verbose=False
         )
 
         if minimize_memory:
