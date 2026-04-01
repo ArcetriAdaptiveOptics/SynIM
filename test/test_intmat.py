@@ -6,7 +6,11 @@ from synim.synim import (
     interaction_matrices_multi_wfs,
     rotshiftzoom_array,
     shiftzoom_from_source_dm_params,
-    compute_derivatives_with_extrapolation
+    compute_derivatives_with_extrapolation,
+    apply_dm_transformations_separated,
+    apply_wfs_transformations_separated,
+    apply_dm_transformations_combined,
+    apply_wfs_transformations_combined,
 )
 from synim.utils import apply_mask, rebin
 
@@ -500,8 +504,7 @@ class TestIntmat(unittest.TestCase):
                                    err_msg="Former and new methods differ for LGS case")
 
     def test_consistency_separated_vs_combined_workflow(self):
-        """Verify that separated and combined workflows
-        produce identical results without transformations"""
+        """Verify single- and multi-WFS APIs are consistent in unified workflow."""
         # Identical configuration for 2 WFS
         wfs_configs = []
         for i in range(2):
@@ -562,5 +565,173 @@ class TestIntmat(unittest.TestCase):
             im_comb = im_multi_dict[wfs_config['name']]
             np.testing.assert_allclose(
                 im_sep, im_comb, rtol=1e-6, atol=1e-8,
-                err_msg=f"Separated and combined workflow differ for WFS {i}"
+                err_msg=f"Single and multi-WFS unified workflow differ for WFS {i}"
             )
+
+    def test_separated_applies_wfs_on_phase_before_derivatives(self):
+        """Regression: separated path must transform phase, then derive (not rotate derivatives)."""
+        gs_pol_coo = (15.0, 0.0)
+        gs_height = np.inf
+        wfs_rotation = 25.0
+        wfs_translation = (0.7, -0.4)
+        wfs_mag_global = 1.03
+        wfs_anamorphosis_90 = 0.97
+        wfs_anamorphosis_45 = 1.0
+        wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
+
+        # Build separated path manually
+        trans_dm_array_s, trans_dm_mask_s, pup_mask_s, _, _ = apply_dm_transformations_separated(
+            pup_diam_m=self.pup_diam_m,
+            pup_mask=self.pup_mask,
+            dm_array=self.dm_array,
+            dm_mask=self.dm_mask,
+            dm_height=self.dm_height,
+            dm_rotation=self.dm_rotation,
+            gs_pol_coo=gs_pol_coo,
+            gs_height=gs_height,
+            verbose=False,
+            specula_convention=True,
+        )
+
+        im_sep = apply_wfs_transformations_separated(
+            dm_array=trans_dm_array_s,
+            pup_mask=pup_mask_s,
+            dm_mask=trans_dm_mask_s,
+            wfs_nsubaps=self.wfs_nsubaps,
+            wfs_fov_arcsec=self.wfs_fov_arcsec,
+            pup_diam_m=self.pup_diam_m,
+            wfs_rotation=wfs_rotation,
+            wfs_translation=wfs_translation,
+            wfs_mag_global=wfs_mag_global,
+            wfs_anamorphosis_90=wfs_anamorphosis_90,
+            wfs_anamorphosis_45=wfs_anamorphosis_45,
+            idx_valid_sa=self.idx_valid_sa,
+            verbose=False,
+            specula_convention=True,
+        )
+
+        # Emulate old behavior: compute derivatives first, then rotate derivatives.
+        if True:
+            wfs_translation_local = (-wfs_translation[1], -wfs_translation[0])
+            output_size = pup_mask_s.shape
+
+            der_x_old, der_y_old = compute_derivatives_with_extrapolation(
+                trans_dm_array_s,
+                mask=trans_dm_mask_s,
+            )
+
+            trans_der_x_old = rotshiftzoom_array(
+                der_x_old,
+                dm_translation=(0, 0),
+                dm_rotation=0,
+                dm_magnification=(1, 1),
+                wfs_translation=wfs_translation_local,
+                wfs_rotation=wfs_rotation,
+                wfs_magnification=wfs_magnification,
+                wfs_anamorphosis_45=wfs_anamorphosis_45,
+                output_size=output_size,
+            )
+            trans_der_y_old = rotshiftzoom_array(
+                der_y_old,
+                dm_translation=(0, 0),
+                dm_rotation=0,
+                dm_magnification=(1, 1),
+                wfs_translation=wfs_translation_local,
+                wfs_rotation=wfs_rotation,
+                wfs_magnification=wfs_magnification,
+                wfs_anamorphosis_45=wfs_anamorphosis_45,
+                output_size=output_size,
+            )
+
+            trans_pup_mask_old = rotshiftzoom_array(
+                pup_mask_s,
+                dm_translation=(0, 0),
+                dm_rotation=0,
+                dm_magnification=(1, 1),
+                wfs_translation=wfs_translation_local,
+                wfs_rotation=wfs_rotation,
+                wfs_magnification=wfs_magnification,
+                wfs_anamorphosis_45=wfs_anamorphosis_45,
+                output_size=output_size,
+            )
+            trans_pup_mask_old[trans_pup_mask_old < 0.5] = 0
+
+            pup_mask_sa_old = rebin(trans_pup_mask_old, (self.wfs_nsubaps, self.wfs_nsubaps), method='sum')
+            pup_mask_sa_old = pup_mask_sa_old * 1 / np.max(pup_mask_sa_old)
+            dm_mask_sa_old = rebin(trans_dm_mask_s, (self.wfs_nsubaps, self.wfs_nsubaps), method='sum')
+            dm_mask_sa_old = dm_mask_sa_old * 1 / np.max(dm_mask_sa_old)
+
+            trans_der_x_old = apply_mask(trans_der_x_old, trans_pup_mask_old, fill_value=np.nan)
+            trans_der_y_old = apply_mask(trans_der_y_old, trans_pup_mask_old, fill_value=np.nan)
+
+            scale_factor_old = (trans_der_x_old.shape[0] / self.wfs_nsubaps) / np.median(
+                rebin(trans_pup_mask_old, (self.wfs_nsubaps, self.wfs_nsubaps), method='average')
+            )
+            wfs_signal_x_old = rebin(
+                trans_der_x_old,
+                (self.wfs_nsubaps, self.wfs_nsubaps),
+                method='nanmean',
+            ) * scale_factor_old
+            wfs_signal_y_old = rebin(
+                trans_der_y_old,
+                (self.wfs_nsubaps, self.wfs_nsubaps),
+                method='nanmean',
+            ) * scale_factor_old
+
+            combined_mask_sa_old = (dm_mask_sa_old > 0.0) & (pup_mask_sa_old > 0.0)
+            wfs_signal_x_old = apply_mask(wfs_signal_x_old, combined_mask_sa_old, fill_value=0)
+            wfs_signal_y_old = apply_mask(wfs_signal_y_old, combined_mask_sa_old, fill_value=0)
+
+            wfs_signal_x_old_2d = wfs_signal_x_old.reshape((-1, wfs_signal_x_old.shape[2]))
+            wfs_signal_y_old_2d = wfs_signal_y_old.reshape((-1, wfs_signal_y_old.shape[2]))
+            im_old = np.concatenate((wfs_signal_y_old_2d, wfs_signal_x_old_2d))
+
+            coeff = 1e-9 / (self.pup_diam_m / self.wfs_nsubaps) * 206265
+            coeff *= 1 / (0.5 * self.wfs_fov_arcsec)
+            im_sep_old = im_old * coeff
+
+        # Build combined reference path
+        _, trans_dm_mask_c, trans_pup_mask_c, derivatives_x_c, derivatives_y_c = apply_dm_transformations_combined(
+            pup_diam_m=self.pup_diam_m,
+            pup_mask=self.pup_mask,
+            dm_array=self.dm_array,
+            dm_mask=self.dm_mask,
+            dm_height=self.dm_height,
+            dm_rotation=self.dm_rotation,
+            gs_pol_coo=gs_pol_coo,
+            gs_height=gs_height,
+            wfs_rotation=wfs_rotation,
+            wfs_translation=wfs_translation,
+            wfs_mag_global=wfs_mag_global,
+            wfs_anamorphosis_90=wfs_anamorphosis_90,
+            wfs_anamorphosis_45=wfs_anamorphosis_45,
+            verbose=False,
+            specula_convention=True,
+        )
+
+        im_comb = apply_wfs_transformations_combined(
+            derivatives_x_c,
+            derivatives_y_c,
+            trans_pup_mask_c,
+            trans_dm_mask_c,
+            self.wfs_nsubaps,
+            self.wfs_fov_arcsec,
+            self.pup_diam_m,
+            idx_valid_sa=self.idx_valid_sa,
+            verbose=False,
+            specula_convention=True,
+        )
+
+        # New phase-first separated path should be clearly closer to combined reference
+        # than the old derivative-rotated behavior.
+        mean_abs_new = np.mean(np.abs(im_sep - im_comb))
+        mean_abs_old = np.mean(np.abs(im_sep_old - im_comb))
+
+        self.assertLess(
+            mean_abs_new,
+            0.6 * mean_abs_old,
+            msg=(
+                "Phase-first separated path did not improve enough over old derivative-rotation path: "
+                f"mean_abs_new={mean_abs_new:.6e}, mean_abs_old={mean_abs_old:.6e}"
+            ),
+        )
