@@ -228,28 +228,9 @@ class ParamsManager:
                 self.lgs_recon_params = {'sigma2_in_nm2': default_sigma2,
                                         'noise_elong_model': default_elong,
                                         'naThicknessInM': default_na_thick,
-                                        'tGparameter': default_tg,
-                                        'n_low_modes_zero_filt': int(
-                                            recon_section.get('n_low_modes_zero_filt', 0)
-                                        )}
-                self.ngs_recon_params = {
-                    'sigma2_in_nm2': default_sigma2,
-                    'noise_elong_model': False,
-                    'naThicknessInM': 0.0,
-                    'tGparameter': 0.0,
-                    'n_low_modes_zero_filt': int(
-                        recon_section.get('n_low_modes_zero_filt', 0)
-                    )
-                }
-                self.ref_recon_params = {
-                    'sigma2_in_nm2': default_sigma2,
-                    'noise_elong_model': False,
-                    'naThicknessInM': 0.0,
-                    'tGparameter': 0.0,
-                    'n_low_modes_zero_filt': int(
-                        recon_section.get('n_low_modes_zero_filt', 0)
-                    )
-                }
+                                        'tGparameter': default_tg}
+                self.ngs_recon_params = {'sigma2_in_nm2': default_sigma2}
+                self.ref_recon_params = {'sigma2_in_nm2': default_sigma2}
 
             else:
 
@@ -261,9 +242,6 @@ class ParamsManager:
                         'noise_elong_model': sub.get('noise_elong_model', False),
                         'naThicknessInM':   float(sub.get('naThicknessInM', 0.0)),
                         'tGparameter':      float(sub.get('tGparameter', 0.0)),
-                        'n_low_modes_zero_filt': int(
-                            sub.get('n_low_modes_zero_filt', 0)
-                        ),
                     }
 
                 self.lgs_recon_params = _get_wfs_recon_params('lgs')
@@ -341,143 +319,7 @@ class ParamsManager:
             'noise_elong_model': getattr(self, 'noise_elong_model', False),
             'naThicknessInM':   getattr(self, 'naThicknessInM',   10000.0),
             'tGparameter':      getattr(self, 'tGparameter',       0.0),
-            'n_low_modes_zero_filt': 0,
         })
-
-
-    def _has_offline_slopes_filter_config(self, wfs_type, wfs_index):
-        """Return True when an offline slopes filter is configured for this WFS."""
-        if wfs_type == 'lgs':
-            slopec_key = f'slopec_lgs{wfs_index}'
-            if slopec_key not in self.params:
-                slopec_key = f'slopec{wfs_index}'
-        elif wfs_type == 'ngs':
-            slopec_key = f'slopec_ngs{wfs_index}'
-        elif wfs_type == 'ref':
-            slopec_key = f'slopec_ref{wfs_index}'
-        else:
-            return False
-
-        if slopec_key not in self.params:
-            return False
-
-        slopec_params = self.params[slopec_key]
-
-        # Inline filtering is already applied in SPECULA and does not match the offline path.
-        if 'filtName' in slopec_params:
-            return False
-
-        return ('filtmat_tag' in slopec_params) or ('filtmat_data' in slopec_params)
-
-
-    def _get_low_modes_cut_if_applicable(self, wfs_type, apply_filter,
-                                         active_wfs_mask=None, verbose=False):
-        """
-        Return configured low-mode cut when it is valid for this run.
-
-        The cut is only allowed when slopes filtering is active and at least one
-        selected WFS has an offline filter configuration.
-        """
-        recon_params = self._get_recon_params(wfs_type)
-        n_cut = int(recon_params.get('n_low_modes_zero_filt', 0) or 0)
-
-        if n_cut < 0:
-            raise ValueError("n_low_modes_zero_filt must be >= 0")
-        if n_cut == 0:
-            return 0
-
-        if not apply_filter:
-            raise ValueError(
-                "n_low_modes_zero_filt can be used only when apply_filter=True"
-            )
-
-        wfs_list_full = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
-        if active_wfs_mask is not None:
-            wfs_list = [wfs for i, wfs in enumerate(wfs_list_full) if active_wfs_mask[i]]
-        else:
-            wfs_list = wfs_list_full
-
-        has_offline_filter = False
-        for i, _ in enumerate(wfs_list):
-            if self._has_offline_slopes_filter_config(wfs_type, i + 1):
-                has_offline_filter = True
-                break
-
-        if not has_offline_filter:
-            raise ValueError(
-                "n_low_modes_zero_filt is set, but no offline slope filter "
-                "(filtmat_tag/filtmat_data) is configured for selected WFSs"
-            )
-
-        if verbose:
-            print(
-                f"Applying low-mode cut due to filtered slopes: drop absolute modes < {n_cut}"
-            )
-
-        return n_cut
-
-
-    @staticmethod
-    def _split_mode_columns_by_absolute_index(mode_indices, n_low_modes_cut):
-        """Return (keep_cols, drop_cols) using absolute mode indices in mode_indices."""
-        keep_cols = []
-        drop_cols = []
-        col = 0
-        for comp_modes in mode_indices:
-            for abs_mode in comp_modes:
-                if abs_mode < n_low_modes_cut:
-                    drop_cols.append(col)
-                else:
-                    keep_cols.append(col)
-                col += 1
-
-        return np.array(keep_cols, dtype=int), np.array(drop_cols, dtype=int)
-
-
-    @staticmethod
-    def _restore_reconstructor_with_zero_rows(rec_reduced, keep_cols, n_full_modes):
-        """Expand a reduced reconstructor to full mode size, filling dropped rows with zero."""
-        rec_full = np.zeros((n_full_modes, rec_reduced.shape[1]), dtype=rec_reduced.dtype)
-        rec_full[keep_cols, :] = rec_reduced
-        return rec_full
-
-
-    def _apply_low_mode_cut_to_mmse_inputs(self, im_full, C_atm_full_inv, mode_indices,
-                                           n_low_modes_cut, verbose=False):
-        """
-        Apply optional low-mode cut to MMSE inputs.
-
-        Returns reduced matrices plus keep/drop column indices so the final
-        reconstructor can be expanded back with zero rows for compatibility.
-        """
-        im_for_mmse = im_full
-        C_atm_for_mmse = C_atm_full_inv
-        keep_mode_cols = np.arange(im_full.shape[1], dtype=int)
-        drop_mode_cols = np.array([], dtype=int)
-
-        if n_low_modes_cut > 0:
-            keep_mode_cols, drop_mode_cols = self._split_mode_columns_by_absolute_index(
-                mode_indices,
-                n_low_modes_cut,
-            )
-            if keep_mode_cols.size == 0:
-                raise ValueError(
-                    "Low-mode cut removed all reconstruction modes; reduce "
-                    "n_low_modes_zero_filt"
-                )
-
-            im_for_mmse = im_full[:, keep_mode_cols]
-            C_atm_for_mmse = C_atm_full_inv[np.ix_(keep_mode_cols, keep_mode_cols)]
-
-            if verbose:
-                print(
-                    f"  Applied low-mode cut before MMSE: kept {keep_mode_cols.size}/"
-                    f"{im_full.shape[1]} modes"
-                )
-                print(f"  (Dropped {drop_mode_cols.size} mode rows to be restored as zero)")
-                print()
-
-        return im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols
 
 
     def _print_gpu_memory(self, label="", verbose=True):
@@ -2146,27 +1988,6 @@ class ParamsManager:
             print(f"  Components: {component_indices}")
             print(f"  Modes per component: {[len(mi) for mi in mode_indices]}")
 
-        # Optional compatibility behavior for filtered slopes:
-        # zero low-order mode columns in assembled IM while preserving matrix shape.
-        n_low_modes_cut = self._get_low_modes_cut_if_applicable(
-            wfs_type=wfs_type,
-            apply_filter=apply_filter,
-            active_wfs_mask=None,
-            verbose=verbose_flag,
-        )
-        if n_low_modes_cut > 0:
-            keep_cols, drop_cols = self._split_mode_columns_by_absolute_index(
-                mode_indices,
-                n_low_modes_cut,
-            )
-            if drop_cols.size > 0:
-                im_full[:, drop_cols] = 0
-                if verbose_flag:
-                    print(
-                        f"  Zeroed {drop_cols.size} low-order mode columns in assembled IM "
-                        f"(absolute mode < {n_low_modes_cut})"
-                    )
-
         # Save as Intmat (SPECULA format)
         pupdata_tag = f"{config_name}_{wfs_type}_{component_type}"
 
@@ -2298,22 +2119,6 @@ class ParamsManager:
             print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
             print()
 
-        # Optional low-order mode cut for filtered slopes.
-        n_low_modes_cut = self._get_low_modes_cut_if_applicable(
-            wfs_type=wfs_type,
-            apply_filter=True,
-            active_wfs_mask=active_wfs_mask,
-            verbose=verbose_flag,
-        )
-        im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols = \
-            self._apply_low_mode_cut_to_mmse_inputs(
-                im_full=im_full,
-                C_atm_full_inv=C_atm_full_inv,
-                mode_indices=mode_indices,
-                n_low_modes_cut=n_low_modes_cut,
-                verbose=verbose_flag,
-            )
-
         # ==================== STEP 3: Build Noise Covariance ====================
         if verbose_flag:
             print(f"STEP 3: Building Noise Covariance Matrix")
@@ -2353,8 +2158,8 @@ class ParamsManager:
 
         # Check: all must be cpu_float_dtype (regardless of endianness)
         expected_dtype = np.dtype(cpu_float_dtype)
-        for name, arr in [('im_full', im_for_mmse),
-                  ('C_atm_full', C_atm_for_mmse),
+        for name, arr in [('im_full', im_full),
+                          ('C_atm_full', C_atm_full_inv),
                           ('C_noise', C_noise_inv)]:
             arr_dtype = np.dtype(arr.dtype)
             if not (arr_dtype.kind == expected_dtype.kind and
@@ -2366,9 +2171,9 @@ class ParamsManager:
                 else:
                     raise TypeError(msg)
 
-        reconstructor_reduced = compute_mmse_reconstructor(
-            im_for_mmse,
-            C_atm_for_mmse,
+        reconstructor = compute_mmse_reconstructor(
+            im_full,
+            C_atm_full_inv,
             noise_variance=None,  # Already in C_noise
             C_noise=C_noise_inv,
             cinverse=True,
@@ -2376,15 +2181,6 @@ class ParamsManager:
             dtype=cpu_float_dtype,
             verbose=verbose_flag
         )
-
-        if n_low_modes_cut > 0:
-            reconstructor = self._restore_reconstructor_with_zero_rows(
-                rec_reduced=reconstructor_reduced,
-                keep_cols=keep_mode_cols,
-                n_full_modes=im_full.shape[1],
-            )
-        else:
-            reconstructor = reconstructor_reduced
 
         if verbose_flag:
             print(f"  ✓ Reconstructor computed: {reconstructor.shape}")

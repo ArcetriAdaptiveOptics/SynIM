@@ -26,8 +26,8 @@ Main Features
 **Smart Caching**
    Automatic caching of computed matrices and intermediate results to avoid redundant computations.
 
-**Unified Phase-First Pipeline**
-   A single computation pipeline applies geometric transforms on phase first, then computes derivatives on the final grid.
+**Workflow Optimization**
+   Intelligent selection of computation workflows to minimize interpolation steps and maximize accuracy.
 
 Architecture
 ------------
@@ -40,7 +40,7 @@ SynIM is organized into several main modules:
 **synim.py**
    Core functions for interaction matrix computation:
    
-   - ``interaction_matrix()``: Main function using the unified phase-first pipeline
+   - ``interaction_matrix()``: Main function with intelligent workflow selection
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
 
@@ -48,7 +48,7 @@ SynIM is organized into several main modules:
    Core functions for projection matrix computation:
    
    - ``projection_matrix()``: Main function for DM-Layer projection
-   - Similar phase-first strategy as interaction matrices
+   - Similar workflow optimization as interaction matrices
 
 **params_manager.py**
    High-level interface via the ``ParamsManager`` class:
@@ -76,26 +76,47 @@ SynIM is organized into several main modules:
 
 .. _computation_workflows:
 
-Computation Pipeline
+Computation Workflows
 ~~~~~~~~~~~~~~~~~~~~~
 
-SynIM implements a single phase-first pipeline for interaction matrix computation.
+SynIM implements two main workflows for interaction matrix computation, automatically selected based on system geometry to optimize accuracy and performance.
 
-**Unified Phase-First Pipeline**
+**SEPARATED Workflow**
+   Used when transformations exist only in DM or WFS (not both):
    
    **Process:**
    
-   1. Compose DM and WFS geometric transforms on the phase grid
-   2. Apply the full transform to influence functions in one phase domain pipeline
-   3. Compute numerical derivatives with edge extrapolation on the transformed phase
+   1. Apply DM transformations to influence functions (rotation, magnification, source altitude projection)
+   2. Compute numerical derivatives with edge extrapolation
+   3. Apply WFS transformations to derivatives (rotation, translation, magnification)
    4. Bin derivatives to subaperture resolution
    5. Extract slopes for valid subapertures
    
    **Advantages:**
    
-   - Avoids derivative-rotation inconsistencies
-   - Reduces interpolation-order ambiguity
-   - Consistent behavior across on-axis, off-axis and multi-WFS geometries
+   - Single interpolation step per transformation type
+   - Maximum accuracy (no cumulative interpolation errors)
+   - Can reuse derivatives for multiple WFS with same geometry
+
+**COMBINED Workflow**
+   Used when both DM and WFS have transformations:
+   
+   **Process:**
+   
+   1. Combine all DM and WFS transformations into single composite operation
+   2. Apply combined transformation to influence functions in one interpolation step
+   3. Compute derivatives on final transformed grid
+   4. Bin and extract slopes
+   
+   **Advantages:**
+   
+   - Avoids double interpolation artifacts that occur when transformations are coupled
+   - Single interpolation step when both DM and WFS rotate/translate
+   - Consistent handling of complex geometric configurations
+
+**Automatic Workflow Selection**
+
+The workflow is automatically selected based on system geometry analyzing transformation parameters.
 
 GPU Architecture
 ~~~~~~~~~~~~~~~~
