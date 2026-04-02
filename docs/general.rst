@@ -43,7 +43,7 @@ SynIM is organized into several main modules:
    - ``interaction_matrix()``: Main function using the unified phase-first pipeline
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
-   - ``compute_derivatives_gtilt()``: G-tilt estimation from phase differences per subaperture
+   - ``compute_gtilt_with_extrapolation()``: G-tilt estimation from phase differences per subaperture
 
 **synpm.py**
    Core functions for projection matrix computation:

@@ -45,7 +45,7 @@ def _repair_interpolated_phase(data, mask, threshold=0.999999):
     return data, mask
 
 
-def compute_derivatives_gtilt(data, mask=None, wfs_nsubaps=None, verbose=False):
+def compute_gtilt_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=False):
     """
     Computes the raw G-tilt (average phase difference per pixel) for each subaperture.
     Acts as the G-tilt equivalent of computing continuous derivatives.
@@ -389,7 +389,7 @@ def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
             trans_dm_array, mask=trans_dm_mask
         )
     elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_derivatives_gtilt(
+        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps
         )
     else:
@@ -512,7 +512,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
             trans_dm_array, mask=trans_dm_mask
         )
     elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_derivatives_gtilt(
+        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps
         )
     else:
@@ -598,7 +598,7 @@ def apply_wfs_transformations_separated(dm_array, pup_mask, dm_mask,
         wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
         verbose, specula_convention)
     elif slope_method == 'gtilt':
-        raw_gtilt_x, raw_gtilt_y = compute_derivatives_gtilt(
+        raw_gtilt_x, raw_gtilt_y = compute_gtilt_with_extrapolation(
             data=trans_dm_array, mask=dm_mask, wfs_nsubaps=wfs_nsubaps
         )
         slopes = _compute_slopes_from_gtilt(

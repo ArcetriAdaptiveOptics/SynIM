@@ -6,7 +6,7 @@ import specula
 specula.init(device_idx=-1, precision=1)
 
 from synim.synim import (
-    compute_derivatives_gtilt,
+    compute_gtilt_with_extrapolation,
     compute_derivatives_with_extrapolation,
     _compute_slopes_from_derivatives,
     _compute_slopes_from_gtilt
@@ -50,7 +50,7 @@ class TestSlopesMethods(unittest.TestCase):
         """
         # 1. Compute derivatives using the selected engine
         if method == 'gtilt':
-            raw_gtilt_x, raw_gtilt_y = compute_derivatives_gtilt(
+            raw_gtilt_x, raw_gtilt_y = compute_gtilt_with_extrapolation(
                 data=phase, mask=mask, wfs_nsubaps=self.wfs_nsubaps
             )
             slopes = _compute_slopes_from_gtilt(
