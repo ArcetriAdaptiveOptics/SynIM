@@ -70,6 +70,24 @@ class TestRotShiftZoomArray(unittest.TestCase):
         actual_area = np.sum(mag > 0.5)
         self.assertTrue(abs(expected_area - actual_area)/expected_area <  0.1)
 
+    def test_magnification_and_shift_combined3(self):
+        # Apply magnification
+        mag_trans = rotshiftzoom_array(
+            self.mask,
+            wfs_magnification=(0.5, 0.5),
+            wfs_translation=(25, 25),
+            output_size=(self.size, self.size)
+        )
+
+        plot_debug = True
+        if plot_debug:
+            fig, axs = plt.subplots(1, 2, figsize=(8, 4))
+            axs[0].imshow(self.mask, cmap='viridis')
+            axs[0].set_title('Original Mask')
+            axs[1].imshow(mag_trans, cmap='viridis')
+            axs[1].set_title('Magnified and Translated Mask (WFS)')
+            plt.show()
+
     def test_anamorphosis_45(self):
         # Apply 45° anamorphosis
         anam45 = rotshiftzoom_array(
@@ -207,3 +225,88 @@ class TestRotShiftZoomArray(unittest.TestCase):
 
         self.assertTrue(np.allclose(rotated,
                         np.roll(expected, shift=(1, 0), axis=(0, 1)), atol=1e-2))
+
+    def test_wfs_translation_independence(self):
+        """
+        Verifies that wfs_translation represents a pure camera shift on the 
+        focal plane and is not erroneously scaled by wfs_magnification.
+        """
+        trans_y, trans_x = 20, 0
+        mag = 2.0  # Strong WFS zoom
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            wfs_translation=(trans_y, trans_x),
+            wfs_magnification=(mag, mag),
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        expected_y = center_y + trans_y
+        expected_x = center_x + trans_x
+
+        self.assertEqual(peak_y, expected_y,
+                         "WFS Y translation was corrupted by WFS magnification!")
+        self.assertEqual(peak_x, expected_x,
+                         "WFS X translation was corrupted by WFS magnification!")
+
+    def test_dm_translation_independence_from_magnification(self):
+        """
+        Verifies that dm_translation (e.g., LGS off-axis shift) 
+        is strictly independent of the Cone Effect (dm_magnification).
+        """
+        trans_y, trans_x = 20, -10
+        mag = 0.5  # Strong cone effect (shrink)
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            dm_magnification=(mag, mag),
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        expected_y = center_y + trans_y
+        expected_x = center_x + trans_x
+
+        self.assertEqual(peak_y, expected_y,
+                         "DM Y translation was corrupted by Cone Effect!")
+        self.assertEqual(peak_x, expected_x,
+                         "DM X translation was corrupted by Cone Effect!")
+
+    def test_dm_translation_invariance_under_rotation(self):
+        """
+        Verifies that the LGS footprint shift in the sky remains invariant 
+        even if the DM rotates around the optical axis.
+        """
+        trans_y, trans_x = 30, 0
+        rot_deg = 90.0
+
+        # We use the asymmetric rectangular mask to verify BOTH the fixed shift and the rotation.
+        transformed = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            dm_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        expected_center_y = self.size // 2 + trans_y
+        expected_center_x = self.size // 2 + trans_x
+
+        y_indices, x_indices = np.where(transformed > 0.5)
+
+        # Check that the center hasn't moved
+        self.assertAlmostEqual(np.median(y_indices), expected_center_y, delta=1.0, 
+                               msg="DM center shifted incorrectly due to rotation!")
+        self.assertAlmostEqual(np.median(x_indices), expected_center_x, delta=1.0, 
+                               msg="DM center shifted incorrectly due to rotation!")
+
+        # Check that the shape actually rotated
+        width_y = np.max(y_indices) - np.min(y_indices)
+        width_x = np.max(x_indices) - np.min(x_indices)
+        self.assertTrue(width_x > 35 and width_y < 25,
+                        "Rectangle did not physically rotate!")

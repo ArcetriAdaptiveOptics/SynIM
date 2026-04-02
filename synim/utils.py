@@ -539,15 +539,34 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
 
     # Calculate offset
     output_center = xp.array(output_size) / 2.0
+
+    # THE HOLY GRAIL OF GEOMETRY:
+    # affine_transform uses inverse mapping: P_in = M_inv * P_out + offset.
+    # To enforce a pure physical shift 'T' on the output grid that is completely 
+    # immune to the scaling/rotation 'M_inv', we MUST subtract 'M_inv * T' in the offset.
+    
+    # 1. DM Translation (LGS off-axis shift):
+    # It must be immune to Cone Effect (DM mag) and DM rotation.
+    scaled_dm_translation = xp.dot(dm_matrix, xp.array(dm_translation)[:2])
+
+    # 2. WFS Translation (Camera physical shift):
+    # It must be immune to ALL optical transformations (DM and WFS).
+    # We extract the 2x2 spatial part [:2, :2] because for 3D arrays, 
+    # combined_matrix is promoted to 3x3, but optical translations are strictly 2D.
+    spatial_combined = combined_matrix[:2, :2] if is_3d else combined_matrix
+    scaled_wfs_translation = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
+
     if is_3d:
-        # For 3D, calculate offset only for the first two dimensions
-        offset_2d = center[:2] - xp.dot(combined_matrix[:2, :2], output_center) \
-            - xp.dot(dm_matrix, xp.array(dm_translation)) - xp.array(wfs_translation)
+        # For 3D, calculate offset only for the spatial dimensions (X, Y)
+        offset_2d = center[:2] - xp.dot(spatial_combined, output_center) \
+            - scaled_dm_translation - scaled_wfs_translation
+        # Expand to 3D: no offset shift for the Z axis (DM modes)
         offset = xp.zeros(3, dtype=offset_2d.dtype)
         offset[:2] = offset_2d
     else:
         offset = center - xp.dot(combined_matrix, output_center) \
-            - xp.dot(dm_matrix, xp.array(dm_translation)) - xp.array(wfs_translation)
+            - scaled_dm_translation - scaled_wfs_translation
+
     # Apply transformation (scipy requires numpy)
     output = affine_transform(
         input_array,
