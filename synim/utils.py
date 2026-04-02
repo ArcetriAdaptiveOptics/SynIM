@@ -256,149 +256,6 @@ def shiftzoom_from_source_dm_params(source_pol_coo, source_height, dm_height, pi
     return shift, zoom
 
 
-def rotshiftzoom_array_noaffine(input_array, dm_translation=(0.0, 0.0), dm_rotation=0.0,
-                                dm_magnification=(1.0, 1.0), wfs_translation=(0.0, 0.0),
-                                wfs_rotation=0.0, wfs_magnification=(1.0, 1.0), output_size=None):
-    """
-    Apply magnification, rotation, shift and resize of a 2D or 3D array.
-    Uses global rotate/shift/zoom functions (scipy or cupyx.scipy based on synim.init).
-    
-    NOTE: If cupyx.scipy is not available, this will force CPU conversion.
-    
-    Parameters:
-    - input_array: array (numpy or cupy), input data to be transformed
-    - dm_translation: tuple, translation for DM (x, y)
-    - dm_rotation: float, rotation angle for DM in degrees
-    - dm_magnification: tuple, magnification factors for DM (x, y)
-    - wfs_translation: tuple, translation for WFS (x, y)
-    - wfs_rotation: float, rotation angle for WFS in degrees
-    - wfs_magnification: tuple, magnification factors for WFS (x, y)
-    - output_size: tuple, desired output size (height, width)
-
-    Returns:
-    - output: transformed array (same library as input)
-    """
-
-    # *** DETECT INPUT TYPE ***
-    input_is_gpu = (xp.__name__ == 'cupy' and isinstance(input_array, xp.ndarray))
-
-    # *** CHECK IF FUNCTIONS SUPPORT GPU ***
-    # If rotate/shift/zoom are from cupyx.scipy, they can handle cupy arrays
-    # If they're from scipy, we need to convert to numpy
-    funcs_support_gpu = (rotate.__module__ == 'cupyx.scipy.ndimage._interpolation')
-
-    # *** CONVERT TO CPU IF NEEDED ***
-    needs_cpu = input_is_gpu and not funcs_support_gpu
-
-    if needs_cpu:
-        # GPU input but functions require CPU (scipy)
-        input_array_proc = cpuArray(input_array)
-        using_gpu = False
-    else:
-        # Either CPU input, or GPU input with cupyx.scipy support
-        input_array_proc = input_array
-        using_gpu = input_is_gpu
-
-    # *** HANDLE NaN ***
-    if xp.isnan(input_array_proc).any():
-        xp.nan_to_num(input_array_proc, copy=False, nan=0.0, posinf=None, neginf=None)
-
-    # Check if array is 2D or 3D
-    if len(input_array_proc.shape) == 3:
-        dm_translation_ = dm_translation + (0,)
-        dm_magnification_ = dm_magnification + (1,)
-        wfs_translation_ = wfs_translation + (0,)
-        wfs_magnification_ = wfs_magnification + (1,)
-    else:
-        dm_translation_ = dm_translation
-        dm_magnification_ = dm_magnification
-        wfs_translation_ = wfs_translation
-        wfs_magnification_ = wfs_magnification
-
-    # Set output size
-    if output_size is None:
-        output_size = input_array_proc.shape
-
-    # Use proper array library
-    lib = xp if using_gpu else np
-
-    # (1) DM magnification
-    if all(element == 1 for element in dm_magnification_):
-        array_mag = input_array_proc
-    else:
-        array_mag = zoom(input_array_proc, dm_magnification_)
-
-    # (2) DM rotation
-    if dm_rotation == 0:
-        array_rot = array_mag
-    else:
-        array_rot = rotate(array_mag, dm_rotation, axes=(1, 0), reshape=False)
-
-    # (3) DM translation
-    if all(element == 0 for element in dm_translation_):
-        array_shi = array_rot
-    else:
-        array_shi = shift(array_rot, dm_translation_)
-
-    # (4) WFS rotation
-    if wfs_rotation == 0:
-        array_rot = array_shi
-    else:
-        array_rot = rotate(array_shi, wfs_rotation, axes=(1, 0), reshape=False)
-
-    # (5) WFS translation
-    if all(element == 0 for element in wfs_translation_):
-        array_shi = array_rot
-    else:
-        array_shi = shift(array_rot, wfs_translation_)
-
-    # (6) WFS magnification
-    if all(element == 1 for element in wfs_magnification_):
-        array_mag = array_shi
-    else:
-        array_mag = zoom(array_shi, wfs_magnification_)
-
-    # Crop or pad to output_size
-    if (array_mag.shape[0] > output_size[0]) | (array_mag.shape[1] > output_size[1]):
-        # Smaller output size
-        if len(input_array_proc.shape) == 3:
-            output = array_mag[
-                int(0.5*(array_mag.shape[0]-output_size[0])):int(0.5*(array_mag.shape[0]+output_size[0])), 
-                int(0.5*(array_mag.shape[1]-output_size[1])):int(0.5*(array_mag.shape[1]+output_size[1])),
-                :
-            ]
-        else:
-            output = array_mag[
-                int(0.5*(array_mag.shape[0]-output_size[0])):int(0.5*(array_mag.shape[0]+output_size[0])), 
-                int(0.5*(array_mag.shape[1]-output_size[1])):int(0.5*(array_mag.shape[1]+output_size[1]))
-            ]
-    elif (array_mag.shape[0] < output_size[0]) | (array_mag.shape[1] < output_size[1]):
-        # Bigger output size
-        if len(input_array_proc.shape) == 3:
-            output = lib.zeros(output_size + (input_array_proc.shape[2],), dtype=array_mag.dtype)
-            output[
-                int(0.5*(output_size[0]-array_mag.shape[0])):int(0.5*(output_size[0]+array_mag.shape[0])), 
-                int(0.5*(output_size[1]-array_mag.shape[1])):int(0.5*(output_size[1]+array_mag.shape[1])),
-                :
-            ] = array_mag
-        else:
-            output = lib.zeros(output_size, dtype=array_mag.dtype)
-            output[
-                int(0.5*(output_size[0]-array_mag.shape[0])):int(0.5*(output_size[0]+array_mag.shape[0])), 
-                int(0.5*(output_size[1]-array_mag.shape[1])):int(0.5*(output_size[1]+array_mag.shape[1]))
-            ] = array_mag
-    else:
-        output = array_mag
-
-    # *** CONVERT BACK TO GPU IF NEEDED ***
-    if input_is_gpu and not using_gpu:
-        # We used CPU (scipy), convert result back to GPU
-        return to_xp(xp, output, dtype=float_dtype)
-    else:
-        # Already in correct format
-        return output
-
-
 def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
                        dm_rotation=0.0, dm_magnification=(1.0, 1.0),
                        wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
@@ -542,16 +399,16 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
 
     # THE HOLY GRAIL OF GEOMETRY:
     # affine_transform uses inverse mapping: P_in = M_inv * P_out + offset.
-    # To enforce a pure physical shift 'T' on the output grid that is completely 
+    # To enforce a pure physical shift 'T' on the output grid that is completely
     # immune to the scaling/rotation 'M_inv', we MUST subtract 'M_inv * T' in the offset.
-    
+
     # 1. DM Translation (LGS off-axis shift):
     # It must be immune to Cone Effect (DM mag) and DM rotation.
     scaled_dm_translation = xp.dot(dm_matrix, xp.array(dm_translation)[:2])
 
     # 2. WFS Translation (Camera physical shift):
     # It must be immune to ALL optical transformations (DM and WFS).
-    # We extract the 2x2 spatial part [:2, :2] because for 3D arrays, 
+    # We extract the 2x2 spatial part [:2, :2] because for 3D arrays,
     # combined_matrix is promoted to 3x3, but optical translations are strictly 2D.
     spatial_combined = combined_matrix[:2, :2] if is_3d else combined_matrix
     scaled_wfs_translation = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
