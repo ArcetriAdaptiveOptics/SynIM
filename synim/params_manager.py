@@ -3068,7 +3068,7 @@ class ParamsManager:
             print(f"  Components: {component_indices}")
             print(f"  Modes per component: {[len(mi) for mi in mode_indices]}")
             print(f"  Total modes: {total_modes}")
-            print(f"  Weights: {weights}")
+            print(f"  Cn2 weights: {weights}")
 
         # Initialize full covariance matrix
         C_atm_full = np.zeros((total_modes, total_modes), dtype=cpu_float_dtype)
