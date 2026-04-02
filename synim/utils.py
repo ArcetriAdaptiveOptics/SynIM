@@ -397,14 +397,16 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     # Calculate offset
     output_center = xp.array(output_size) / 2.0
 
-    # 1. LGS Shift (DM Translation): 
-    # Must be rotated by the DM local frame, but STRICTLY independent of Cone Effect (dm_magnification)
-    # So we use dm_rot_matrix, NOT dm_matrix (which contains the scaling)
-    rotated_dm_translation = xp.dot(dm_rot_matrix, xp.array(dm_translation))
+    # 1. DM Translation (LGS off-axis shift):
+    # Optical order: Shift -> Magnify.
+    # The shift is physically on the DM, so when the DM is magnified by the Cone Effect,
+    # the apparent shift MUST scale too. We only apply the DM rotation, NO scaling matrix.
+    rotated_dm_translation = xp.dot(dm_rot_matrix, xp.array(dm_translation)[:2])
 
-    # 2. Camera Shift (WFS Translation):
-    # Must be immune to ALL optical zoom/rotations. Since affine_transform uses inverse mapping (M_inv),
-    # we MUST pre-multiply the physical translation by the spatial combined_matrix to cancel it out.
+    # 2. WFS Translation (Camera physical shift):
+    # Optical order: Magnify -> Shift.
+    # The camera shifts AFTER the optical zoom. To keep this shift absolute in affine_transform
+    # (which uses inverse mapping), we MUST pre-multiply it by the combined spatial matrix.
     spatial_combined = combined_matrix[:2, :2] if is_3d else combined_matrix
     scaled_wfs_translation = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
 
