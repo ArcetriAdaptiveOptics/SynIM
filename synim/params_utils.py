@@ -972,7 +972,10 @@ def generate_im_filename(params_file, wfs_type=None,
     if wfs_key:
         # Extract source configuration
         source_config = extract_source_config(params, wfs_key)
-        source_info = build_source_filename_part(source_config)
+        source_info = build_source_filename_part(
+            source_config,
+            zenith_angle=main_params.get('zenithAngleInDeg', None),
+        )
         filename_parts.append(source_info)
 
         # Add WFS information
@@ -1339,9 +1342,11 @@ def compute_layer_weights_from_turbulence(params,
                                           verbose=False):
     """
     Compute layer weights from atmospheric turbulence profile.
-    
-    Associates each layer/DM with the nearest turbulence height and assigns
-    the corresponding CN² contribution as weight.
+
+    This follows the same core reduction strategy used in legacy IDL tools:
+    atmospheric heights are first scaled by airmass (if zenith angle is
+    provided), then each turbulence slab contributes its CN² to the nearest
+    reconstruction layer/DM height.
     
     Args:
         params (dict): Configuration dictionary with 'atmo' section
@@ -1371,20 +1376,42 @@ def compute_layer_weights_from_turbulence(params,
         raise ValueError("'atmo.heights' and 'atmo.cn2' must be specified"
                          " for automatic weight computation")
 
-    turb_heights = np.array(atmo['heights'])
-    turb_cn2 = np.array(atmo[cn2_key])
+    turb_heights = np.asarray(atmo['heights'], dtype=float)
+    turb_cn2 = np.asarray(atmo[cn2_key], dtype=float)
+
+    if turb_heights.ndim != 1 or turb_cn2.ndim != 1:
+        raise ValueError("'atmo.heights' and 'atmo.cn2' must be 1D arrays")
 
     if len(turb_heights) != len(turb_cn2):
         raise ValueError(f"Mismatch: {len(turb_heights)} heights vs {len(turb_cn2)} CN² values")
 
+    if not np.all(np.isfinite(turb_heights)) or not np.all(np.isfinite(turb_cn2)):
+        raise ValueError("'atmo.heights' and 'atmo.cn2' must contain finite values")
+
+    cn2_sum = np.sum(turb_cn2)
+    if cn2_sum <= 0:
+        raise ValueError("Sum of 'atmo.cn2' must be > 0")
+
+    # IDL-compatible airmass scaling: alt *= 1 / cos(zenithAngleInDeg)
+    main_params = params.get('main', {})
+    zenith_deg = float(main_params.get('zenithAngleInDeg', 0.0) or 0.0)
+    cos_zenith = np.cos(np.deg2rad(zenith_deg))
+    if cos_zenith <= 0:
+        raise ValueError("Invalid zenithAngleInDeg: cos(zenithAngleInDeg) must be > 0")
+    airmass = 1.0 / cos_zenith
+    turb_heights_eff = turb_heights * airmass
+
     # Normalize CN² to sum to 1
-    turb_cn2_norm = turb_cn2 / np.sum(turb_cn2)
+    turb_cn2_norm = turb_cn2 / cn2_sum
 
     if verbose:
         print(f"\n{'='*60}")
         print(f"Computing Layer Weights from Atmospheric Profile")
         print(f"{'='*60}")
-        print(f"  Turbulence heights: {turb_heights}")
+        print(f"  Zenith angle [deg]: {zenith_deg}")
+        print(f"  Airmass: {airmass:.6f}")
+        print(f"  Turbulence heights (original): {turb_heights}")
+        print(f"  Turbulence heights (airmass-scaled): {turb_heights_eff}")
         print(f"  CN² values: {turb_cn2}")
         print(f"  Normalized CN²: {turb_cn2_norm}")
 
@@ -1398,7 +1425,7 @@ def compute_layer_weights_from_turbulence(params,
         layer_height = params[comp_key].get('height', 0.0)
         layer_heights.append(layer_height)
 
-    layer_heights = np.array(layer_heights)
+    layer_heights = np.asarray(layer_heights, dtype=float)
 
     if verbose:
         print(f"\n  Layer heights: {layer_heights}")
@@ -1407,7 +1434,7 @@ def compute_layer_weights_from_turbulence(params,
     # For each turbulence height, find which layer it's closest to
     weights = np.zeros(len(layer_heights))
 
-    for j, turb_h in enumerate(turb_heights):
+    for j, turb_h in enumerate(turb_heights_eff):
         # Find the layer closest to this turbulence height
         idx_nearest_layer = np.argmin(np.abs(layer_heights - turb_h))
 
