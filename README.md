@@ -24,36 +24,6 @@ It also supports GPU acceleration. Some of its functionalities are provided by [
 
 Full documentation available at: **[synim.readthedocs.io](https://synim.readthedocs.io)**
 
-## Slope Computation Methods
-
-SynIM supports two slope computation methods for interaction matrices:
-
-- `derivatives` (default): compute numerical derivatives on the transformed phase
-- `gtilt` (optional): compute G-tilt from phase differences in each subaperture
-
-The default behavior is unchanged (`derivatives`). To enable G-tilt, pass
-`slope_method='gtilt'` when calling the low-level interaction-matrix APIs.
-
-Example:
-
-```python
-from synim.synim import interaction_matrix
-
-im = interaction_matrix(
-  pup_diam_m=pup_diam_m,
-  pup_mask=pup_mask,
-  dm_array=dm_array,
-  dm_mask=dm_mask,
-  dm_height=dm_height,
-  dm_rotation=dm_rotation,
-  wfs_nsubaps=wfs_nsubaps,
-  wfs_fov_arcsec=wfs_fov_arcsec,
-  gs_pol_coo=gs_pol_coo,
-  gs_height=gs_height,
-  slope_method='gtilt',
-)
-```
-
 ## Requirements
 
 - Python ≥ 3.8

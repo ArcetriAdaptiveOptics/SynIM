@@ -27,7 +27,7 @@ Main Features
    Automatic caching of computed matrices and intermediate results to avoid redundant computations.
 
 **Unified Phase-First Pipeline**
-   A single computation pipeline applies geometric transforms on phase first, then computes slopes on the final grid.
+   A single computation pipeline applies geometric transforms on phase first, then computes derivatives on the final grid.
 
 Architecture
 ------------
@@ -43,7 +43,6 @@ SynIM is organized into several main modules:
    - ``interaction_matrix()``: Main function using the unified phase-first pipeline
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
-   - ``compute_gtilt_with_extrapolation()``: G-tilt estimation from phase differences per subaperture
 
 **synpm.py**
    Core functions for projection matrix computation:
@@ -82,19 +81,14 @@ Computation Pipeline
 
 SynIM implements a single phase-first pipeline for interaction matrix computation.
 
-Slope extraction supports two methods controlled by ``slope_method`` argument of the main functions:
-
-- ``derivatives`` (default): numerical derivatives with extrapolation-aware edge handling
-- ``gtilt`` (optional): average phase differences (G-tilt) in each subaperture
-
 **Unified Phase-First Pipeline**
    
    **Process:**
    
    1. Compose DM and WFS geometric transforms on the phase grid
    2. Apply the full transform to influence functions in one phase domain pipeline
-   3. Compute subaperture slopes on the transformed phase (``derivatives`` or ``gtilt``)
-   4. Bin/format signals to subaperture resolution
+   3. Compute numerical derivatives with edge extrapolation on the transformed phase
+   4. Bin derivatives to subaperture resolution
    5. Extract slopes for valid subapertures
    
    **Advantages:**

@@ -169,12 +169,9 @@ Now compute the same IM using SynIM's synthetic approach:
      Modes:  40   # Number of DM modes
 
 .. note::
-   SynIM uses a unified phase-first workflow for interaction-matrix computation.
-
-   By default, slope extraction uses ``slope_method='derivatives'``.
-   If needed, you can use the optional G-tilt mode by passing
-   ``slope_method='gtilt'`` to low-level ``synim.interaction_matrix()``
-   or ``synim.interaction_matrices_multi_wfs()`` calls.
+   SynIM automatically selects the optimal computation workflow (SEPARATED or COMBINED) based on your system geometry. For on-axis SCAO with no WFS transformations, the SEPARATED workflow is typically used.
+   
+   For details on workflow selection logic and when each is optimal, see :ref:`Computation Workflows <computation_workflows>` in the General Documentation.
 
 
 Step 3: Generate Reconstruction Matrix

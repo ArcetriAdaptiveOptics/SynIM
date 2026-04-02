@@ -9,173 +9,6 @@ from synim.utils import (
     calculate_extrapolation_indices_coeffs
 )
 
-
-def _repair_interpolated_phase(data, mask, threshold=0.999999):
-    """
-    Vital repair for edge artifacts. 
-    Restores pixels that collapsed towards 0 due to bilinear interpolation 
-    by using a strict threshold logic to select only uncorrupted pixels.
-    """
-    if mask is not None:
-        if mask.max() < threshold:
-            raise ValueError(f'Mask max value is {mask.max()},'
-                             f' expected binary mask with values 0 and 1.')
-
-        # 1. Strict binarization: isolate only the pure "core" that escaped interpolation
-        strict_mask = xp.where(mask >= threshold, 1, 0)
-
-        # 2. Zero out the softened edges corrupted by interpolation
-        data_repaired = apply_mask(data, strict_mask, fill_value=0)
-
-        # 3. Calculate indices and extrapolate using ONLY the strict mask
-        edge_pixels, reference_indices, coefficients = calculate_extrapolation_indices_coeffs(
-            cpuArray(strict_mask), debug=False, debug_pixels=None
-        )
-
-        edge_pixels = to_xp(xp, edge_pixels, dtype=xp.int32)
-        reference_indices = to_xp(xp, reference_indices, dtype=xp.int32)
-        coefficients = to_xp(xp, coefficients, dtype=float_dtype)
-
-        # 4. Apply extrapolation, overwriting the corrupted edges with restored values
-        data_repaired = apply_extrapolation(
-            data_repaired, edge_pixels, reference_indices, coefficients, in_place=True
-        )
-
-        return data_repaired, strict_mask
-    return data, mask
-
-
-def compute_gtilt_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=False):
-    """
-    Computes the raw G-tilt (average phase difference per pixel) for each subaperture.
-    Acts as the G-tilt equivalent of computing continuous derivatives.
-    """
-    if wfs_nsubaps is None:
-        raise ValueError("wfs_nsubaps must be provided to compute G-tilt.")
-
-    pup_diam_pix = data.shape[0]
-    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
-    W = N * wfs_nsubaps
-
-    # ON-THE-FLY INTERPOLATION
-    if pup_diam_pix != W:
-        if verbose:
-            print(f"  * G-Tilt: Interpolating grid from {pup_diam_pix} to {W} (N={N})")
-        mag = W / pup_diam_pix
-        data = rotshiftzoom_array(data, dm_magnification=(mag, mag), output_size=(W, W))
-        if mask is not None:
-            mask = rotshiftzoom_array(mask, dm_magnification=(mag, mag), output_size=(W, W))
-            mask[mask < 0.5] = 0
-
-    # Repair interpolated edges using strict logic
-    if mask is not None:
-        repaired_data, strict_mask = _repair_interpolated_phase(data, mask)
-    else:
-        repaired_data = data
-        strict_mask = xp.ones((data.shape[0], data.shape[1]), dtype=float_dtype)
-
-    # Setup 4D arrays for the Telescoping Sum
-    is_3d = repaired_data.ndim == 3
-    if is_3d:
-        n_modes = repaired_data.shape[2]
-        p = repaired_data.reshape(wfs_nsubaps, N, wfs_nsubaps, N, n_modes)
-        m = strict_mask.reshape(wfs_nsubaps, N, wfs_nsubaps, N, 1)
-    else:
-        p = repaired_data.reshape(wfs_nsubaps, N, wfs_nsubaps, N)
-        m = strict_mask.reshape(wfs_nsubaps, N, wfs_nsubaps, N)
-
-    # Fast 4D Telescoping Sum
-    dx = p[:, :, :, 1:] - p[:, :, :, :-1]
-    valid_dx = m[:, :, :, 1:] & m[:, :, :, :-1]
-    sum_dx = xp.sum(xp.where(valid_dx, dx, 0.0), axis=(1, 3))
-    weight_dx = xp.sum(valid_dx, axis=(1, 3))
-
-    dy = p[:, 1:, :, :] - p[:, :-1, :, :]
-    valid_dy = m[:, 1:, :, :] & m[:, :-1, :, :]
-    sum_dy = xp.sum(xp.where(valid_dy, dy, 0.0), axis=(1, 3))
-    weight_dy = xp.sum(valid_dy, axis=(1, 3))
-
-    # Normalize to get Delta Phi per valid baseline
-    raw_gtilt_x = xp.where(weight_dx > 0, (sum_dx / xp.where(weight_dx > 0, weight_dx, 1.0)), 0.0)
-    raw_gtilt_y = xp.where(weight_dy > 0, (sum_dy / xp.where(weight_dy > 0, weight_dy, 1.0)), 0.0)
-
-    return raw_gtilt_x, raw_gtilt_y
-
-
-def _compute_slopes_from_gtilt(raw_gtilt_x, raw_gtilt_y, pup_mask, dm_mask,
-                               wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
-                               idx_valid_sa, verbose, specula_convention):
-    """
-    Formats the raw G-tilt into the final 1D slopes array.
-    Signature is fully symmetrical to _compute_slopes_from_derivatives.
-    """
-    is_3d = raw_gtilt_x.ndim == 3
-
-    # 1. Deduce N internally
-    pup_diam_pix = pup_mask.shape[0]
-    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
-
-    # 2. Rebin masks to compute valid subapertures (identical to derivative method)
-    if xp.isnan(pup_mask).any():
-        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
-    if xp.isnan(dm_mask).any():
-        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
-
-    pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
-
-    # 3. Apply mask
-    gtilt_x = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
-              else combined_mask_sa, raw_gtilt_x, 0.0)
-    gtilt_y = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
-              else combined_mask_sa, raw_gtilt_y, 0.0)
-
-    # 4. Reshape to 2D matrix
-    wfs_signal_x_2d = gtilt_x.reshape((-1, gtilt_x.shape[2] if is_3d else 1))
-    wfs_signal_y_2d = gtilt_y.reshape((-1, gtilt_y.shape[2] if is_3d else 1))
-
-    # 5. Select valid subapertures using provided indices
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
-        else:
-            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
-
-    # 6. Concatenate X and Y arrays
-    if specula_convention:
-        im = xp.concatenate((wfs_signal_y_2d, wfs_signal_x_2d))
-    else:
-        im = xp.concatenate((wfs_signal_x_2d, wfs_signal_y_2d))
-
-    # 7. Convert to slope units and apply N scaling
-    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
-    coeff *= 1 / (0.5 * wfs_fov_arcsec)
-    coeff *= N
-
-    im = im * coeff
-
-    if verbose:
-        print(f'  ✓ G-tilt slopes formatted, shape: {im.shape}')
-
-    return im
-
-
 def compute_derivatives_with_extrapolation(data,mask=None):
     """
     Compute x and y derivatives using numpy.gradient on a 2D or 3D numpy array
@@ -191,7 +24,23 @@ def compute_derivatives_with_extrapolation(data,mask=None):
     """
 
     if mask is not None:
-        data, mask = _repair_interpolated_phase(data, mask)
+        # mask must be binary, set to 0 value below 0.999999 and 1 above
+        # the threshold is to avoid numerical issues due to interpolations
+        if mask.max() < 0.999999:
+            raise ValueError(f'Mask max value is {mask.max()},'
+                             f' expected binary mask with values 0 and 1.')
+        mask = xp.where(mask >= 0.999999, 1, 0)
+        # set to 0 values outside the mask
+        data = apply_mask(data, mask, fill_value=0)
+        # Calculate indices and coefficients for extrapolation
+        edge_pixels, reference_indices, coefficients = calculate_extrapolation_indices_coeffs(
+            cpuArray(mask), debug=False, debug_pixels=None)
+        edge_pixels = to_xp(xp, edge_pixels, dtype=xp.int32)
+        reference_indices = to_xp(xp, reference_indices, dtype=xp.int32)
+        coefficients = to_xp(xp, coefficients, dtype=float_dtype)
+        data = apply_extrapolation(
+            data, edge_pixels, reference_indices, coefficients, in_place=True
+        )
 
     # Compute x derivative
     dx = xp.gradient(data, axis=(1), edge_order=1)
@@ -200,128 +49,44 @@ def compute_derivatives_with_extrapolation(data,mask=None):
     dy = xp.gradient(data, axis=(0), edge_order=1)
 
     if mask is not None:
-        # Gracefully handle both 2D and 3D arrays
-        is_3d = dx.ndim == 3
         idx = xp.ravel(xp.array(xp.where(mask.flatten() == 0)))
-
-        dx_2d = dx.reshape((-1, dx.shape[2] if is_3d else 1))
-        dx_2d[idx, :] = xp.nan
-
-        dy_2d = dy.reshape((-1, dy.shape[2] if is_3d else 1))
-        dy_2d[idx, :] = xp.nan
-
+        dx_2d = dx.reshape((-1,dx.shape[2]))
+        dx_2d[idx,:] = xp.nan
+        dy_2d = dy.reshape((-1,dy.shape[2]))
+        dy_2d[idx,:] = xp.nan
         dx = dx_2d.reshape(dx.shape)
         dy = dy_2d.reshape(dy.shape)
 
     return dx, dy
 
-
-def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_mask,
-                                     wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
-                                     verbose, specula_convention):
+def integrate_derivatives(dx, dy):
     """
-    Common function to compute slopes from derivatives.
-    Used by both separated and combined workflows.
+    Numerical integration of derivatives using numpy.cumsum
+    along the x and y axes.
+
+    Parameters:
+        dx (ndarray): x derivative of the data.
+        dy (ndarray): y derivative of the data.
+
+    Returns:
+        tuple: (integrated_x, integrated_y)
+            - integrated_x: Integrated x derivative.
+            - integrated_y: Integrated y derivative.
     """
 
-    # Clean up masks
-    if xp.isnan(pup_mask).any():
-        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
-    if xp.isnan(dm_mask).any():
-        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
+    # Integrate x derivative along the x-axis
+    integrated_x = xp.cumsum(dx, axis=1)
 
-    # Rebin masks to WFS resolution
-    pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    pup_mask_sa = pup_mask_sa / xp.max(pup_mask_sa) if xp.max(pup_mask_sa) > 0 else pup_mask_sa
+    # Integrate y derivative along the y-axis
+    integrated_y = xp.cumsum(dy, axis=0)
 
-    dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    if xp.max(dm_mask_sa) <= 0:
-        raise ValueError('DM mask is empty after rebinning.')
-    dm_mask_sa = dm_mask_sa / xp.max(dm_mask_sa)
-
-    # Clean derivatives
-    if xp.isnan(derivatives_x).any():
-        xp.nan_to_num(derivatives_x, copy=False, nan=0.0)
-    if xp.isnan(derivatives_y).any():
-        xp.nan_to_num(derivatives_y, copy=False, nan=0.0)
-
-    # Apply pupil mask
-    trans_der_x = apply_mask(derivatives_x, pup_mask, fill_value=xp.nan)
-    trans_der_y = apply_mask(derivatives_y, pup_mask, fill_value=xp.nan)
-
-    # Rebin derivatives
-    # Since we use 'nanmean', the average is already correctly normalized by the valid area.
-    scale_factor = trans_der_x.shape[0] / wfs_nsubaps
-
-    wfs_signal_x = rebin(trans_der_x, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
-    wfs_signal_y = rebin(trans_der_y, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
-
-    # Combined mask
-    combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
-
-    # Apply mask
-    wfs_signal_x = apply_mask(wfs_signal_x, combined_mask_sa, fill_value=0)
-    wfs_signal_y = apply_mask(wfs_signal_y, combined_mask_sa, fill_value=0)
-
-    # Check if data is 3D (modes) or 2D (single phase screen)
-    is_3d = wfs_signal_x.ndim == 3
-
-    # Reshape gracefully handling both 2D and 3D arrays
-    wfs_signal_x_2d = wfs_signal_x.reshape((-1, wfs_signal_x.shape[2] if is_3d else 1))
-    wfs_signal_y_2d = wfs_signal_y.reshape((-1, wfs_signal_y.shape[2] if is_3d else 1))
-
-    # Select valid subapertures
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # *** sa_2d should use float_dtype (it's a mask with 0/1 values) ***
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            # *** But idx_valid_sa_new should keep integer type (indices!) ***
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)  # Keep original dtype (int)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
-        else:
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
-
-    # Concatenate
-    if specula_convention:
-        im = xp.concatenate((wfs_signal_y_2d, wfs_signal_x_2d))
-    else:
-        im = xp.concatenate((wfs_signal_x_2d, wfs_signal_y_2d))
-
-    # Convert to slope units
-    pup_diam_pix = pup_mask.shape[0]
-    pixel_pitch = pup_diam_m / pup_diam_pix
-    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
-    coeff *= 1 / (0.5 * wfs_fov_arcsec)
-    im = im * coeff
-
-    if verbose:
-        print(f'  ✓ Slopes computed, shape: {im.shape}')
-
-    return im
+    return integrated_x, integrated_y
 
 
 def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
                                        dm_height, dm_rotation,
                                        gs_pol_coo, gs_height,
-                                       wfs_nsubaps,
-                                       slope_method='derivatives',
-                                       specula_convention=True,
-                                       verbose=False):
+                                       verbose=False, specula_convention=True):
     """
     Apply ONLY DM transformations (for separated workflow).
     Returns derivatives that need WFS transformations applied separately.
@@ -384,16 +149,9 @@ def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
     trans_dm_array = apply_mask(trans_dm_array, trans_dm_mask)
 
     # Compute derivatives on DM-transformed array
-    if slope_method == 'derivatives':
-        derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
-            trans_dm_array, mask=trans_dm_mask
-        )
-    elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
-            trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps
-        )
-    else:
-        raise ValueError(f"Unknown slope_method: {slope_method}")
+    derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
+        trans_dm_array, mask=trans_dm_mask
+    )
 
     if verbose:
         print(f'  ✓ DM array transformed, shape: {trans_dm_array.shape}')
@@ -406,14 +164,11 @@ def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
 def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
                                       dm_height, dm_rotation,
                                       gs_pol_coo, gs_height,
-                                      wfs_nsubaps,
                                       wfs_rotation, wfs_translation,
                                       wfs_mag_global=1.0,
                                       wfs_anamorphosis_90=1.0,
                                       wfs_anamorphosis_45=1.0,
-                                      slope_method='derivatives',
-                                      specula_convention=True,
-                                      verbose=False):
+                                      verbose=False, specula_convention=True):
     """
     Apply DM and WFS transformations COMBINED (single interpolation step).
     This avoids cumulative interpolation errors when both DM and WFS have rotations.
@@ -507,16 +262,9 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
     trans_dm_array = apply_mask(trans_dm_array, trans_dm_mask)
 
     # Compute derivatives on already-transformed array
-    if slope_method == 'derivatives':
-        derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
-            trans_dm_array, mask=trans_dm_mask
-        )
-    elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
-            trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps
-        )
-    else:
-        raise ValueError(f"Unknown slope_method: {slope_method}")
+    derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
+        trans_dm_array, mask=trans_dm_mask
+    )
 
     if verbose:
         print(f'  ✓ Combined transformation applied, shape: {trans_dm_array.shape}')
@@ -532,7 +280,6 @@ def apply_wfs_transformations_separated(dm_array, pup_mask, dm_mask,
                                         wfs_anamorphosis_90=1.0,
                                         wfs_anamorphosis_45=1.0,
                                         idx_valid_sa=None, verbose=False,
-                                        slope_method='derivatives',
                                         specula_convention=True):
     """
     Apply WFS transformations to DM phase (for separated workflow), then
@@ -588,62 +335,136 @@ def apply_wfs_transformations_separated(dm_array, pup_mask, dm_mask,
 
     trans_dm_array = apply_mask(trans_dm_array, dm_mask)
 
-    # Compute derivatives on already-transformed array
-    if slope_method == 'derivatives':
-        trans_der_x, trans_der_y = compute_derivatives_with_extrapolation(
-            trans_dm_array, mask=dm_mask
-        )
-        slopes = _compute_slopes_from_derivatives(
-        trans_der_x, trans_der_y, trans_pup_mask, dm_mask,
-        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
-        verbose, specula_convention)
-    elif slope_method == 'gtilt':
-        raw_gtilt_x, raw_gtilt_y = compute_gtilt_with_extrapolation(
-            data=trans_dm_array, mask=dm_mask, wfs_nsubaps=wfs_nsubaps
-        )
-        slopes = _compute_slopes_from_gtilt(
-            raw_gtilt_x, raw_gtilt_y, trans_pup_mask, dm_mask,
-            wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
-            idx_valid_sa, verbose, specula_convention
-        )
-    else:
-        raise ValueError(f"Unknown slope_method: {slope_method}")
+    trans_der_x, trans_der_y = compute_derivatives_with_extrapolation(
+        trans_dm_array, mask=dm_mask
+    )
 
     # Continue with rebinning and slope computation
-    return slopes
+    return _compute_slopes_from_derivatives(
+        trans_der_x, trans_der_y, trans_pup_mask, dm_mask,
+        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
+        verbose, specula_convention
+    )
 
 
 def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
                                        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa=None,
-                                       specula_convention=True, slope_method='derivatives',
-                                       verbose=False):
+                                       verbose=False, specula_convention=True):
     """
-    Format slopes from pre-transformed raw data (for combined workflow).
-    Routes to the appropriate formatter based on the chosen method.
+    Compute slopes from pre-transformed derivatives (for combined workflow).
+    No additional transformations needed.
     """
-    if slope_method == 'derivatives':
-        return _compute_slopes_from_derivatives(
-            derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
-            wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
-            verbose, specula_convention
-        )
-    elif slope_method == 'gtilt':
-        return _compute_slopes_from_gtilt(
-            derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
-            wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
-            idx_valid_sa, verbose, specula_convention
-        )
+
+    # Derivatives are already transformed - just compute slopes
+    return _compute_slopes_from_derivatives(
+        derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
+        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
+        verbose, specula_convention
+    )
+
+
+def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_mask,
+                                     wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
+                                     verbose, specula_convention):
+    """
+    Common function to compute slopes from derivatives.
+    Used by both separated and combined workflows.
+    """
+
+    # Clean up masks
+    if xp.isnan(pup_mask).any():
+        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
+    if xp.isnan(dm_mask).any():
+        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
+
+    # Rebin masks to WFS resolution
+    pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
+    pup_mask_sa = pup_mask_sa / xp.max(pup_mask_sa) if xp.max(pup_mask_sa) > 0 else pup_mask_sa
+
+    dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
+    if xp.max(dm_mask_sa) <= 0:
+        raise ValueError('DM mask is empty after rebinning.')
+    dm_mask_sa = dm_mask_sa / xp.max(dm_mask_sa)
+
+    # Clean derivatives
+    if xp.isnan(derivatives_x).any():
+        xp.nan_to_num(derivatives_x, copy=False, nan=0.0)
+    if xp.isnan(derivatives_y).any():
+        xp.nan_to_num(derivatives_y, copy=False, nan=0.0)
+
+    # Apply pupil mask
+    trans_der_x = apply_mask(derivatives_x, pup_mask, fill_value=xp.nan)
+    trans_der_y = apply_mask(derivatives_y, pup_mask, fill_value=xp.nan)
+
+    # Rebin derivatives
+    scale_factor = (trans_der_x.shape[0] / wfs_nsubaps) / \
+                   xp.median(rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='average'))
+
+    wfs_signal_x = rebin(trans_der_x, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
+    wfs_signal_y = rebin(trans_der_y, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
+
+    # Combined mask
+    combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
+
+    # Apply mask
+    wfs_signal_x = apply_mask(wfs_signal_x, combined_mask_sa, fill_value=0)
+    wfs_signal_y = apply_mask(wfs_signal_y, combined_mask_sa, fill_value=0)
+
+    # Reshape
+    wfs_signal_x_2d = wfs_signal_x.reshape((-1, wfs_signal_x.shape[2]))
+    wfs_signal_y_2d = wfs_signal_y.reshape((-1, wfs_signal_y.shape[2]))
+
+    # Select valid subapertures
+    if idx_valid_sa is not None:
+        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
+            # *** sa_2d should use float_dtype (it's a mask with 0/1 values) ***
+            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
+            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
+            sa_2d = xp.transpose(sa_2d)
+            idx_temp = xp.where(sa_2d > 0)
+            # *** But idx_valid_sa_new should keep integer type (indices!) ***
+            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)  # Keep original dtype (int)
+            idx_valid_sa_new[:, 0] = idx_temp[0]
+            idx_valid_sa_new[:, 1] = idx_temp[1]
+        else:
+            idx_valid_sa_new = idx_valid_sa
+
+        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
+            width = wfs_nsubaps
+            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
+            # *** Ensure indices are integers ***
+            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
+            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
+        else:
+            # *** Ensure indices are integers ***
+            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
+            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
+
+    # Concatenate
+    if specula_convention:
+        im = xp.concatenate((wfs_signal_y_2d, wfs_signal_x_2d))
     else:
-         raise ValueError(f"Unknown slope_method: {slope_method}")
+        im = xp.concatenate((wfs_signal_x_2d, wfs_signal_y_2d))
+
+    # Convert to slope units
+    pup_diam_pix = pup_mask.shape[0]
+    pixel_pitch = pup_diam_m / pup_diam_pix
+    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
+    coeff *= 1 / (0.5 * wfs_fov_arcsec)
+    im = im * coeff
+
+    if verbose:
+        print(f'  ✓ Slopes computed, shape: {im.shape}')
+
+    return im
 
 
 def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
                        wfs_nsubaps, wfs_fov_arcsec, gs_pol_coo, gs_height,
                        wfs_rotation, wfs_translation, wfs_mag_global,
                        wfs_anamorphosis_90=1.0, wfs_anamorphosis_45=1.0,
-                       idx_valid_sa=None, slope_method='derivatives',
-                       specula_convention=True,
-                       verbose=False, display=False):
+                       idx_valid_sa=None,
+                       verbose=False, display=False, specula_convention=True):
     """
     Computes interaction matrix using a single phase-first pipeline.
 
@@ -673,16 +494,14 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
             gs_pol_coo=gs_pol_coo,
             gs_height=gs_height,
             dm_height=dm_height,
-            wfs_nsubaps=wfs_nsubaps,
             dm_rotation=dm_rotation,
             wfs_rotation=wfs_rotation,
             wfs_translation=wfs_translation,
             wfs_mag_global=wfs_mag_global,
             wfs_anamorphosis_90=wfs_anamorphosis_90,
             wfs_anamorphosis_45=wfs_anamorphosis_45,
-            slope_method=slope_method,
-            specula_convention=specula_convention,
-            verbose=verbose
+            verbose=verbose,
+            specula_convention=specula_convention
         )
 
     im = apply_wfs_transformations_combined(
@@ -712,12 +531,10 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                                    dm_array, dm_mask,
                                    dm_height, dm_rotation,
                                    wfs_configs, gs_pol_coo=None,
-                                   gs_height=None,
-                                   slope_method='derivatives',
+                                   gs_height=None, verbose=False,
                                    specula_convention=True,
                                    im_on_cpu=False,
-                                   minimize_memory=False,
-                                   verbose=False):
+                                   minimize_memory=False):
     """
     Computes interaction matrices for multiple WFS configurations.
     
@@ -733,11 +550,10 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     - wfs_configs: list of dict, each containing WFS parameters
     - gs_pol_coo: tuple or None (DEPRECATED)
     - gs_height: float or None (DEPRECATED)
-    - slope_method: str, 'derivatives' or 'gtilt'
+    - verbose: bool, optional
     - specula_convention: bool, optional
     - im_on_cpu: bool, optional, force output interaction matrices on CPU
     - minimize_memory: bool, optional, delete intermediate variables to save memory
-    - verbose: bool, optional
     
     Returns:
     - im_dict: dict, interaction matrices keyed by WFS name or index
@@ -831,15 +647,13 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                 dm_rotation=dm_rotation,
                 gs_pol_coo=gs_pol_coo_wfs,
                 gs_height=gs_height_wfs,
-                wfs_nsubaps=wfs_nsubaps,
                 wfs_rotation=wfs_rotation,
                 wfs_translation=wfs_translation,
                 wfs_mag_global=wfs_mag_global,
                 wfs_anamorphosis_90=wfs_anamorphosis_90,
                 wfs_anamorphosis_45=wfs_anamorphosis_45,
-                slope_method=slope_method,
-                specula_convention=specula_convention,
-                verbose=verbose
+                verbose=False,
+                specula_convention=specula_convention
             )
 
         im = apply_wfs_transformations_combined(
@@ -851,9 +665,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             wfs_fov_arcsec,
             pup_diam_m,
             idx_valid_sa=idx_valid_sa,
-            slope_method=slope_method,
-            specula_convention=specula_convention,
-            verbose=False
+            verbose=False,
+            specula_convention=specula_convention
         )
 
         if minimize_memory:

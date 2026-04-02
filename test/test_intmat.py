@@ -589,7 +589,6 @@ class TestIntmat(unittest.TestCase):
             dm_rotation=self.dm_rotation,
             gs_pol_coo=gs_pol_coo,
             gs_height=gs_height,
-            wfs_nsubaps=self.wfs_nsubaps,
             verbose=False,
             specula_convention=True,
         )
@@ -701,7 +700,6 @@ class TestIntmat(unittest.TestCase):
             dm_rotation=self.dm_rotation,
             gs_pol_coo=gs_pol_coo,
             gs_height=gs_height,
-            wfs_nsubaps=self.wfs_nsubaps,
             wfs_rotation=wfs_rotation,
             wfs_translation=wfs_translation,
             wfs_mag_global=wfs_mag_global,
