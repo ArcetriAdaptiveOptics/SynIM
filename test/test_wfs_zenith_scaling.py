@@ -3,6 +3,7 @@ from unittest.mock import patch
 import numpy as np
 
 from synim.params_manager import ParamsManager
+from synim.params_utils import generate_im_filename
 
 
 class TestWfsZenithScaling(unittest.TestCase):
@@ -91,3 +92,14 @@ class TestWfsZenithScaling(unittest.TestCase):
         called_wfs_configs = mock_multi.call_args.kwargs['wfs_configs']
         self.assertEqual(len(called_wfs_configs), 1)
         self.assertAlmostEqual(called_wfs_configs[0]['gs_height'], 180000.0, places=6)
+
+    def test_im_filename_uses_zenith_scaled_height_integer_meters(self):
+        filename = generate_im_filename(
+            self.mock_config,
+            wfs_type='lgs',
+            wfs_index=1,
+            dm_index=1,
+        )
+
+        self.assertIn('h180000', filename)
+        self.assertNotIn('h180000.', filename)

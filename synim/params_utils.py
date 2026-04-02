@@ -972,7 +972,10 @@ def generate_im_filename(params_file, wfs_type=None,
     if wfs_key:
         # Extract source configuration
         source_config = extract_source_config(params, wfs_key)
-        source_info = build_source_filename_part(source_config)
+        source_info = build_source_filename_part(
+            source_config,
+            zenith_angle=main_params.get('zenithAngleInDeg', None),
+        )
         filename_parts.append(source_info)
 
         # Add WFS information
