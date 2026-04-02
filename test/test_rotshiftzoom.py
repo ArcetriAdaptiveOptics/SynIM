@@ -70,8 +70,8 @@ class TestRotShiftZoomArray(unittest.TestCase):
         actual_area = np.sum(mag > 0.5)
         self.assertTrue(abs(expected_area - actual_area)/expected_area <  0.1)
 
-    def test_magnification_and_shift_combined3(self):
-        # Apply magnification
+    def test_magnification_and_shift_combined2(self):
+        # Apply magnification and shift
         mag_trans = rotshiftzoom_array(
             self.mask,
             wfs_magnification=(0.5, 0.5),
@@ -79,14 +79,18 @@ class TestRotShiftZoomArray(unittest.TestCase):
             output_size=(self.size, self.size)
         )
 
-        plot_debug = True
-        if plot_debug:
-            fig, axs = plt.subplots(1, 2, figsize=(8, 4))
-            axs[0].imshow(self.mask, cmap='viridis')
-            axs[0].set_title('Original Mask')
-            axs[1].imshow(mag_trans, cmap='viridis')
-            axs[1].set_title('Magnified and Translated Mask (WFS)')
-            plt.show()
+        # Check that the area is roughly 25% of the original
+        expected_area = np.sum(self.mask) * 0.25
+        actual_area = np.sum(mag_trans > 0.5)
+        self.assertTrue(abs(expected_area - actual_area) / expected_area < 0.1, 
+                        "Area non corretta nel test combinato!")
+
+        # Check that the new center is shifted by EXACTLY +25, +25
+        y_indices, x_indices = np.where(mag_trans > 0.5)
+        self.assertAlmostEqual(np.median(y_indices), self.size // 2 + 25, delta=1.0, 
+                               msg="Combined WFS shift errato in Y!")
+        self.assertAlmostEqual(np.median(x_indices), self.size // 2 + 25, delta=1.0, 
+                               msg="Combined WFS shift errato in X!")
 
     def test_anamorphosis_45(self):
         # Apply 45° anamorphosis
@@ -270,8 +274,8 @@ class TestRotShiftZoomArray(unittest.TestCase):
         peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
         center_y, center_x = self.size // 2, self.size // 2
 
-        expected_y = center_y + trans_y
-        expected_x = center_x + trans_x
+        expected_y = int(center_y + trans_y * mag)
+        expected_x = int(center_x + trans_x * mag)
 
         self.assertEqual(peak_y, expected_y,
                          "DM Y translation was corrupted by Cone Effect!")
@@ -310,3 +314,33 @@ class TestRotShiftZoomArray(unittest.TestCase):
         width_x = np.max(x_indices) - np.min(x_indices)
         self.assertTrue(width_x > 35 and width_y < 25,
                         "Rectangle did not physically rotate!")
+
+    def test_3d_cube_integrity(self):
+        """
+        Verifies that 3D arrays (representing DM modes) are transformed 
+        correctly slice by slice, without any cross-talk along the Z-axis.
+        """
+        cube = np.zeros((self.size, self.size, 3), dtype=np.float32)
+        cube[49:52, 49:52, 0] = 1.0  # Center
+        cube[19:22, 19:22, 1] = 1.0  # Top-Left
+        cube[79:82, 79:82, 2] = 1.0  # Bottom-Right
+
+        transformed_cube = rotshiftzoom_array(
+            cube,
+            dm_translation=(10, -10),
+            dm_magnification=(0.8, 0.8),
+            wfs_rotation=45.0,
+            output_size=(self.size, self.size)
+        )
+
+        # 1. Z-Axis Integrity: Check that the block core survived interpolation
+        for mode in range(3):
+            self.assertTrue(np.max(transformed_cube[:, :, mode]) > 0.5, 
+                            f"Energy heavily diluted or lost in mode {mode}!")
+
+        # 2. Cross-talk check: The peak of mode 1 MUST NOT bleed into mode 0
+        peak_y_m1, peak_x_m1 = np.unravel_index(
+            np.argmax(transformed_cube[:, :, 1]), (self.size, self.size)
+        )
+        self.assertAlmostEqual(transformed_cube[peak_y_m1, peak_x_m1, 0], 0.0, places=5,
+                               msg="Cross-talk detected between DM modes!")
