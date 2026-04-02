@@ -212,35 +212,13 @@ def compute_derivatives_with_extrapolation(data, mask=None):
     return dx, dy
 
 
-def integrate_derivatives(dx, dy):
-    """
-    Numerical integration of derivatives using numpy.cumsum
-    along the x and y axes.
-
-    Parameters:
-        dx (ndarray): x derivative of the data.
-        dy (ndarray): y derivative of the data.
-
-    Returns:
-        tuple: (integrated_x, integrated_y)
-            - integrated_x: Integrated x derivative.
-            - integrated_y: Integrated y derivative.
-    """
-
-    # Integrate x derivative along the x-axis
-    integrated_x = xp.cumsum(dx, axis=1)
-
-    # Integrate y derivative along the y-axis
-    integrated_y = xp.cumsum(dy, axis=0)
-
-    return integrated_x, integrated_y
-
-
 def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
                                        dm_height, dm_rotation,
                                        gs_pol_coo, gs_height,
-                                       wfs_nsubaps=None, slope_method='derivatives',
-                                       verbose=False, specula_convention=True):
+                                       wfs_nsubaps=None,
+                                       slope_method='derivatives',
+                                       specula_convention=True,
+                                       verbose=False):
     """
     Apply ONLY DM transformations (for separated workflow).
     Returns slopes/derivatives that need WFS transformations applied separately.
@@ -326,11 +304,13 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
                                       dm_height, dm_rotation,
                                       gs_pol_coo, gs_height,
                                       wfs_rotation, wfs_translation,
-                                      wfs_nsubaps=None, slope_method='derivatives',
+                                      wfs_nsubaps=None,
                                       wfs_mag_global=1.0,
                                       wfs_anamorphosis_90=1.0,
                                       wfs_anamorphosis_45=1.0,
-                                      verbose=False, specula_convention=True):
+                                      slope_method='derivatives',
+                                      specula_convention=True,
+                                      verbose=False):
     """
     Apply DM and WFS transformations COMBINED (single interpolation step).
     This avoids cumulative interpolation errors when both DM and WFS have rotations.
@@ -449,8 +429,10 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
                                         wfs_translation, wfs_mag_global,
                                         wfs_anamorphosis_90=1.0,
                                         wfs_anamorphosis_45=1.0,
-                                        idx_valid_sa=None, slope_method='derivatives',
-                                        verbose=False, specula_convention=True):
+                                        idx_valid_sa=None,
+                                        slope_method='derivatives',
+                                        specula_convention=True,
+                                        verbose=False):
     """
     Apply WFS transformations to derivatives (for separated workflow).
     """
@@ -532,7 +514,8 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
 
 def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
                                        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa=None,
-                                       slope_method='derivatives', verbose=False, specula_convention=True):
+                                       slope_method='derivatives', specula_convention=True,
+                                       verbose=False):
     """
     Compute slopes from pre-transformed derivatives (for combined workflow).
     No additional transformations needed.
@@ -656,7 +639,8 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
                        wfs_rotation, wfs_translation, wfs_mag_global,
                        wfs_anamorphosis_90=1.0, wfs_anamorphosis_45=1.0,
                        idx_valid_sa=None, slope_method='derivatives',
-                       verbose=False, display=False, specula_convention=True):
+                       specula_convention=True, verbose=False,
+                       display=False):
     """
     Computes interaction matrix using intelligent workflow selection.
     
@@ -767,11 +751,12 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                                    dm_array, dm_mask,
                                    dm_height, dm_rotation,
                                    wfs_configs, gs_pol_coo=None,
-                                   gs_height=None, slope_method='derivatives',
-                                   verbose=False,
+                                   gs_height=None,
+                                   slope_method='derivatives',
                                    specula_convention=True,
                                    im_on_cpu=False,
-                                   minimize_memory=False):
+                                   minimize_memory=False,
+                                   verbose=False):
     """
     Computes interaction matrices for multiple WFS configurations.
     
@@ -787,10 +772,11 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     - wfs_configs: list of dict, each containing WFS parameters
     - gs_pol_coo: tuple or None (DEPRECATED)
     - gs_height: float or None (DEPRECATED)
-    - verbose: bool, optional
+    - slope_method: str, 'derivatives' or 'gtilt'
     - specula_convention: bool, optional
     - im_on_cpu: bool, optional, force output interaction matrices on CPU
     - minimize_memory: bool, optional, delete intermediate variables to save memory
+    - verbose: bool, optional
     
     Returns:
     - im_dict: dict, interaction matrices keyed by WFS name or index
@@ -1138,8 +1124,9 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
 def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
                                     wfs_translation=(0.0, 0.0),
                                     wfs_magnification=(1.0, 1.0),
-                                    idx_valid_sa=None, verbose=False,
-                                    specula_convention=True):
+                                    idx_valid_sa=None,
+                                    specula_convention=True,
+                                    verbose=False):
     """
     Compute the relative illumination of valid subapertures.
     
@@ -1153,8 +1140,8 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     - wfs_translation: tuple, WFS translation (x, y) in pixels
     - wfs_magnification: tuple, WFS magnification (x, y)
     - idx_valid_sa: array, indices of valid subapertures
-    - verbose: bool, whether to print information
     - specula_convention: bool, whether to use SPECULA convention
+    - verbose: bool, whether to print information
     
     Returns:
     - illumination: 1D array, relative illumination of each valid subaperture (normalized to max=1)
