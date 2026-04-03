@@ -70,6 +70,28 @@ class TestRotShiftZoomArray(unittest.TestCase):
         actual_area = np.sum(mag > 0.5)
         self.assertTrue(abs(expected_area - actual_area)/expected_area <  0.1)
 
+    def test_magnification_and_shift_combined2(self):
+        # Apply magnification and shift
+        mag_trans = rotshiftzoom_array(
+            self.mask,
+            wfs_magnification=(0.5, 0.5),
+            wfs_translation=(25, 25),
+            output_size=(self.size, self.size)
+        )
+
+        # Check that the area is roughly 25% of the original
+        expected_area = np.sum(self.mask) * 0.25
+        actual_area = np.sum(mag_trans > 0.5)
+        self.assertTrue(abs(expected_area - actual_area) / expected_area < 0.1, 
+                        "Area non corretta nel test combinato!")
+
+        # Check that the new center is shifted by EXACTLY +25, +25
+        y_indices, x_indices = np.where(mag_trans > 0.5)
+        self.assertAlmostEqual(np.median(y_indices), self.size // 2 + 25, delta=1.0, 
+                               msg="Combined WFS shift errato in Y!")
+        self.assertAlmostEqual(np.median(x_indices), self.size // 2 + 25, delta=1.0, 
+                               msg="Combined WFS shift errato in X!")
+
     def test_anamorphosis_45(self):
         # Apply 45° anamorphosis
         anam45 = rotshiftzoom_array(
@@ -207,3 +229,316 @@ class TestRotShiftZoomArray(unittest.TestCase):
 
         self.assertTrue(np.allclose(rotated,
                         np.roll(expected, shift=(1, 0), axis=(0, 1)), atol=1e-2))
+
+    def test_wfs_translation_independence(self):
+        """
+        Verifies that wfs_translation represents a pure camera shift on the 
+        focal plane and is not erroneously scaled by wfs_magnification.
+        """
+        trans_y, trans_x = 20, 0
+        mag = 2.0  # Strong WFS zoom
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            wfs_translation=(trans_y, trans_x),
+            wfs_magnification=(mag, mag),
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        expected_y = center_y + trans_y
+        expected_x = center_x + trans_x
+
+        self.assertEqual(peak_y, expected_y,
+                         "WFS Y translation was corrupted by WFS magnification!")
+        self.assertEqual(peak_x, expected_x,
+                         "WFS X translation was corrupted by WFS magnification!")
+
+    def test_dm_translation_independence_from_magnification(self):
+        """
+        Verifies that dm_translation (e.g., LGS off-axis shift) 
+        is strictly independent of the Cone Effect (dm_magnification).
+        """
+        trans_y, trans_x = 20, -10
+        mag = 0.5  # Strong cone effect (shrink)
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            dm_magnification=(mag, mag),
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        expected_y = int(center_y + trans_y * mag)
+        expected_x = int(center_x + trans_x * mag)
+
+        self.assertEqual(peak_y, expected_y,
+                         "DM Y translation was corrupted by Cone Effect!")
+        self.assertEqual(peak_x, expected_x,
+                         "DM X translation was corrupted by Cone Effect!")
+
+    def test_dm_translation_invariance_under_rotation(self):
+        """
+        Verifies that the LGS footprint shift in the sky remains invariant 
+        even if the DM rotates around the optical axis.
+        """
+        trans_y, trans_x = 30, 0
+        rot_deg = 90.0
+
+        # We use the asymmetric rectangular mask to verify BOTH the fixed shift and the rotation.
+        transformed = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            dm_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        expected_center_y = self.size // 2 + trans_y
+        expected_center_x = self.size // 2 + trans_x
+
+        y_indices, x_indices = np.where(transformed > 0.5)
+
+        # Check that the center hasn't moved
+        self.assertAlmostEqual(np.median(y_indices), expected_center_y, delta=1.0, 
+                               msg="DM center shifted incorrectly due to rotation!")
+        self.assertAlmostEqual(np.median(x_indices), expected_center_x, delta=1.0, 
+                               msg="DM center shifted incorrectly due to rotation!")
+
+        # Check that the shape actually rotated
+        width_y = np.max(y_indices) - np.min(y_indices)
+        width_x = np.max(x_indices) - np.min(x_indices)
+        self.assertTrue(width_x > 35 and width_y < 25,
+                        "Rectangle did not physically rotate!")
+
+    def test_wfs_translation_independence_from_rotation(self):
+        """
+        Verifies that WFS translation (camera physical shift) is an absolute shift 
+        on the final detector, strictly independent of the WFS optical rotation.
+        """
+        trans_y, trans_x = 20, 0
+        rot_deg = 45.0
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            wfs_translation=(trans_y, trans_x),
+            wfs_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        self.assertEqual(peak_y, center_y + trans_y,
+                         "WFS Y translation corrupted by rotation!")
+        self.assertEqual(peak_x, center_x + trans_x,
+                         "WFS X translation corrupted by rotation!")
+
+    def test_dm_translation_rotates_with_wfs(self):
+        """
+        Verifies that the DM shift physically rotates across the WFS sensor 
+        when the WFS camera rotates, exactly as it happens in a real telescope.
+        """
+        trans_y, trans_x = 30, 0
+        rot_deg = 90.0
+
+        transformed = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            wfs_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        y_indices, x_indices = np.where(transformed > 0.5)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        actual_y = np.median(y_indices)
+        actual_x = np.median(x_indices)
+
+        self.assertAlmostEqual(actual_y, center_y, delta=1.0,
+                               msg="DM Y position did not correctly absorb WFS rotation!")
+        self.assertTrue(abs(actual_x - center_x) >= 25,
+                        msg="DM X position did not correctly absorb WFS rotation!")
+
+    def test_combined_matches_separated_physics(self):
+        """
+        The ultimate ground-truth test.
+        Proves that a single combined transformation is mathematically identical
+        to applying the DM transformation and WFS transformation sequentially.
+        """
+        trans_y, trans_x = 10, 0   # Reduced to avoid clipping the 100x100 grid
+        mag = 1.5                  # Reduced zoom
+        rot = 45.0
+
+        # 1. SEPARATED WORKFLOW (SPECULA standard)
+        step1 = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+        separated_result = rotshiftzoom_array(
+            step1,
+            wfs_magnification=(mag, mag),
+            wfs_rotation=rot,
+            output_size=(self.size, self.size)
+        )
+
+        # 2. COMBINED WORKFLOW
+        combined_result = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            wfs_magnification=(mag, mag),
+            wfs_rotation=rot,
+            output_size=(self.size, self.size)
+        )
+
+        # They must be identical
+        diff = combined_result - separated_result
+        rel_error = np.sum(np.abs(diff)) / np.sum(np.abs(combined_result))
+
+        self.assertTrue(rel_error < 1e-2,
+                        f"Combined breaks sequential physics! Error: {rel_error}")
+
+    def test_off_axis_pupil_orbits_optical_center(self):
+        """
+        Verifies the physical behavior of an off-axis guide star (LGS) under WFS zoom/rotation.
+        Since the optical axis (center of the array) is the pivot for WFS transformations,
+        an off-axis pupil must naturally scale away from the center and orbit around it.
+        """
+        trans_y, trans_x = 20, 10
+        wfs_rot = 90.0
+        wfs_mag = 1.5
+
+        # 1. Step 1: DM deformations and star position (LGS moves off-axis)
+        step1 = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+
+        # The pupil is now at +20 on Y and +10 on X relative to the optical axis (array center).
+        y_step1, x_step1 = np.where(step1 > 0.5)
+        self.assertAlmostEqual(np.median(y_step1), self.size // 2 + trans_y, delta=1.0)
+        self.assertAlmostEqual(np.median(x_step1), self.size // 2 + trans_x, delta=1.0)
+
+        # 2. Step 2: WFS transformations (Camera zooms and rotates around the optical axis)
+        step2 = rotshiftzoom_array(
+            step1,
+            wfs_rotation=wfs_rot,
+            wfs_magnification=(wfs_mag, wfs_mag),
+            output_size=(self.size, self.size)
+        )
+
+        y_final, x_final = np.where(step2 > 0.5)
+        final_center_y = np.median(y_final)
+        final_center_x = np.median(x_final)
+
+        # THE PHYSICS (Matrix Coordinates):
+        # Y goes DOWN, X goes RIGHT.
+        # A +90 deg (Counter-Clockwise) rotation moves the bottom-right quadrant to the top-right.
+        # Therefore, +Y (Down) becomes +X (Right).
+        # And +X (Right) becomes -Y (Up).
+
+        expected_y = self.size // 2 - trans_x * wfs_mag
+        expected_x = self.size // 2 + trans_y * wfs_mag
+
+        self.assertAlmostEqual(final_center_y, expected_y, delta=1.0,
+                               msg="The pupil did not orbit correctly around the optical axis!")
+        self.assertAlmostEqual(final_center_x, expected_x, delta=1.0,
+                               msg="The pupil was not radially pushed by the WFS magnification!")
+
+    def test_off_axis_asymmetric_pupil_arbitrary_rotation(self):
+        """
+        Verifies the physical behavior of an asymmetric, off-axis shape 
+        under an arbitrary WFS zoom and rotation (15 degrees, mag 1.05).
+        Using a rectangle breaks circular symmetry, ensuring we track both
+        the orbit of the center and the physical rotation of the shape itself.
+        """
+        trans_y, trans_x = 20, 10
+        wfs_rot = 15.0
+        wfs_mag = 1.05
+
+        # 1. Step 1: DM deformations
+        # We use 'self.rectangular', which is 40 pixels tall (Y) and 20 pixels wide (X).
+        # It lacks circular symmetry, making rotation strictly visible.
+        step1 = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+
+        # 2. Step 2: WFS transformations
+        step2 = rotshiftzoom_array(
+            step1,
+            wfs_rotation=wfs_rot,
+            wfs_magnification=(wfs_mag, wfs_mag),
+            output_size=(self.size, self.size)
+        )
+
+        y_final, x_final = np.where(step2 > 0.5)
+        final_center_y = np.median(y_final)
+        final_center_x = np.median(x_final)
+
+        # THE PHYSICS (General Matrix Coordinates):
+        # Y goes DOWN, X goes RIGHT.
+        # A counter-clockwise rotation of 'theta' degrees applies as:
+        # y' = y * cos(theta) - x * sin(theta)
+        # x' = y * sin(theta) + x * cos(theta)
+
+        theta = np.deg2rad(wfs_rot)
+
+        expected_dy = (trans_y * np.cos(theta) - trans_x * np.sin(theta)) * wfs_mag
+        expected_dx = (trans_y * np.sin(theta) + trans_x * np.cos(theta)) * wfs_mag
+
+        expected_y = self.size // 2 + expected_dy
+        expected_x = self.size // 2 + expected_dx
+
+        # 1. Verify the ORBIT (the shift of the center)
+        self.assertAlmostEqual(final_center_y, expected_y, delta=1.0,
+                msg=f"The asymmetric shape did not orbit correctly at {wfs_rot} degrees!")
+        self.assertAlmostEqual(final_center_x, expected_x, delta=1.0,
+                msg=f"The asymmetric shape did not orbit correctly at {wfs_rot} degrees!")
+
+        # 2. Verify the INTRINSIC ROTATION (the shape itself)
+        # The original shape was strictly 20 pixels wide (X axis).
+        # By rotating it 15 degrees, its 40-pixel height partially projects onto the X axis.
+        # Expected new width: 20*cos(15) + 40*sin(15) = ~29.6 pixels (before mag).
+        width_x = np.max(x_final) - np.min(x_final)
+
+        self.assertTrue(width_x > 25,
+                        f"The shape's bounding box is only {width_x} pixels wide. "
+                        f"It translated, but the shape itself did NOT rotate!")
+
+    def test_3d_cube_integrity(self):
+        """
+        Verifies that 3D arrays (representing DM modes) are transformed 
+        correctly slice by slice, without any cross-talk along the Z-axis.
+        """
+        cube = np.zeros((self.size, self.size, 3), dtype=np.float32)
+        cube[49:52, 49:52, 0] = 1.0  # Center
+        cube[19:22, 19:22, 1] = 1.0  # Top-Left
+        cube[79:82, 79:82, 2] = 1.0  # Bottom-Right
+
+        transformed_cube = rotshiftzoom_array(
+            cube,
+            dm_translation=(10, -10),
+            dm_magnification=(0.8, 0.8),
+            wfs_rotation=45.0,
+            output_size=(self.size, self.size)
+        )
+
+        # 1. Z-Axis Integrity: Check that the block core survived interpolation
+        for mode in range(3):
+            self.assertTrue(np.max(transformed_cube[:, :, mode]) > 0.5, 
+                            f"Energy heavily diluted or lost in mode {mode}!")
+
+        # 2. Cross-talk check: The peak of mode 1 MUST NOT bleed into mode 0
+        peak_y_m1, peak_x_m1 = np.unravel_index(
+            np.argmax(transformed_cube[:, :, 1]), (self.size, self.size)
+        )
+        self.assertAlmostEqual(transformed_cube[peak_y_m1, peak_x_m1, 0], 0.0, places=5,
+                               msg="Cross-talk detected between DM modes!")

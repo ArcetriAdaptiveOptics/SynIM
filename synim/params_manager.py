@@ -352,6 +352,20 @@ class ParamsManager:
         return out.get(f'n_{wfs_type}', 0)
 
 
+    def _scale_guide_star_height_with_zenith(self, gs_height):
+        """Scale finite GS height by airmass derived from zenith angle."""
+        if not np.isfinite(gs_height):
+            return gs_height
+
+        zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
+        cos_zenith = np.cos(np.deg2rad(float(zenith_angle_deg or 0.0)))
+        if cos_zenith <= 0:
+            raise ValueError(
+                "Invalid zenithAngleInDeg: cos(zenithAngleInDeg) must be > 0"
+            )
+        return float(gs_height) / cos_zenith
+
+
     def count_mcao_stars(self):
         """
         Count the number of LGS, NGS, reference stars, DMs, optimisation optics,
@@ -642,22 +656,28 @@ class ParamsManager:
             idx_valid_sa = to_xp(xp_local, idx_valid_sa)
 
         # Guide star parameters
-        if source_type == 'lgs':
-            # LGS is at finite height
-            # Try to get height from source or use typical LGS height
-            gs_height = None
+        # Try to get height from source or use typical GS height
+        gs_height = None
 
-            # Check if there's a specific source for this WFS and try to get height
-            source_match = re.search(r'(lgs\d+)', wfs_key)
-            if source_match:
-                source_key = f'source_{source_match.group(1)}'
+        # Check if there's a specific source for this WFS and try to get height
+        source_match = re.search(r'('+source_type+'\d+)', wfs_key)
+        if source_match:
+            source_key = f'source_{source_match.group(1)}'
+            if source_key in self.params:
+                gs_height = self.params[source_key].get('height', None)
+        else:
+            source_keys = ['source_'+source_type, 'source_wfs', 'on_axis_source']
+            for source_key in source_keys:
                 if source_key in self.params:
                     gs_height = self.params[source_key].get('height', None)
+                    if gs_height is not None:
+                        break
 
-            # If still no height, use default
-            if gs_height is None:
-                gs_height = 90000.0  # Default LGS height in meters
-        else:
+        # If still no height, use default
+        if gs_height is None and source_type == 'lgs':
+            # Default LGS height in meters
+            gs_height = 90000.0
+        elif gs_height is None:
             # NGS and REF are at infinite distance
             gs_height = float('inf')
 
@@ -722,6 +742,10 @@ class ParamsManager:
         # Get WFS parameters
         wfs_params = self.get_wfs_params(wfs_type, wfs_index,
                                          xp_local=np)
+        gs_height_scaled = self._scale_guide_star_height_with_zenith(
+            wfs_params['gs_height']
+        )
+
         # Combine them into a single dictionary with all needed parameters
         params = {
             'pup_diam_m': self.pup_diam_m,
@@ -738,7 +762,7 @@ class ParamsManager:
             'wfs_magnification': wfs_params['wfs_magnification'],
             'wfs_fov_arcsec': wfs_params['wfs_fov_arcsec'],
             'gs_pol_coo': wfs_params['gs_pol_coo'],
-            'gs_height': wfs_params['gs_height'],
+            'gs_height': gs_height_scaled,
             'idx_valid_sa': wfs_params['idx_valid_sa'],
             'dm_key': component_key if dm_index is not None else None,
             'layer_key': component_key if layer_index is not None else None,
@@ -749,7 +773,8 @@ class ParamsManager:
         return params
 
     def compute_interaction_matrix(self, wfs_type=None, wfs_index=None, dm_index=None,
-                                layer_index=None, verbose=None, display=False):
+                                   layer_index=None, slope_method='derivatives',
+                                   verbose=None, display=False):
         """
         Compute an interaction matrix for a specific WFS-DM/Layer combination.
 
@@ -758,6 +783,7 @@ class ParamsManager:
             wfs_index (int, optional): Index of the WFS (1-based)
             dm_index (int, optional): Index of the DM (1-based)
             layer_index (int, optional): Index of the Layer (1-based)
+            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
             verbose (bool, optional): Override the class's verbose setting
             display (bool): Whether to display plots
 
@@ -794,6 +820,7 @@ class ParamsManager:
             dm_height=params['dm_height'],
             gs_pol_coo=params['gs_pol_coo'],
             gs_height=params['gs_height'],
+            slope_method=slope_method,
             dm_rotation=params['dm_rotation'],
             wfs_nsubaps=params['wfs_nsubaps'],
             wfs_rotation=params['wfs_rotation'],
@@ -811,8 +838,9 @@ class ParamsManager:
         return im
 
     def compute_interaction_matrices(self, output_im_dir, output_rec_dir,
-                                wfs_type=None, overwrite=False, verbose=None,
-                                display=False):
+                                     wfs_type=None, slope_method='derivatives',
+                                     overwrite=False, verbose=None,
+                                     display=False):
         """
         Compute and save interaction matrices for all combinations of WFSs and DMs/Layers.
         Uses multi-WFS optimization when possible.
@@ -821,6 +849,7 @@ class ParamsManager:
             output_im_dir (str): Output directory for saved matrices
             output_rec_dir (str): Output directory for reconstruction matrices
             wfs_type (str, optional): Type of WFS ('ngs', 'lgs', 'ref') to use
+            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
             overwrite (bool, optional): Whether to overwrite existing files
             verbose (bool, optional): Override the class's verbose setting
             display (bool, optional): Whether to display plots
@@ -905,7 +934,8 @@ class ParamsManager:
                     wfs_type=source_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
-                    layer_index=comp_idx if comp_type == 'layer' else None
+                    layer_index=comp_idx if comp_type == 'layer' else None,
+                    slope_method=slope_method,
                 )
 
                 im_path = os.path.join(output_im_dir, im_filename)
@@ -926,6 +956,9 @@ class ParamsManager:
                 # Get WFS parameters
                 wfs_params = self.get_wfs_params(source_type, wfs_idx,
                                                  xp_local=np)
+                gs_height_scaled = self._scale_guide_star_height_with_zenith(
+                    wfs_params['gs_height']
+                )
 
                 # Add to configurations for multi-WFS computation
                 wfs_configs.append({
@@ -936,7 +969,7 @@ class ParamsManager:
                     'fov_arcsec': wfs_params['wfs_fov_arcsec'],
                     'idx_valid_sa': wfs_params['idx_valid_sa'],
                     'gs_pol_coo': wfs_params['gs_pol_coo'],
-                    'gs_height': wfs_params['gs_height'],
+                    'gs_height': gs_height_scaled,
                     'name': wfs_name
                 })
 
@@ -967,6 +1000,7 @@ class ParamsManager:
                     dm_rotation=component_params['dm_rotation'],
                     wfs_configs=wfs_configs,
                     verbose=verbose_flag,
+                    slope_method=slope_method,
                     specula_convention=True,
                     im_on_cpu=True,
                     minimize_memory=True
@@ -1023,7 +1057,7 @@ class ParamsManager:
 
     def assemble_interaction_matrices(self, wfs_type='ngs', output_im_dir=None,
                                     component_type='dm', save=False,
-                                    apply_filter=True):
+                                    apply_filter=True, slope_method='derivatives'):
         """
         Assemble interaction matrices for a specific type of WFS into
         a single full interaction matrix.
@@ -1219,7 +1253,8 @@ class ParamsManager:
             wfs_type=wfs_type,
             wfs_index=first_wfs_idx,
             dm_index=first_comp_idx if component_type == 'dm' else None,
-            layer_index=first_comp_idx if component_type == 'layer' else None
+            layer_index=first_comp_idx if component_type == 'layer' else None,
+            slope_method=slope_method,
         )
         first_im_path = os.path.join(output_im_dir, first_im_filename)
         first_intmat_obj = Intmat.restore(first_im_path)
@@ -1242,7 +1277,8 @@ class ParamsManager:
                     wfs_type=wfs_type,
                     wfs_index=ii+1,
                     dm_index=comp_ind if component_type == 'dm' else None,
-                    layer_index=comp_ind if component_type == 'layer' else None
+                    layer_index=comp_ind if component_type == 'layer' else None,
+                    slope_method=slope_method,
                 )
                 im_path = os.path.join(output_im_dir, im_filename)
 
@@ -1922,7 +1958,8 @@ class ParamsManager:
 
     def save_assembled_interaction_matrix(self, wfs_type='lgs', component_type='dm',
                                         output_dir=None, overwrite=False,
-                                        apply_filter=True, verbose=None):
+                                        apply_filter=True, slope_method='derivatives',
+                                        verbose=None):
         """
         Assemble and save the full interaction matrix for a specific WFS type and component type.
         
@@ -1953,8 +1990,9 @@ class ParamsManager:
         config_name = (os.path.basename(self.params_file).split('.')[0]
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
+        slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
         output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
-                          f"{filter_suffix}.fits"
+                          f"{filter_suffix}{slope_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
 
         # Check if file exists
@@ -1970,6 +2008,7 @@ class ParamsManager:
             print(f"  WFS type: {wfs_type}")
             print(f"  Component type: {component_type}")
             print(f"  Apply filter: {apply_filter}")
+            print(f"  Slope method: {slope_method}")
             print(f"  Output: {output_filename}")
             print(f"{'='*60}\n")
 
@@ -1980,7 +2019,8 @@ class ParamsManager:
                 output_im_dir=self.im_dir,
                 component_type=component_type,
                 save=False,  # Don't save as .npy, we'll save as FITS
-                apply_filter=apply_filter
+                apply_filter=apply_filter,
+                slope_method=slope_method,
             )
 
         if verbose_flag:
@@ -2012,7 +2052,9 @@ class ParamsManager:
     def compute_tomographic_reconstructor(self, r0, L0,
                                         wfs_type='lgs', component_type='layer',
                                         noise_variance=None,
-                                        C_noise=None, output_dir=None,
+                                        C_noise=None,
+                                        slope_method='derivatives',
+                                        output_dir=None,
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
                                         verbose=None):
@@ -2031,6 +2073,7 @@ class ParamsManager:
             component_type (str): Type of component ('dm' or 'layer')
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Full noise covariance matrix
+            slope_method (str): Method for slope computation ('derivatives', 'gtilt')
             output_dir (str, optional): Directory for saving results
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
@@ -2069,6 +2112,7 @@ class ParamsManager:
             output_im_dir=self.im_dir,
             output_rec_dir=self.rec_dir,
             wfs_type=wfs_type,
+            slope_method=slope_method,
             overwrite=overwrite,
             verbose=verbose_flag,
             display=False
@@ -2080,7 +2124,8 @@ class ParamsManager:
                 wfs_type=wfs_type,
                 output_im_dir=self.im_dir,
                 component_type=component_type,
-                save=False  # Don't save assembled IM
+                save=False,  # Don't save assembled IM
+                slope_method=slope_method
             )
 
         # Temp dir is automatically cleaned up here
@@ -2204,8 +2249,9 @@ class ParamsManager:
             config_name = (os.path.basename(self.params_file).split('.')[0]
                         if isinstance(self.params_file, str) else "config")
 
+            slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
             rec_filename = (f"rec_{config_name}_{wfs_type}_{component_type}_"
-                        f"r0{r0:.3f}_L0{L0:.1f}")
+                        f"r0{r0:.3f}_L0{L0:.1f}{slope_suffix}")
             if C_noise_from_input:
                 rec_filename += f"_Cnoise"
             else:
@@ -2503,14 +2549,17 @@ class ParamsManager:
 
 
     def generate_im_filename(self, wfs_type=None, wfs_index=None,
-                            dm_index=None, layer_index=None, timestamp=False, verbose=False):
+                            dm_index=None, layer_index=None,
+                            slope_method='derivatives',
+                            timestamp=False, verbose=False):
         """Generate the interaction matrix filename for a given WFS-DM/Layer combination."""
         return generate_im_filename(
             self.params_file,
             wfs_type=wfs_type,
             wfs_index=wfs_index,
             dm_index=dm_index,
-            layer_index=layer_index,  # Aggiungi esplicitamente questo parametro
+            layer_index=layer_index,
+            slope_method=slope_method,
             timestamp=timestamp,
             verbose=verbose
         )
@@ -2815,7 +2864,7 @@ class ParamsManager:
             print(f"  Components: {component_indices}")
             print(f"  Modes per component: {[len(mi) for mi in mode_indices]}")
             print(f"  Total modes: {total_modes}")
-            print(f"  Weights: {weights}")
+            print(f"  Cn2 weights: {weights}")
 
         # Initialize full covariance matrix
         C_atm_full = np.zeros((total_modes, total_modes), dtype=cpu_float_dtype)

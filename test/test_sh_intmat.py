@@ -96,6 +96,12 @@ class TestShIntmatComparison(unittest.TestCase):
         self._clean_files(self.subap_path, self.im_path, self.rec_path)
         base_yml3 = os.path.join(self.current_dir, 'params_scao_sh_shift_test.yml')
         self.function_intmat_specula_vs_synim(base_yml3)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
+        base_yml4 = os.path.join(self.current_dir, 'params_scao_sh_offaxis_alt_test.yml')
+        self.function_intmat_specula_vs_synim(base_yml4)
+        self._clean_files(self.subap_path, self.im_path, self.rec_path)
+        base_yml5 = os.path.join(self.current_dir, 'params_scao_sh_lgs_alt_test.yml')
+        self.function_intmat_specula_vs_synim(base_yml5)
 
     def test_intmat_workflow_selection(self):
         base_yml = os.path.join(self.current_dir, 'params_scao_sh_test.yml')
