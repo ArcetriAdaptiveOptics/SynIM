@@ -929,7 +929,8 @@ class ParamsManager:
                     wfs_type=source_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
-                    layer_index=comp_idx if comp_type == 'layer' else None
+                    layer_index=comp_idx if comp_type == 'layer' else None,
+                    slope_method=slope_method,
                 )
 
                 im_path = os.path.join(output_im_dir, im_filename)
@@ -1052,7 +1053,7 @@ class ParamsManager:
 
     def assemble_interaction_matrices(self, wfs_type='ngs', output_im_dir=None,
                                     component_type='dm', save=False,
-                                    apply_filter=True):
+                                    apply_filter=True, slope_method='derivatives'):
         """
         Assemble interaction matrices for a specific type of WFS into
         a single full interaction matrix.
@@ -1248,7 +1249,8 @@ class ParamsManager:
             wfs_type=wfs_type,
             wfs_index=first_wfs_idx,
             dm_index=first_comp_idx if component_type == 'dm' else None,
-            layer_index=first_comp_idx if component_type == 'layer' else None
+            layer_index=first_comp_idx if component_type == 'layer' else None,
+            slope_method=slope_method,
         )
         first_im_path = os.path.join(output_im_dir, first_im_filename)
         first_intmat_obj = Intmat.restore(first_im_path)
@@ -1271,7 +1273,8 @@ class ParamsManager:
                     wfs_type=wfs_type,
                     wfs_index=ii+1,
                     dm_index=comp_ind if component_type == 'dm' else None,
-                    layer_index=comp_ind if component_type == 'layer' else None
+                    layer_index=comp_ind if component_type == 'layer' else None,
+                    slope_method=slope_method,
                 )
                 im_path = os.path.join(output_im_dir, im_filename)
 
@@ -1951,7 +1954,8 @@ class ParamsManager:
 
     def save_assembled_interaction_matrix(self, wfs_type='lgs', component_type='dm',
                                         output_dir=None, overwrite=False,
-                                        apply_filter=True, verbose=None):
+                                        apply_filter=True, slope_method='derivatives',
+                                        verbose=None):
         """
         Assemble and save the full interaction matrix for a specific WFS type and component type.
         
@@ -1982,8 +1986,9 @@ class ParamsManager:
         config_name = (os.path.basename(self.params_file).split('.')[0]
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
+        slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
         output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
-                          f"{filter_suffix}.fits"
+                          f"{filter_suffix}{slope_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
 
         # Check if file exists
@@ -2010,7 +2015,8 @@ class ParamsManager:
                 output_im_dir=self.im_dir,
                 component_type=component_type,
                 save=False,  # Don't save as .npy, we'll save as FITS
-                apply_filter=apply_filter
+                apply_filter=apply_filter,
+                slope_method=slope_method,
             )
 
         if verbose_flag:
@@ -2238,8 +2244,9 @@ class ParamsManager:
             config_name = (os.path.basename(self.params_file).split('.')[0]
                         if isinstance(self.params_file, str) else "config")
 
+            slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
             rec_filename = (f"rec_{config_name}_{wfs_type}_{component_type}_"
-                        f"r0{r0:.3f}_L0{L0:.1f}")
+                        f"r0{r0:.3f}_L0{L0:.1f}{slope_suffix}")
             if C_noise_from_input:
                 rec_filename += f"_Cnoise"
             else:
@@ -2537,14 +2544,17 @@ class ParamsManager:
 
 
     def generate_im_filename(self, wfs_type=None, wfs_index=None,
-                            dm_index=None, layer_index=None, timestamp=False, verbose=False):
+                            dm_index=None, layer_index=None,
+                            slope_method='derivatives',
+                            timestamp=False, verbose=False):
         """Generate the interaction matrix filename for a given WFS-DM/Layer combination."""
         return generate_im_filename(
             self.params_file,
             wfs_type=wfs_type,
             wfs_index=wfs_index,
             dm_index=dm_index,
-            layer_index=layer_index,  # Aggiungi esplicitamente questo parametro
+            layer_index=layer_index,
+            slope_method=slope_method,
             timestamp=timestamp,
             verbose=verbose
         )

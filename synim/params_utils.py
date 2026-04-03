@@ -917,6 +917,7 @@ def validate_opt_sources(params, verbose=False):
 def generate_im_filename(params_file, wfs_type=None,
                          wfs_index=None, dm_index=None,
                          layer_index=None, n_modes=None,
+                         slope_method='derivatives',
                          timestamp=False, verbose=False):
     """
     Generate the interaction matrix filename for a given WFS-DM/Layer combination.
@@ -928,6 +929,8 @@ def generate_im_filename(params_file, wfs_type=None,
         dm_index (int, optional): Index of the DM (1-based)
         layer_index (int, optional): Index of the Layer (1-based)
         n_modes (int, optional): Number of modes used (if limited)
+        slope_method (str): Slope computation method ('derivatives' or 'gtilt').
+            When not 'derivatives', the method name is appended to the filename.
         timestamp (bool): Whether to include a timestamp in the filename
         verbose (bool): Whether to print detailed information
         
@@ -1013,6 +1016,10 @@ def generate_im_filename(params_file, wfs_type=None,
                 full_config=params
             )
             filename_parts.append(layer_info)
+
+    # Add slope method suffix when not the default
+    if slope_method and slope_method != 'derivatives':
+        filename_parts.append(slope_method)
 
     # Add timestamp if requested
     if timestamp:
