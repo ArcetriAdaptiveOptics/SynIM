@@ -348,6 +348,13 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     dm_rot_matrix = xp.array(
         [[xp.cos(dm_rot_rad), -xp.sin(dm_rot_rad)], [xp.sin(dm_rot_rad), xp.cos(dm_rot_rad)]]
     )
+# For DM transformation
+    dm_scale_matrix = xp.array(
+        [[1.0/dm_magnification[0], 0], [0, 1.0/dm_magnification[1]]]
+    )
+    dm_rot_matrix = xp.array(
+        [[xp.cos(dm_rot_rad), -xp.sin(dm_rot_rad)], [xp.sin(dm_rot_rad), xp.cos(dm_rot_rad)]]
+    )
     dm_matrix = xp.dot(dm_rot_matrix, dm_scale_matrix)
 
     # For WFS transformation
@@ -359,38 +366,23 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
          [xp.sin(wfs_rot_rad), xp.cos(wfs_rot_rad)]]
     )
 
-    # *** Anamorphosis 45° matrix (shear transformation) ***
     if wfs_anamorphosis_45 != 1.0:
-        # Shear matrix for 45° anamorphosis
-        # This stretches along (1,1) and compresses along (1,-1)
-        # Mathematical form:
-        #   1. Rotate by -45° to align diagonal with Y axis
-        #   2. Scale Y by anamorphosis_45
-        #   3. Rotate back by +45°
-        # Result: S = R(45°) @ diag(1, k) @ R(-45°)
-
         k = wfs_anamorphosis_45
-        # Simplified shear matrix (derived from rotation-scale-rotation)
-        # S = [ (1+k)/2,  (1-k)/2 ]
-        #     [ (1-k)/2,  (1+k)/2 ]
         anam_45_matrix = xp.array([
             [(1.0 + k) / 2.0, (1.0 - k) / 2.0],
             [(1.0 - k) / 2.0, (1.0 + k) / 2.0]
         ])
-
-        # Apply: rotation, then scale, then anamorphosis
         wfs_matrix = xp.dot(anam_45_matrix, xp.dot(wfs_rot_matrix, wfs_scale_matrix))
     else:
-        # No anamorphosis, standard transformation
         wfs_matrix = xp.dot(wfs_rot_matrix, wfs_scale_matrix)
 
-    # Combine transformations (first DM, then WFS)
-    # INVERSE MAPPING ALGEBRA: (M_WFS * M_DM)^-1 = M_DM^-1 * M_WFS^-1
+    # Combine transformations
+    # INVERSE MAPPING ALGEBRA: To match a 2-step process (DM then WFS),
+    # the inverse matrix must be M_DM_inv * M_WFS_inv.
     combined_matrix = xp.dot(dm_matrix, wfs_matrix)
 
     # For 3D arrays, extend the transformation matrix to 3x3
     if is_3d:
-        # Create a 3x3 identity matrix and insert the 2x2 transformation in the top-left
         combined_matrix_3d = xp.eye(3)
         combined_matrix_3d[:2, :2] = combined_matrix
         combined_matrix = combined_matrix_3d
@@ -398,42 +390,21 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     # Calculate offset
     output_center = xp.array(output_size) / 2.0
 
-    # THE HOLY GRAIL OF GEOMETRY (V2 - Orientation Locked):
-    # The LGS shift (dm_translation) is an optical beam fixed in the WFS sky frame.
-    # It MUST be scaled by the Cone Effect and WFS zoom, but it MUST NOT rotate 
-    # when the DM or WFS are mathematically rotated.
-    
-    # 1. Compute total pure scaling (Forward direction)
-    dm_scale_fwd = xp.array([[dm_magnification[0], 0], [0, dm_magnification[1]]])
-    wfs_scale_fwd = xp.array([[wfs_magnification[0], 0], [0, wfs_magnification[1]]])
-    
-    if wfs_anamorphosis_45 != 1.0:
-        # The inverse matrix uses k, so the forward matrix must use 1/k to cancel it out perfectly
-        k_inv = wfs_anamorphosis_45
-        k_fwd = 1.0 / k_inv
-        anam_45_fwd = xp.array([
-            [(1.0 + k_fwd) / 2.0, (1.0 - k_fwd) / 2.0],
-            [(1.0 - k_fwd) / 2.0, (1.0 + k_fwd) / 2.0]
-        ])
-        wfs_scale_fwd = xp.dot(anam_45_fwd, wfs_scale_fwd)
-
-    total_scale_fwd = xp.dot(wfs_scale_fwd, dm_scale_fwd)
-
-    # 2. Scale the DM translation physically (NO rotations applied)
-    scaled_dm_translation_fwd = xp.dot(total_scale_fwd, xp.array(dm_translation)[:2])
-
-    # 3. Apply M_inv (combined_matrix) to immunize the shifts from ALL rotations in SciPy
+    # The mathematical proof of the 2-step equivalence requires:
+    # 1. WFS translation is multiplied by the FULL combined matrix.
+    # 2. DM translation is multiplied ONLY by the DM rotation matrix.
+    rotated_dm_translation = xp.dot(dm_rot_matrix, xp.array(dm_translation)[:2])
     spatial_combined = combined_matrix[:2, :2] if is_3d else combined_matrix
-    
-    offset_dm = xp.dot(spatial_combined, scaled_dm_translation_fwd)
-    offset_wfs = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
+    scaled_wfs_translation = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
 
     if is_3d:
-        offset_2d = center[:2] - xp.dot(spatial_combined, output_center) - offset_dm - offset_wfs
+        offset_2d = center[:2] - xp.dot(spatial_combined, output_center) \
+            - rotated_dm_translation - scaled_wfs_translation
         offset = xp.zeros(3, dtype=offset_2d.dtype)
         offset[:2] = offset_2d
     else:
-        offset = center - xp.dot(combined_matrix, output_center) - offset_dm - offset_wfs
+        offset = center - xp.dot(combined_matrix, output_center) \
+            - rotated_dm_translation - scaled_wfs_translation
 
     # Apply transformation (scipy requires numpy)
     output = affine_transform(

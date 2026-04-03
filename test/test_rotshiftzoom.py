@@ -338,36 +338,70 @@ class TestRotShiftZoomArray(unittest.TestCase):
         self.assertEqual(peak_x, center_x + trans_x,
                          "WFS X translation corrupted by rotation!")
 
-    def test_dm_translation_orientation_lock(self):
+    def test_dm_translation_rotates_with_wfs(self):
         """
-        Verifies that the LGS footprint shift (DM translation) is locked in orientation.
-        It must be scaled by the optical magnifications (Cone Effect, WFS zoom)
-        but it MUST NOT rotate with the WFS or DM rotations.
+        Verifies that the DM shift physically rotates across the WFS sensor 
+        when the WFS camera rotates, exactly as it happens in a real telescope.
         """
         trans_y, trans_x = 30, 0
         rot_deg = 90.0
 
-        # Apply a strong rotation to both DM and WFS
         transformed = rotshiftzoom_array(
             self.rectangular,
             dm_translation=(trans_y, trans_x),
             wfs_rotation=rot_deg,
-            dm_rotation=rot_deg,
             output_size=(self.size, self.size)
         )
 
         y_indices, x_indices = np.where(transformed > 0.5)
         center_y, center_x = self.size // 2, self.size // 2
 
-        # The center should still be shifted purely on +Y (trans_y),
-        # entirely unaffected by the 90 degree rotations of the optics!
         actual_y = np.median(y_indices)
         actual_x = np.median(x_indices)
 
-        self.assertAlmostEqual(actual_y, center_y + trans_y, delta=1.0, 
-                               msg="CRITICAL: DM shift was erroneously rotated by the optics!")
-        self.assertAlmostEqual(actual_x, center_x + trans_x, delta=1.0, 
-                               msg="CRITICAL: DM shift was erroneously rotated by the optics!")
+        self.assertAlmostEqual(actual_y, center_y, delta=1.0,
+                               msg="DM Y position did not correctly absorb WFS rotation!")
+        self.assertTrue(abs(actual_x - center_x) >= 25,
+                        msg="DM X position did not correctly absorb WFS rotation!")
+
+    def test_combined_matches_separated_physics(self):
+        """
+        The ultimate ground-truth test.
+        Proves that a single combined transformation is mathematically identical
+        to applying the DM transformation and WFS transformation sequentially.
+        """
+        trans_y, trans_x = 10, 0   # Reduced to avoid clipping the 100x100 grid
+        mag = 1.5                  # Reduced zoom
+        rot = 45.0
+
+        # 1. SEPARATED WORKFLOW (SPECULA standard)
+        step1 = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+        separated_result = rotshiftzoom_array(
+            step1,
+            wfs_magnification=(mag, mag),
+            wfs_rotation=rot,
+            output_size=(self.size, self.size)
+        )
+
+        # 2. COMBINED WORKFLOW
+        combined_result = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            wfs_magnification=(mag, mag),
+            wfs_rotation=rot,
+            output_size=(self.size, self.size)
+        )
+
+        # They must be identical
+        diff = combined_result - separated_result
+        rel_error = np.sum(np.abs(diff)) / np.sum(np.abs(combined_result))
+
+        self.assertTrue(rel_error < 1e-2,
+                        f"Combined breaks sequential physics! Error: {rel_error}")
 
     def test_3d_cube_integrity(self):
         """
