@@ -333,8 +333,41 @@ class TestRotShiftZoomArray(unittest.TestCase):
         peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
         center_y, center_x = self.size // 2, self.size // 2
 
-        self.assertEqual(peak_y, center_y + trans_y, "WFS Y translation corrupted by rotation!")
-        self.assertEqual(peak_x, center_x + trans_x, "WFS X translation corrupted by rotation!")
+        self.assertEqual(peak_y, center_y + trans_y,
+                         "WFS Y translation corrupted by rotation!")
+        self.assertEqual(peak_x, center_x + trans_x,
+                         "WFS X translation corrupted by rotation!")
+
+    def test_dm_translation_orientation_lock(self):
+        """
+        Verifies that the LGS footprint shift (DM translation) is locked in orientation.
+        It must be scaled by the optical magnifications (Cone Effect, WFS zoom)
+        but it MUST NOT rotate with the WFS or DM rotations.
+        """
+        trans_y, trans_x = 30, 0
+        rot_deg = 90.0
+
+        # Apply a strong rotation to both DM and WFS
+        transformed = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            wfs_rotation=rot_deg,
+            dm_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        y_indices, x_indices = np.where(transformed > 0.5)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        # The center should still be shifted purely on +Y (trans_y),
+        # entirely unaffected by the 90 degree rotations of the optics!
+        actual_y = np.median(y_indices)
+        actual_x = np.median(x_indices)
+
+        self.assertAlmostEqual(actual_y, center_y + trans_y, delta=1.0, 
+                               msg="CRITICAL: DM shift was erroneously rotated by the optics!")
+        self.assertAlmostEqual(actual_x, center_x + trans_x, delta=1.0, 
+                               msg="CRITICAL: DM shift was erroneously rotated by the optics!")
 
     def test_3d_cube_integrity(self):
         """
