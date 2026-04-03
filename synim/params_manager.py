@@ -352,9 +352,9 @@ class ParamsManager:
         return out.get(f'n_{wfs_type}', 0)
 
 
-    def _scale_guide_star_height_with_zenith(self, gs_height, source_type):
-        """Scale finite LGS height by airmass derived from zenith angle."""
-        if source_type != 'lgs' or not np.isfinite(gs_height):
+    def _scale_guide_star_height_with_zenith(self, gs_height):
+        """Scale finite GS height by airmass derived from zenith angle."""
+        if not np.isfinite(gs_height):
             return gs_height
 
         zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
@@ -656,22 +656,28 @@ class ParamsManager:
             idx_valid_sa = to_xp(xp_local, idx_valid_sa)
 
         # Guide star parameters
-        if source_type == 'lgs':
-            # LGS is at finite height
-            # Try to get height from source or use typical LGS height
-            gs_height = None
+        # Try to get height from source or use typical GS height
+        gs_height = None
 
-            # Check if there's a specific source for this WFS and try to get height
-            source_match = re.search(r'(lgs\d+)', wfs_key)
-            if source_match:
-                source_key = f'source_{source_match.group(1)}'
+        # Check if there's a specific source for this WFS and try to get height
+        source_match = re.search(r'('+source_type+'\d+)', wfs_key)
+        if source_match:
+            source_key = f'source_{source_match.group(1)}'
+            if source_key in self.params:
+                gs_height = self.params[source_key].get('height', None)
+        else:
+            source_keys = ['source_'+source_type, 'source_wfs', 'on_axis_source']
+            for source_key in source_keys:
                 if source_key in self.params:
                     gs_height = self.params[source_key].get('height', None)
+                    if gs_height is not None:
+                        break
 
-            # If still no height, use default
-            if gs_height is None:
-                gs_height = 90000.0  # Default LGS height in meters
-        else:
+        # If still no height, use default
+        if gs_height is None and source_type == 'lgs':
+            # Default LGS height in meters
+            gs_height = 90000.0
+        elif gs_height is None:
             # NGS and REF are at infinite distance
             gs_height = float('inf')
 
@@ -737,8 +743,7 @@ class ParamsManager:
         wfs_params = self.get_wfs_params(wfs_type, wfs_index,
                                          xp_local=np)
         gs_height_scaled = self._scale_guide_star_height_with_zenith(
-            wfs_params['gs_height'],
-            wfs_params['source_type'],
+            wfs_params['gs_height']
         )
 
         # Combine them into a single dictionary with all needed parameters
@@ -952,8 +957,7 @@ class ParamsManager:
                 wfs_params = self.get_wfs_params(source_type, wfs_idx,
                                                  xp_local=np)
                 gs_height_scaled = self._scale_guide_star_height_with_zenith(
-                    wfs_params['gs_height'],
-                    wfs_params['source_type'],
+                    wfs_params['gs_height']
                 )
 
                 # Add to configurations for multi-WFS computation
