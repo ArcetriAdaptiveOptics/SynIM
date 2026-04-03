@@ -15,6 +15,10 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
 .. note::
    This is a **methodology tutorial**, not a usage guide for ``run_calib_workflow_morfeo.py``.
    That script can be used as a reference implementation of the same sequence, but the goal here is to let you implement your own calibration files/scripts for complex MCAO systems.
+   
+   The slope computation method used in the examples is the default 'derivatives', but you can also use 'gtilt' by changing the ``slope_method`` argument in the relevant function calls.
+   'gtilt' provides the G-tilt (Gradient tilt) estimation, and 'derivatives' provides the Z-tilt (Zernike tilt, that is the global angular orientation of a wavefront) estimation.
+   'gtilt' can provide more accurate slope estimation because the Shack-Hartmann spot displacements are not always well approximated by local derivatives, especially for high-order modes.
 
 1. Theoretical Framework: The Three WFS Groups
 ==============================================
@@ -237,6 +241,7 @@ Create a script ``step2_compute_ims.py``:
 
    yaml_file = 'params_morfeo_simplified.yml'
    root_dir  = '/raid1/guido/PASSATA/MORFEOtest/'
+   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'gtilt')
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
 
@@ -245,6 +250,7 @@ Create a script ``step2_compute_ims.py``:
        wfs_type='lgs',
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
+       slope_method=slope_method,
        overwrite=False, verbose=True, display=False)
    print(f"LGS: {len(lgs_ims)} IMs")
 
@@ -253,6 +259,7 @@ Create a script ``step2_compute_ims.py``:
        wfs_type='ngs',
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
+       slope_method=slope_method,
        overwrite=False, verbose=True, display=False)
    print(f"NGS: {len(ngs_ims)} IMs")
 
@@ -261,6 +268,7 @@ Create a script ``step2_compute_ims.py``:
        wfs_type='ref',
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
+       slope_method=slope_method,
        overwrite=False, verbose=True, display=False)
    print(f"REF: {len(ref_ims)} IMs")
 
@@ -351,6 +359,7 @@ Create a script ``step4_compute_reconstructors.py``:
    rec_dir   = root_dir + 'synrec/'
    synim_dir = root_dir + 'synim/'
    r0, L0    = 0.15, 25.0
+   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'gtilt')
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
 
@@ -359,6 +368,7 @@ Create a script ``step4_compute_reconstructors.py``:
        r0=r0, L0=L0,
        wfs_type='lgs', component_type='layer',
        noise_variance=None,   # computed automatically from detector parameters
+       slope_method=slope_method,  # default method for slope extraction
        output_dir=rec_dir,
        save=True, verbose=True)
    print(f"LGS reconstructor: {result_lgs['reconstructor'].shape}")
@@ -367,7 +377,8 @@ Create a script ``step4_compute_reconstructors.py``:
    params_mgr.save_assembled_interaction_matrix(
        wfs_type='lgs', component_type='dm',
        output_dir=synim_dir, overwrite=True,
-       apply_filter=True, verbose=True)
+       apply_filter=True, slope_method=slope_method,
+       verbose=True)
 
    # --- NGS reconstructor (LO slopes → DMs) ---
    result_ngs = params_mgr.compute_tomographic_reconstructor(
@@ -375,6 +386,7 @@ Create a script ``step4_compute_reconstructors.py``:
        wfs_type='ngs', component_type='dm',
        noise_variance=None,
        output_dir=rec_dir,
+       slope_method=slope_method,
        save=True, verbose=True)
    print(f"NGS reconstructor: {result_ngs['reconstructor'].shape}")
 
