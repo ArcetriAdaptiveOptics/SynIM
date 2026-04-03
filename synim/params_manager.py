@@ -2120,7 +2120,8 @@ class ParamsManager:
                 wfs_type=wfs_type,
                 output_im_dir=self.im_dir,
                 component_type=component_type,
-                save=False  # Don't save assembled IM
+                save=False,  # Don't save assembled IM
+                slope_method=slope_method
             )
 
         # Temp dir is automatically cleaned up here
