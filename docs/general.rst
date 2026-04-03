@@ -43,6 +43,12 @@ SynIM is organized into several main modules:
    - ``interaction_matrix()``: Main function with intelligent workflow selection
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
+   - ``compute_gtilt_with_extrapolation()``: G-tilt estimation from phase differences per subaperture
+
+   Slope extraction supports two methods controlled by ``slope_method`` argument of the main functions:
+
+   - ``derivatives`` (default): numerical derivatives with extrapolation-aware edge handling
+   - ``gtilt`` (optional): average phase differences (G-tilt) in each subaperture
 
 **synpm.py**
    Core functions for projection matrix computation:
@@ -87,16 +93,16 @@ SynIM implements two main workflows for interaction matrix computation, automati
    **Process:**
    
    1. Apply DM transformations to influence functions (rotation, magnification, source altitude projection)
-   2. Compute numerical derivatives with edge extrapolation
-   3. Apply WFS transformations to derivatives (rotation, translation, magnification)
-   4. Bin derivatives to subaperture resolution
+   2. Compute numerical derivatives or G-tilts with edge extrapolation
+   3. Apply WFS transformations to derivatives or G-tilts (rotation, translation, magnification)
+   4. Bin derivatives or G-tilts to subaperture resolution
    5. Extract slopes for valid subapertures
    
    **Advantages:**
    
    - Single interpolation step per transformation type
    - Maximum accuracy (no cumulative interpolation errors)
-   - Can reuse derivatives for multiple WFS with same geometry
+   - Can reuse derivatives or G-tilts for multiple WFS with same geometry
 
 **COMBINED Workflow**
    Used when both DM and WFS have transformations:
@@ -105,7 +111,7 @@ SynIM implements two main workflows for interaction matrix computation, automati
    
    1. Combine all DM and WFS transformations into single composite operation
    2. Apply combined transformation to influence functions in one interpolation step
-   3. Compute derivatives on final transformed grid
+   3. Compute derivatives or G-tilts on final transformed grid
    4. Bin and extract slopes
    
    **Advantages:**

@@ -201,15 +201,119 @@ def compute_derivatives_with_extrapolation(data, mask=None):
     dy = xp.gradient(data, axis=(0), edge_order=1)
 
     if mask is not None:
+        # Gracefully handle both 2D and 3D arrays
+        is_3d = dx.ndim == 3
         idx = xp.ravel(xp.array(xp.where(mask.flatten() == 0)))
-        dx_2d = dx.reshape((-1,dx.shape[2]))
-        dx_2d[idx,:] = xp.nan
-        dy_2d = dy.reshape((-1,dy.shape[2]))
-        dy_2d[idx,:] = xp.nan
+
+        dx_2d = dx.reshape((-1, dx.shape[2] if is_3d else 1))
+        dx_2d[idx, :] = xp.nan
+
+        dy_2d = dy.reshape((-1, dy.shape[2] if is_3d else 1))
+        dy_2d[idx, :] = xp.nan
+
         dx = dx_2d.reshape(dx.shape)
         dy = dy_2d.reshape(dy.shape)
 
     return dx, dy
+
+
+def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_mask,
+                                     wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
+                                     verbose, specula_convention):
+    """
+    Common function to compute slopes from derivatives.
+    Used by both separated and combined workflows.
+    """
+
+    # Clean up masks
+    if xp.isnan(pup_mask).any():
+        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
+    if xp.isnan(dm_mask).any():
+        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
+
+    # Rebin masks to WFS resolution
+    pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
+    pup_mask_sa = pup_mask_sa / xp.max(pup_mask_sa) if xp.max(pup_mask_sa) > 0 else pup_mask_sa
+
+    dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
+    if xp.max(dm_mask_sa) <= 0:
+        raise ValueError('DM mask is empty after rebinning.')
+    dm_mask_sa = dm_mask_sa / xp.max(dm_mask_sa)
+
+    # Clean derivatives
+    if xp.isnan(derivatives_x).any():
+        xp.nan_to_num(derivatives_x, copy=False, nan=0.0)
+    if xp.isnan(derivatives_y).any():
+        xp.nan_to_num(derivatives_y, copy=False, nan=0.0)
+
+    # Apply pupil mask
+    trans_der_x = apply_mask(derivatives_x, pup_mask, fill_value=xp.nan)
+    trans_der_y = apply_mask(derivatives_y, pup_mask, fill_value=xp.nan)
+
+    # Rebin derivatives
+    # Since we use 'nanmean', the average is already correctly normalized by the valid area.
+    scale_factor = trans_der_x.shape[0] / wfs_nsubaps
+
+    wfs_signal_x = rebin(trans_der_x, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
+    wfs_signal_y = rebin(trans_der_y, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
+
+    # Combined mask
+    combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
+
+    # Apply mask
+    wfs_signal_x = apply_mask(wfs_signal_x, combined_mask_sa, fill_value=0)
+    wfs_signal_y = apply_mask(wfs_signal_y, combined_mask_sa, fill_value=0)
+
+    # Check if data is 3D (modes) or 2D (single phase screen)
+    is_3d = wfs_signal_x.ndim == 3
+
+    # Reshape gracefully handling both 2D and 3D arrays
+    wfs_signal_x_2d = wfs_signal_x.reshape((-1, wfs_signal_x.shape[2] if is_3d else 1))
+    wfs_signal_y_2d = wfs_signal_y.reshape((-1, wfs_signal_y.shape[2] if is_3d else 1))
+
+    # Select valid subapertures
+    if idx_valid_sa is not None:
+        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
+            # *** sa_2d should use float_dtype (it's a mask with 0/1 values) ***
+            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
+            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
+            sa_2d = xp.transpose(sa_2d)
+            idx_temp = xp.where(sa_2d > 0)
+            # *** But idx_valid_sa_new should keep integer type (indices!) ***
+            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)  # Keep original dtype (int)
+            idx_valid_sa_new[:, 0] = idx_temp[0]
+            idx_valid_sa_new[:, 1] = idx_temp[1]
+        else:
+            idx_valid_sa_new = idx_valid_sa
+
+        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
+            width = wfs_nsubaps
+            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
+            # *** Ensure indices are integers ***
+            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
+            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
+        else:
+            # *** Ensure indices are integers ***
+            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
+            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
+
+    # Concatenate
+    if specula_convention:
+        im = xp.concatenate((wfs_signal_y_2d, wfs_signal_x_2d))
+    else:
+        im = xp.concatenate((wfs_signal_x_2d, wfs_signal_y_2d))
+
+    # Convert to slope units
+    pup_diam_pix = pup_mask.shape[0]
+    pixel_pitch = pup_diam_m / pup_diam_pix
+    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
+    coeff *= 1 / (0.5 * wfs_fov_arcsec)
+    im = im * coeff
+
+    if verbose:
+        print(f'  ✓ Slopes computed, shape: {im.shape}')
+
+    return im
 
 
 def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
@@ -536,102 +640,6 @@ def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_m
         )
     else:
         raise ValueError(f"Unknown slope_method: {slope_method}")
-
-
-def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_mask,
-                                     wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
-                                     verbose, specula_convention):
-    """
-    Common function to compute slopes from derivatives.
-    Used by both separated and combined workflows.
-    """
-
-    # Clean up masks
-    if xp.isnan(pup_mask).any():
-        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
-    if xp.isnan(dm_mask).any():
-        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
-
-    # Rebin masks to WFS resolution
-    pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    pup_mask_sa = pup_mask_sa / xp.max(pup_mask_sa) if xp.max(pup_mask_sa) > 0 else pup_mask_sa
-
-    dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
-    if xp.max(dm_mask_sa) <= 0:
-        raise ValueError('DM mask is empty after rebinning.')
-    dm_mask_sa = dm_mask_sa / xp.max(dm_mask_sa)
-
-    # Clean derivatives
-    if xp.isnan(derivatives_x).any():
-        xp.nan_to_num(derivatives_x, copy=False, nan=0.0)
-    if xp.isnan(derivatives_y).any():
-        xp.nan_to_num(derivatives_y, copy=False, nan=0.0)
-
-    # Apply pupil mask
-    trans_der_x = apply_mask(derivatives_x, pup_mask, fill_value=xp.nan)
-    trans_der_y = apply_mask(derivatives_y, pup_mask, fill_value=xp.nan)
-
-    # Rebin derivatives
-    scale_factor = (trans_der_x.shape[0] / wfs_nsubaps) / \
-                   xp.median(rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='average'))
-
-    wfs_signal_x = rebin(trans_der_x, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
-    wfs_signal_y = rebin(trans_der_y, (wfs_nsubaps, wfs_nsubaps), method='nanmean') * scale_factor
-
-    # Combined mask
-    combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
-
-    # Apply mask
-    wfs_signal_x = apply_mask(wfs_signal_x, combined_mask_sa, fill_value=0)
-    wfs_signal_y = apply_mask(wfs_signal_y, combined_mask_sa, fill_value=0)
-
-    # Reshape
-    wfs_signal_x_2d = wfs_signal_x.reshape((-1, wfs_signal_x.shape[2]))
-    wfs_signal_y_2d = wfs_signal_y.reshape((-1, wfs_signal_y.shape[2]))
-
-    # Select valid subapertures
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # *** sa_2d should use float_dtype (it's a mask with 0/1 values) ***
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            # *** But idx_valid_sa_new should keep integer type (indices!) ***
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)  # Keep original dtype (int)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
-        else:
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
-
-    # Concatenate
-    if specula_convention:
-        im = xp.concatenate((wfs_signal_y_2d, wfs_signal_x_2d))
-    else:
-        im = xp.concatenate((wfs_signal_x_2d, wfs_signal_y_2d))
-
-    # Convert to slope units
-    pup_diam_pix = pup_mask.shape[0]
-    pixel_pitch = pup_diam_m / pup_diam_pix
-    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
-    coeff *= 1 / (0.5 * wfs_fov_arcsec)
-    im = im * coeff
-
-    if verbose:
-        print(f'  ✓ Slopes computed, shape: {im.shape}')
-
-    return im
 
 
 def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
@@ -1120,6 +1128,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
         print(f"{'='*60}\n")
 
     return im_dict, derivatives_info
+
 
 def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
                                     wfs_translation=(0.0, 0.0),

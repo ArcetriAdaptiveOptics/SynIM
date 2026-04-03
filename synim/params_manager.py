@@ -768,7 +768,8 @@ class ParamsManager:
         return params
 
     def compute_interaction_matrix(self, wfs_type=None, wfs_index=None, dm_index=None,
-                                layer_index=None, verbose=None, display=False):
+                                   layer_index=None, slope_method='derivatives',
+                                   verbose=None, display=False):
         """
         Compute an interaction matrix for a specific WFS-DM/Layer combination.
 
@@ -777,6 +778,7 @@ class ParamsManager:
             wfs_index (int, optional): Index of the WFS (1-based)
             dm_index (int, optional): Index of the DM (1-based)
             layer_index (int, optional): Index of the Layer (1-based)
+            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
             verbose (bool, optional): Override the class's verbose setting
             display (bool): Whether to display plots
 
@@ -813,6 +815,7 @@ class ParamsManager:
             dm_height=params['dm_height'],
             gs_pol_coo=params['gs_pol_coo'],
             gs_height=params['gs_height'],
+            slope_method=slope_method,
             dm_rotation=params['dm_rotation'],
             wfs_nsubaps=params['wfs_nsubaps'],
             wfs_rotation=params['wfs_rotation'],
@@ -830,8 +833,9 @@ class ParamsManager:
         return im
 
     def compute_interaction_matrices(self, output_im_dir, output_rec_dir,
-                                wfs_type=None, overwrite=False, verbose=None,
-                                display=False):
+                                     wfs_type=None, slope_method='derivatives',
+                                     overwrite=False, verbose=None,
+                                     display=False):
         """
         Compute and save interaction matrices for all combinations of WFSs and DMs/Layers.
         Uses multi-WFS optimization when possible.
@@ -840,6 +844,7 @@ class ParamsManager:
             output_im_dir (str): Output directory for saved matrices
             output_rec_dir (str): Output directory for reconstruction matrices
             wfs_type (str, optional): Type of WFS ('ngs', 'lgs', 'ref') to use
+            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
             overwrite (bool, optional): Whether to overwrite existing files
             verbose (bool, optional): Override the class's verbose setting
             display (bool, optional): Whether to display plots
@@ -990,6 +995,7 @@ class ParamsManager:
                     dm_rotation=component_params['dm_rotation'],
                     wfs_configs=wfs_configs,
                     verbose=verbose_flag,
+                    slope_method=slope_method,
                     specula_convention=True,
                     im_on_cpu=True,
                     minimize_memory=True
@@ -1993,6 +1999,7 @@ class ParamsManager:
             print(f"  WFS type: {wfs_type}")
             print(f"  Component type: {component_type}")
             print(f"  Apply filter: {apply_filter}")
+            print(f"  Slope method: {slope_method}")
             print(f"  Output: {output_filename}")
             print(f"{'='*60}\n")
 
@@ -2035,7 +2042,9 @@ class ParamsManager:
     def compute_tomographic_reconstructor(self, r0, L0,
                                         wfs_type='lgs', component_type='layer',
                                         noise_variance=None,
-                                        C_noise=None, output_dir=None,
+                                        C_noise=None,
+                                        slope_method='derivatives',
+                                        output_dir=None,
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
                                         verbose=None):
@@ -2054,6 +2063,7 @@ class ParamsManager:
             component_type (str): Type of component ('dm' or 'layer')
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Full noise covariance matrix
+            slope_method (str): Method for slope computation ('derivatives', 'gtilt')
             output_dir (str, optional): Directory for saving results
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
@@ -2092,6 +2102,7 @@ class ParamsManager:
             output_im_dir=self.im_dir,
             output_rec_dir=self.rec_dir,
             wfs_type=wfs_type,
+            slope_method=slope_method,
             overwrite=overwrite,
             verbose=verbose_flag,
             display=False
