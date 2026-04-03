@@ -403,6 +403,59 @@ class TestRotShiftZoomArray(unittest.TestCase):
         self.assertTrue(rel_error < 1e-2,
                         f"Combined breaks sequential physics! Error: {rel_error}")
 
+    def test_specula_approach_vs_intuition(self):
+        """
+        This test explicitly models the SPECULA 2-step approach and checks if it
+        matches the user's intuition that the disk's position should NOT change
+        due to WFS transformations.
+        """
+        trans_y, trans_x = 20, 0
+        wfs_rot = 90.0
+        wfs_mag = 1.5
+
+        # 1. SPECULA Step 1: DM deformations and star position
+        step1 = rotshiftzoom_array(
+            self.gauss_masked,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+
+        # The star is now shifted to +20 on Y.
+        y_step1, _ = np.where(step1 > 0.5)
+        self.assertAlmostEqual(np.median(y_step1), self.size // 2 + trans_y, delta=1.0)
+
+        # 2. SPECULA Step 2: WFS deformations
+        step2 = rotshiftzoom_array(
+            step1,
+            wfs_rotation=wfs_rot,
+            wfs_magnification=(wfs_mag, wfs_mag),
+            output_size=(self.size, self.size)
+        )
+
+        # Let's check the user's intuition: "la magnificazione del WFS cambierà
+        # la dimensione del disco, ma non la sua posizione"
+        y_final, x_final = np.where(step2 > 0.5)
+        final_center_y = np.median(y_final)
+        final_center_x = np.median(x_final)
+
+        # If the intuition is correct, the center should still be (Y+20, X+0)
+        intuition_correct = abs(final_center_y - (self.size // 2 + trans_y)) < 1.0 and \
+                            abs(final_center_x - (self.size // 2 + trans_x)) < 1.0
+
+        # But SPECULA's 2-step math actually rotates and zooms the center from the origin!
+        # It will be pushed to 20 * 1.5 = 30. And rotated 90 degrees (Y becomes X).
+        actual_y_expected = self.size // 2
+        actual_x_expected = self.size // 2 + trans_y * wfs_mag
+
+        specula_math_matches_actual = abs(final_center_y - actual_y_expected) < 1.0 and \
+                                      abs(final_center_x - actual_x_expected) < 1.0
+
+        # The test PROVES that the intuition is violated by SPECULA's own 2-step process
+        self.assertFalse(intuition_correct,
+                         "Intuition violated: The pupil MOVED during WFS transform!")
+        self.assertTrue(specula_math_matches_actual,
+                        "SPECULA math rotates and scales the DM shift!")
+
     def test_3d_cube_integrity(self):
         """
         Verifies that 3D arrays (representing DM modes) are transformed 

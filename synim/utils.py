@@ -366,15 +366,18 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
          [xp.sin(wfs_rot_rad), xp.cos(wfs_rot_rad)]]
     )
 
+    # OPTICAL ORDER: The Shack-Hartmann sensor rotation is the FINAL step 
+    # of the physical optical path. Therefore, in Inverse Mapping, we MUST un-rotate FIRST.
+    # xp.dot(A, B) applies B first. So wfs_rot_matrix MUST be on the right!
     if wfs_anamorphosis_45 != 1.0:
         k = wfs_anamorphosis_45
         anam_45_matrix = xp.array([
             [(1.0 + k) / 2.0, (1.0 - k) / 2.0],
             [(1.0 - k) / 2.0, (1.0 + k) / 2.0]
         ])
-        wfs_matrix = xp.dot(anam_45_matrix, xp.dot(wfs_rot_matrix, wfs_scale_matrix))
+        wfs_matrix = xp.dot(anam_45_matrix, xp.dot(wfs_scale_matrix, wfs_rot_matrix))
     else:
-        wfs_matrix = xp.dot(wfs_rot_matrix, wfs_scale_matrix)
+        wfs_matrix = xp.dot(wfs_scale_matrix, wfs_rot_matrix)
 
     # Combine transformations
     # INVERSE MAPPING ALGEBRA: To match a 2-step process (DM then WFS),
