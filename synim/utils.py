@@ -385,7 +385,8 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
         wfs_matrix = xp.dot(wfs_rot_matrix, wfs_scale_matrix)
 
     # Combine transformations (first DM, then WFS)
-    combined_matrix = xp.dot(wfs_matrix, dm_matrix)
+    # INVERSE MAPPING ALGEBRA: (M_WFS * M_DM)^-1 = M_DM^-1 * M_WFS^-1
+    combined_matrix = xp.dot(dm_matrix, wfs_matrix)
 
     # For 3D arrays, extend the transformation matrix to 3x3
     if is_3d:

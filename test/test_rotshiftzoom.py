@@ -315,6 +315,27 @@ class TestRotShiftZoomArray(unittest.TestCase):
         self.assertTrue(width_x > 35 and width_y < 25,
                         "Rectangle did not physically rotate!")
 
+    def test_wfs_translation_independence_from_rotation(self):
+        """
+        Verifies that WFS translation (camera physical shift) is an absolute shift 
+        on the final detector, strictly independent of the WFS optical rotation.
+        """
+        trans_y, trans_x = 20, 0
+        rot_deg = 45.0
+
+        transformed = rotshiftzoom_array(
+            self.gauss_masked,
+            wfs_translation=(trans_y, trans_x),
+            wfs_rotation=rot_deg,
+            output_size=(self.size, self.size)
+        )
+
+        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
+        center_y, center_x = self.size // 2, self.size // 2
+
+        self.assertEqual(peak_y, center_y + trans_y, "WFS Y translation corrupted by rotation!")
+        self.assertEqual(peak_x, center_x + trans_x, "WFS X translation corrupted by rotation!")
+
     def test_3d_cube_integrity(self):
         """
         Verifies that 3D arrays (representing DM modes) are transformed 
