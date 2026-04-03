@@ -451,6 +451,68 @@ class TestRotShiftZoomArray(unittest.TestCase):
         self.assertAlmostEqual(final_center_x, expected_x, delta=1.0,
                                msg="The pupil was not radially pushed by the WFS magnification!")
 
+    def test_off_axis_asymmetric_pupil_arbitrary_rotation(self):
+        """
+        Verifies the physical behavior of an asymmetric, off-axis shape 
+        under an arbitrary WFS zoom and rotation (15 degrees, mag 1.05).
+        Using a rectangle breaks circular symmetry, ensuring we track both
+        the orbit of the center and the physical rotation of the shape itself.
+        """
+        trans_y, trans_x = 20, 10
+        wfs_rot = 15.0
+        wfs_mag = 1.05
+
+        # 1. Step 1: DM deformations
+        # We use 'self.rectangular', which is 40 pixels tall (Y) and 20 pixels wide (X).
+        # It lacks circular symmetry, making rotation strictly visible.
+        step1 = rotshiftzoom_array(
+            self.rectangular,
+            dm_translation=(trans_y, trans_x),
+            output_size=(self.size, self.size)
+        )
+
+        # 2. Step 2: WFS transformations
+        step2 = rotshiftzoom_array(
+            step1,
+            wfs_rotation=wfs_rot,
+            wfs_magnification=(wfs_mag, wfs_mag),
+            output_size=(self.size, self.size)
+        )
+
+        y_final, x_final = np.where(step2 > 0.5)
+        final_center_y = np.median(y_final)
+        final_center_x = np.median(x_final)
+
+        # THE PHYSICS (General Matrix Coordinates):
+        # Y goes DOWN, X goes RIGHT.
+        # A counter-clockwise rotation of 'theta' degrees applies as:
+        # y' = y * cos(theta) - x * sin(theta)
+        # x' = y * sin(theta) + x * cos(theta)
+
+        theta = np.deg2rad(wfs_rot)
+
+        expected_dy = (trans_y * np.cos(theta) - trans_x * np.sin(theta)) * wfs_mag
+        expected_dx = (trans_y * np.sin(theta) + trans_x * np.cos(theta)) * wfs_mag
+
+        expected_y = self.size // 2 + expected_dy
+        expected_x = self.size // 2 + expected_dx
+
+        # 1. Verify the ORBIT (the shift of the center)
+        self.assertAlmostEqual(final_center_y, expected_y, delta=1.0,
+                msg=f"The asymmetric shape did not orbit correctly at {wfs_rot} degrees!")
+        self.assertAlmostEqual(final_center_x, expected_x, delta=1.0,
+                msg=f"The asymmetric shape did not orbit correctly at {wfs_rot} degrees!")
+
+        # 2. Verify the INTRINSIC ROTATION (the shape itself)
+        # The original shape was strictly 20 pixels wide (X axis).
+        # By rotating it 15 degrees, its 40-pixel height partially projects onto the X axis.
+        # Expected new width: 20*cos(15) + 40*sin(15) = ~29.6 pixels (before mag).
+        width_x = np.max(x_final) - np.min(x_final)
+
+        self.assertTrue(width_x > 25,
+                        f"The shape's bounding box is only {width_x} pixels wide. "
+                        f"It translated, but the shape itself did NOT rotate!")
+
     def test_3d_cube_integrity(self):
         """
         Verifies that 3D arrays (representing DM modes) are transformed 

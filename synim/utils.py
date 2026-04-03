@@ -348,13 +348,6 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     dm_rot_matrix = xp.array(
         [[xp.cos(dm_rot_rad), -xp.sin(dm_rot_rad)], [xp.sin(dm_rot_rad), xp.cos(dm_rot_rad)]]
     )
-# For DM transformation
-    dm_scale_matrix = xp.array(
-        [[1.0/dm_magnification[0], 0], [0, 1.0/dm_magnification[1]]]
-    )
-    dm_rot_matrix = xp.array(
-        [[xp.cos(dm_rot_rad), -xp.sin(dm_rot_rad)], [xp.sin(dm_rot_rad), xp.cos(dm_rot_rad)]]
-    )
     dm_matrix = xp.dot(dm_rot_matrix, dm_scale_matrix)
 
     # For WFS transformation
