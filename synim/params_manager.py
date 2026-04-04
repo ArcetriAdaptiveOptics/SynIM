@@ -229,8 +229,14 @@ class ParamsManager:
                                         'noise_elong_model': default_elong,
                                         'naThicknessInM': default_na_thick,
                                         'tGparameter': default_tg}
-                self.ngs_recon_params = {'sigma2_in_nm2': default_sigma2}
-                self.ref_recon_params = {'sigma2_in_nm2': default_sigma2}
+                self.ngs_recon_params = {'sigma2_in_nm2': default_sigma2,
+                                        'noise_elong_model': None,
+                                        'naThicknessInM': None,
+                                        'tGparameter': None}
+                self.ref_recon_params = {'sigma2_in_nm2': default_sigma2,
+                                        'noise_elong_model': None,
+                                        'naThicknessInM': None,
+                                        'tGparameter': None}
 
             else:
 
