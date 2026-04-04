@@ -667,7 +667,7 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
     has_wfs_transform = has_transformations(wfs_rotation, wfs_translation, wfs_mag_global)
 
     # Choose workflow
-    use_combined = has_dm_transform and has_wfs_transform and slope_method == 'derivatives'
+    use_combined = (has_dm_transform and has_wfs_transform) or slope_method == 'tilt'
 
     if verbose:
         print(f"\n{'='*60}")
