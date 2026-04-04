@@ -667,7 +667,7 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
     has_wfs_transform = has_transformations(wfs_rotation, wfs_translation, wfs_mag_global)
 
     # Choose workflow
-    use_combined = has_dm_transform and has_wfs_transform
+    use_combined = (has_dm_transform and has_wfs_transform) or slope_method == 'tilt'
 
     if verbose:
         print(f"\n{'='*60}")
@@ -862,7 +862,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     can_separate_transforms = (has_dm_transform and not any_wfs_transform) or \
                              (not has_dm_transform and any_wfs_transform)
 
-    use_separated = all_gs_same and all_wfs_same and can_separate_transforms
+    use_separated = all_gs_same and all_wfs_same and can_separate_transforms \
+                and slope_method == 'derivatives'
 
     if verbose:
         print(f"All WFS see DM from same direction: {all_gs_same}")
@@ -1012,8 +1013,9 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             )
 
             # XOR: only one type of transform
-            use_separated_this_wfs = (has_dm_transform_wfs and not has_wfs_transform_wfs) or \
-                                    (not has_dm_transform_wfs and has_wfs_transform_wfs)
+            use_separated_this_wfs = ((has_dm_transform_wfs and not has_wfs_transform_wfs) or \
+                                    (not has_dm_transform_wfs and has_wfs_transform_wfs)) \
+                                    and slope_method == 'derivatives'  # Can only reuse derivatives if using derivatives method
 
             if verbose:
                 print(f"  [{i+1}/{len(wfs_configs)}] {wfs_name}:")
