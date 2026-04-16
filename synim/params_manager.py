@@ -1974,7 +1974,7 @@ class ParamsManager:
     def save_assembled_interaction_matrix(self, wfs_type='lgs', component_type='dm',
                                         output_dir=None, overwrite=False,
                                         apply_filter=True, slope_method='derivatives',
-                                        verbose=None):
+                                        active_wfs_mask=None, verbose=None):
         """
         Assemble and save the full interaction matrix for a specific WFS type and component type.
         
@@ -1989,6 +1989,7 @@ class ParamsManager:
             output_dir (str, optional): Directory to save the assembled IM
             overwrite (bool): Whether to overwrite existing file
             apply_filter (bool): Whether to apply filtmat_tag filtering
+            active_wfs_mask (list of bool, optional): Mask indicating active WFSs to include in assembly
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
