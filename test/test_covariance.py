@@ -234,6 +234,3 @@ class TestCovariance(unittest.TestCase):
         print(f"✓ Covariance matrix matches reference within tolerances")
         print(f"{'='*70}\n")
 
-
-if __name__ == '__main__':
-    unittest.main()

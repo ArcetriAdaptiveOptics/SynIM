@@ -16,9 +16,14 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
    This is a **methodology tutorial**, not a usage guide for ``run_calib_workflow_morfeo.py``.
    That script can be used as a reference implementation of the same sequence, but the goal here is to let you implement your own calibration files/scripts for complex MCAO systems.
    
-   The slope computation method used in the examples is the default 'derivatives', but you can also use 'gtilt' by changing the ``slope_method`` argument in the relevant function calls.
-   'gtilt' provides the G-tilt (Gradient tilt) estimation, and 'derivatives' provides the Z-tilt (Zernike tilt, that is the global angular orientation of a wavefront) estimation.
-   'gtilt' can provide more accurate slope estimation because the Shack-Hartmann spot displacements are not always well approximated by local derivatives, especially for high-order modes.
+   The slope computation method used in the examples is the default 'derivatives', but it is highly recommended to use 'gtilt' for high-order systems by changing the ``slope_method`` argument in the relevant function calls.
+   
+   Both methods estimate the physical G-tilt (the average phase gradient over the subaperture, which dictates the Shack-Hartmann spot displacement), but they differ profoundly in their numerical implementation:
+   
+   * **'derivatives'**: Computes local gradients pixel-by-pixel using finite differences and averages them. This can introduce numerical truncation artifacts at the boundaries of the subaperture or the pupil mask.
+   * **'gtilt'**: Uses a rigorous telescoping sum to evaluate the exact phase difference strictly at the subaperture edges, completely bypassing internal finite-difference errors.
+   
+   Because of this, the 'gtilt' engine provides a significantly more accurate and noiseless slope estimation, strictly adhering to the physical behavior of the lenslet array, especially for high-spatial-frequency modes.
 
 1. Theoretical Framework: The Three WFS Groups
 ==============================================
