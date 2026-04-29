@@ -307,12 +307,10 @@ slopec_ref3: { <<: *REF_SLOPEC, inputs: {in_pixels: 'detector_ref3.out_pixels' }
 # -----------------------------
 
 tomo_polc_lgs:
-  class:              'Modalrec'
+  class:              'ModalrecExplicitPolc'
   recmat_object:      'PLACEHOLDER_LGS_RECMAT'  # Will be updated in step 6
   projmat_object:     'PLACEHOLDER_PROJMAT'  # Will be updated in step 8
   intmat_object:      'PLACEHOLDER_LGS_INTMAT'  # Will be updated in step 6
-  polc:   true
-  in_commands_size:   3305
   inputs:
     in_slopes_list:        ['slopec_lgs1.out_slopes',
                             'slopec_lgs2.out_slopes',
@@ -344,7 +342,7 @@ tomo_ngs:
     in_slopes_list:        ['slopec_ngs1.out_slopes',
                             'slopec_ngs2.out_slopes',
                             'slopec_ngs3.out_slopes']
-  outputs:  ['out_modes', 'out_pseudo_ol_modes']
+  outputs:  ['out_modes']
 
 iir_ngs:
   class:             'Integrator'

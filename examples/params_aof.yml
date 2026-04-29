@@ -206,12 +206,10 @@ slopec_ngs:
 # -----------------------------
 
 tomo_polc_lgs:
-  class:              'Modalrec'
+  class:              'ModalrecExplicitPolc'
   recmat_object:      'synrec/rec_params_aof_lgs_layer_r00.200_L025.0_var200.000nm2' # 10192 slopes x 6851 modes
   projmat_object:     'synpm/rec_params_aof_tomographic_r1e-04' # 6851 modes x  1253 modes
   intmat_object:      'synim/im_full_params_aof_lgs_to_dm_filtered' # 1253 modes x 10192 slopes tip/tilt filtered
-  polc:   true
-  in_commands_size:   1253
   inputs:
     in_slopes_list:        ['slopec_lgs1.out_slopes',
                             'slopec_lgs2.out_slopes',
