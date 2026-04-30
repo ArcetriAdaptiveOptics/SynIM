@@ -2784,8 +2784,7 @@ class ParamsManager:
                     L0,
                     xp=np,
                     dtype=cov_float_dtype,
-                    oversampling=2,
-                    verbose=False
+                    oversampling=2
                 )
             else:
                 self._print_gpu_memory(label="Before covariance computation: ",
@@ -2799,8 +2798,7 @@ class ParamsManager:
                     L0,
                     xp=xp,
                     dtype=float_dtype,
-                    oversampling=2,
-                    verbose=False
+                    oversampling=2
                 )
 
                 C_atm_rad2 = cpuArray(C_atm_rad2)

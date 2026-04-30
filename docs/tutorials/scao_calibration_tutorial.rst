@@ -222,7 +222,7 @@ Update your YAML to reference the computed reconstructor:
      recmat_object: 'scao_rec_synim'  # Without .fits extension
      inputs:
        in_slopes: 'slopec.out_slopes'
-     outputs: ['out_modes', 'out_pseudo_ol_modes']
+     outputs: ['out_modes']
 
 
 Advanced Topics

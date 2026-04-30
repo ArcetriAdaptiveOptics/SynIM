@@ -67,7 +67,7 @@ class TestSlopesMethods(unittest.TestCase):
             )
 
         # 2. Extract final physical slopes
-        # FIX: Flatten the output array and cast to standard Python floats
+        # Flatten the output array and cast to standard Python floats
         slopes_flat = np.array(slopes).flatten()
         tilt_x = float(slopes_flat[0])
         tilt_y = float(slopes_flat[1])
