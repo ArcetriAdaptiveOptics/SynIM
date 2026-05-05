@@ -2010,8 +2010,10 @@ class ParamsManager:
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
         slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
+        zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
+        zenith_suffix = f"_za{zenith_angle_deg:.1f}deg" if zenith_angle_deg != 0.0 else ""
         output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
-                          f"{filter_suffix}{slope_suffix}.fits"
+                          f"{zenith_suffix}{filter_suffix}{slope_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
 
         # Check if file exists
