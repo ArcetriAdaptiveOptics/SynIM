@@ -3154,12 +3154,9 @@ class ParamsManager:
                     print(f"    Condition number: {np.linalg.cond(C_noise_inv_wfs):.2e}")
 
             except Exception as e:
-                print(f"  WARNING: calc_noise_cov_elong failed for WFS {i+1}: {e}")
-                print(f"  Falling back to diagonal model for this WFS")
-
-                # Fallback to diagonal
-                n_slopes_wfs = len(sub_aps_index) * 2
-                C_noise_inv_wfs = np.eye(n_slopes_wfs) / sigma_noise2
+                raise RuntimeError(
+                    f"calc_noise_cov_elong failed for WFS {i+1} ({wfs_type}): {e}"
+                ) from e
 
             # Insert into full matrix (block diagonal)
             if i == 0:
