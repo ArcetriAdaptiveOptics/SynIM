@@ -372,6 +372,16 @@ class ParamsManager:
         return float(gs_height) / cos_zenith
 
 
+    def _zenith_suffix(self, wfs_type):
+        """Return '_za<angle>deg' only for LGS (finite sources) when zenith angle != 0."""
+        if wfs_type != 'lgs':
+            return ""
+        zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
+        if not zenith_angle_deg:
+            return ""
+        return f"_za{zenith_angle_deg:.1f}deg"
+
+
     def count_mcao_stars(self):
         """
         Count the number of LGS, NGS, reference stars, DMs, optimisation optics,
@@ -1364,9 +1374,7 @@ class ParamsManager:
         # Save the full interaction matrix if requested
         if save:
             filter_suffix = "_filtered" if apply_filter else ""
-            # Get zenith angle
-            zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
-            zenith_suffix = f"_za{zenith_angle_deg:.1f}deg" if zenith_angle_deg != 0.0 else ""
+            zenith_suffix = self._zenith_suffix(wfs_type)
             output_filename = f"im_full_{wfs_type}_{component_type}{zenith_suffix}{filter_suffix}.npy"
             np.save(os.path.join(output_im_dir, output_filename), cpuArray(im_full))
             if self.verbose:
@@ -2010,8 +2018,7 @@ class ParamsManager:
                     if isinstance(self.params_file, str) else "config")
         filter_suffix = "_filtered" if apply_filter else ""
         slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
-        zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
-        zenith_suffix = f"_za{zenith_angle_deg:.1f}deg" if zenith_angle_deg != 0.0 else ""
+        zenith_suffix = self._zenith_suffix(wfs_type)
         output_filename = f"im_full_{config_name}_{wfs_type}_to_{component_type}" \
                           f"{zenith_suffix}{filter_suffix}{slope_suffix}.fits"
         output_path = os.path.join(output_dir, output_filename)
@@ -2274,10 +2281,7 @@ class ParamsManager:
             config_name = (os.path.basename(self.params_file).split('.')[0]
                         if isinstance(self.params_file, str) else "config")
 
-            # Get zenith angle
-            zenith_angle_deg = self.params.get('main', {}).get('zenithAngleInDeg', 0.0)
-            zenith_suffix = f"_za{zenith_angle_deg:.1f}deg" if zenith_angle_deg != 0.0 else ""
-
+            zenith_suffix = self._zenith_suffix(wfs_type)
             slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
             rec_filename = (f"rec_{config_name}_{wfs_type}_{component_type}_"
                         f"r0{r0:.3f}_L0{L0:.1f}{zenith_suffix}{slope_suffix}")
