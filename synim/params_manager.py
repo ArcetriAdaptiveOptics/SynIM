@@ -3146,8 +3146,7 @@ class ParamsManager:
                     theta=None,
                     only_diag=False,
                     eta_is_not_one=False,
-                    display=False,
-                    verbose=verbose
+                    display=False
                 )
 
                 if verbose:
