@@ -2727,12 +2727,16 @@ class ParamsManager:
             # Total modes available
             total_modes = comp_params['dm_array'].shape[2]
 
+            pixel_dm = comp_params['pixel_dm'].shape[0]
+            meta_pupil_diameter = pixel_dm * self.pixel_pitch
+
             if verbose_flag:
                 print(f"  Total modes available: {total_modes}")
+                print(f"  Pixel DM: {pixel_dm}, Meta pupil diameter: {meta_pupil_diameter:.2f} m")
 
             # ========== GENERATE FILENAME (EXACTLY LIKE IDL) ==========
             cov_filename, base_tag = generate_cov_filename(
-                self.params[comp_key], self.pup_diam_m, r0, L0,
+                self.params[comp_key], meta_pupil_diameter, r0, L0,
                 full_config=self.params
             )
             cov_path = os.path.join(output_dir, cov_filename)
@@ -2791,7 +2795,7 @@ class ParamsManager:
 
                 C_atm_rad2 = compute_ifs_covmat(
                     comp_params['dm_mask'],
-                    self.pup_diam_m,
+                    meta_pupil_diameter,
                     dm2d,
                     r0,
                     L0,
@@ -2805,7 +2809,7 @@ class ParamsManager:
 
                 C_atm_rad2 = compute_ifs_covmat(
                     to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
-                    self.pup_diam_m,
+                    meta_pupil_diameter,
                     to_xp(xp, dm2d, dtype=float_dtype),
                     r0,
                     L0,
@@ -2828,7 +2832,7 @@ class ParamsManager:
             hdu.header['R0'] = (r0, 'Fried parameter [m]')
             hdu.header['L0'] = (L0, 'Outer scale [m]')
             hdu.header['UNITS'] = ('rad^2', 'Covariance units')
-            hdu.header['DIAMM'] = (self.pup_diam_m, 'Pupil diameter [m]')
+            hdu.header['DIAMM'] = (meta_pupil_diameter, 'Meta pupil diameter [m]')
             hdu.header['WAVELNM'] = (wavelengthInNm, 'Wavelength [nm]')
             hdu.header['STARTMOD'] = (0, 'Covariance includes ALL modes from 0')
             hdu.header['TOTMODES'] = (total_modes, 'Total modes in covariance')
@@ -3306,7 +3310,7 @@ class ParamsManager:
                     verbose=False,
                     specula_convention=True
                 )
-                # fill with 6 to avoid division by zero
+                # fill with 1e-6 to avoid division by zero
                 illumination[illumination < 1e-6] = 1e-6
                 illumination_list.append(np.repeat(illumination, 2).astype(cpu_float_dtype))
 
