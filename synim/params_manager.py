@@ -2726,8 +2726,8 @@ class ParamsManager:
 
             # Total modes available
             total_modes = comp_params['dm_array'].shape[2]
-
-            pixel_dm = comp_params['pixel_dm'].shape[0]
+            # DM size in pixels (assuming square DM)
+            pixel_dm = comp_params['dm_array'].shape[0]
             meta_pupil_diameter = pixel_dm * self.pixel_pitch
 
             if verbose_flag:
