@@ -3076,12 +3076,10 @@ class ParamsManager:
             if spot_size_arcsec is None:
                 raise ValueError(f"Spot size not defined for WFS {i+1} ({wfs_type})")
 
-            # If not defined, compute h_in_m from zenith angle
+            # Keep h_in_m as the zenith altitude. calc_noise_cov_elong()
+            # applies the zenith/airmass correction internally.
             if h_in_m is None:
-                zenith_angle_deg = main_params.get('zenithAngleInDeg', 0.0)
-                airmass = 1.0 / np.cos(np.deg2rad(zenith_angle_deg)) \
-                    if zenith_angle_deg < 90 else 1.0
-                h_in_m = 90000.0 * airmass
+                h_in_m = 90000.0
 
             # Get WFS-specific parameters
             n_sub_aps = wfs_params['wfs_nsubaps']
