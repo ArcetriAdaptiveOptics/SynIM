@@ -225,18 +225,22 @@ class ParamsManager:
                 default_elong       = recon_section.get('noise_elong_model', False)
                 default_na_thick    = float(recon_section.get('naThicknessInM', 0.0))
                 default_tg          = float(recon_section.get('tGparameter', 0.0))
+                default_n_low       = int(recon_section.get('n_low_modes_zero_filt', 0))
                 self.lgs_recon_params = {'sigma2_in_nm2': default_sigma2,
                                         'noise_elong_model': default_elong,
                                         'naThicknessInM': default_na_thick,
-                                        'tGparameter': default_tg}
+                                        'tGparameter': default_tg,
+                                        'n_low_modes_zero_filt': default_n_low}
                 self.ngs_recon_params = {'sigma2_in_nm2': default_sigma2,
                                         'noise_elong_model': None,
                                         'naThicknessInM': None,
-                                        'tGparameter': None}
+                                        'tGparameter': None,
+                                        'n_low_modes_zero_filt': default_n_low}
                 self.ref_recon_params = {'sigma2_in_nm2': default_sigma2,
                                         'noise_elong_model': None,
                                         'naThicknessInM': None,
-                                        'tGparameter': None}
+                                        'tGparameter': None,
+                                        'n_low_modes_zero_filt': default_n_low}
 
             else:
 
@@ -248,6 +252,7 @@ class ParamsManager:
                         'noise_elong_model': sub.get('noise_elong_model', False),
                         'naThicknessInM':   float(sub.get('naThicknessInM', 0.0)),
                         'tGparameter':      float(sub.get('tGparameter', 0.0)),
+                        'n_low_modes_zero_filt': int(sub.get('n_low_modes_zero_filt', 0)),
                     }
 
                 self.lgs_recon_params = _get_wfs_recon_params('lgs')
@@ -325,7 +330,142 @@ class ParamsManager:
             'noise_elong_model': getattr(self, 'noise_elong_model', False),
             'naThicknessInM':   getattr(self, 'naThicknessInM',   10000.0),
             'tGparameter':      getattr(self, 'tGparameter',       0.0),
+            'n_low_modes_zero_filt': 0,
         })
+
+
+    def _has_offline_slopes_filter_config(self, wfs_type, wfs_index):
+        """Return True when an offline slopes filter is configured for this WFS."""
+        if wfs_type == 'lgs':
+            slopec_key = f'slopec_lgs{wfs_index}'
+            if slopec_key not in self.params:
+                slopec_key = f'slopec{wfs_index}'
+        elif wfs_type == 'ngs':
+            slopec_key = f'slopec_ngs{wfs_index}'
+        elif wfs_type == 'ref':
+            slopec_key = f'slopec_ref{wfs_index}'
+        else:
+            return False
+
+        if slopec_key not in self.params:
+            return False
+
+        slopec_params = self.params[slopec_key]
+
+        # Inline filtering is already applied in SPECULA and does not match the offline path.
+        if 'filtName' in slopec_params:
+            return False
+
+        return ('filtmat_tag' in slopec_params) or ('filtmat_data' in slopec_params)
+
+
+    def _get_low_modes_cut_if_applicable(self, wfs_type, apply_filter,
+                                         active_wfs_mask=None, verbose=False):
+        """
+        Return configured low-mode cut when it is valid for this run.
+
+        The cut is only allowed when slopes filtering is active and at least one
+        selected WFS has an offline filter configuration.
+        """
+        recon_params = self._get_recon_params(wfs_type)
+        n_cut = int(recon_params.get('n_low_modes_zero_filt', 0) or 0)
+
+        if n_cut < 0:
+            raise ValueError("n_low_modes_zero_filt must be >= 0")
+        if n_cut == 0:
+            return 0
+
+        if not apply_filter:
+            raise ValueError(
+                "n_low_modes_zero_filt can be used only when apply_filter=True"
+            )
+
+        wfs_list_full = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
+        if active_wfs_mask is not None:
+            wfs_list = [wfs for i, wfs in enumerate(wfs_list_full) if active_wfs_mask[i]]
+        else:
+            wfs_list = wfs_list_full
+
+        has_offline_filter = False
+        for i, _ in enumerate(wfs_list):
+            if self._has_offline_slopes_filter_config(wfs_type, i + 1):
+                has_offline_filter = True
+                break
+
+        if not has_offline_filter:
+            raise ValueError(
+                "n_low_modes_zero_filt is set, but no offline slope filter "
+                "(filtmat_tag/filtmat_data) is configured for selected WFSs"
+            )
+
+        if verbose:
+            print(
+                f"Applying low-mode cut due to filtered slopes: drop absolute modes < {n_cut}"
+            )
+
+        return n_cut
+
+
+    @staticmethod
+    def _split_mode_columns_by_absolute_index(mode_indices, n_low_modes_cut):
+        """Return (keep_cols, drop_cols) using absolute mode indices in mode_indices."""
+        keep_cols = []
+        drop_cols = []
+        col = 0
+        for comp_modes in mode_indices:
+            for abs_mode in comp_modes:
+                if abs_mode < n_low_modes_cut:
+                    drop_cols.append(col)
+                else:
+                    keep_cols.append(col)
+                col += 1
+        return np.array(keep_cols, dtype=int), np.array(drop_cols, dtype=int)
+
+
+    @staticmethod
+    def _restore_reconstructor_with_zero_rows(rec_reduced, keep_cols, n_full_modes):
+        """Expand a reduced reconstructor to full mode size, filling dropped rows with zero."""
+        rec_full = np.zeros((n_full_modes, rec_reduced.shape[1]), dtype=rec_reduced.dtype)
+        rec_full[keep_cols, :] = rec_reduced
+        return rec_full
+
+
+    def _apply_low_mode_cut_to_mmse_inputs(self, im_full, C_atm_full_inv, mode_indices,
+                                           n_low_modes_cut, verbose=False):
+        """
+        Apply optional low-mode cut to MMSE inputs.
+
+        Returns reduced matrices plus keep/drop column indices so the final
+        reconstructor can be expanded back with zero rows for compatibility.
+        """
+        im_for_mmse = im_full
+        C_atm_for_mmse = C_atm_full_inv
+        keep_mode_cols = np.arange(im_full.shape[1], dtype=int)
+        drop_mode_cols = np.array([], dtype=int)
+
+        if n_low_modes_cut > 0:
+            keep_mode_cols, drop_mode_cols = self._split_mode_columns_by_absolute_index(
+                mode_indices,
+                n_low_modes_cut,
+            )
+            if keep_mode_cols.size == 0:
+                raise ValueError(
+                    "Low-mode cut removed all reconstruction modes; reduce "
+                    "n_low_modes_zero_filt"
+                )
+
+            im_for_mmse = im_full[:, keep_mode_cols]
+            C_atm_for_mmse = C_atm_full_inv[np.ix_(keep_mode_cols, keep_mode_cols)]
+
+            if verbose:
+                print(
+                    f"  Applied low-mode cut before MMSE: kept {keep_mode_cols.size}/"
+                    f"{im_full.shape[1]} modes"
+                )
+                print(f"  (Dropped {drop_mode_cols.size} mode rows to be restored as zero)")
+                print()
+
+        return im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols
 
 
     def _print_gpu_memory(self, label="", verbose=True):
@@ -351,6 +491,13 @@ class ParamsManager:
                 return 'dm'
             raise ValueError(f"Component {key} not found in configuration")
         return key
+
+
+    def _get_component_generated_metadata(self, component_key):
+        """Return persisted workflow metadata for a component, if available."""
+        component_config = self.params.get(component_key, {})
+        metadata = component_config.get('generated_metadata', {})
+        return metadata if isinstance(metadata, dict) else {}
 
 
     def _count_wfs(self, wfs_type):
@@ -1325,7 +1472,7 @@ class ParamsManager:
                     im = self._apply_slopes_filter(
                         im,
                         wfs_type,
-                        ii+1,  # WFS index (1-based)
+                        wfs_idx,
                         verbose=self.verbose
                     )
 
@@ -2087,6 +2234,9 @@ class ParamsManager:
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
                                         active_wfs_mask=None,
+                                        save_inverse_covariances=False,
+                                        inverse_cov_output_dir=None,
+                                        inverse_cov_prefix=None,
                                         verbose=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
@@ -2109,6 +2259,9 @@ class ParamsManager:
             overwrite (bool): Whether to overwrite existing files
             skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
             active_wfs_mask (list of bool, optional): Mask indicating active WFSs
+            save_inverse_covariances (bool): Whether to save inverse covariance matrices for debug/comparison
+            inverse_cov_output_dir (str, optional): Directory for inverse covariance debug files
+            inverse_cov_prefix (str, optional): Prefix for inverse covariance debug filenames
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2195,6 +2348,22 @@ class ParamsManager:
             print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
             print()
 
+        # Optional low-order mode cut for filtered slopes.
+        n_low_modes_cut = self._get_low_modes_cut_if_applicable(
+            wfs_type=wfs_type,
+            apply_filter=True,
+            active_wfs_mask=active_wfs_mask,
+            verbose=verbose_flag,
+        )
+        im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols = \
+            self._apply_low_mode_cut_to_mmse_inputs(
+                im_full=im_full,
+                C_atm_full_inv=C_atm_full_inv,
+                mode_indices=mode_indices,
+                n_low_modes_cut=n_low_modes_cut,
+                verbose=verbose_flag,
+            )
+
         # ==================== STEP 3: Build Noise Covariance ====================
         if verbose_flag:
             print(f"STEP 3: Building Noise Covariance Matrix")
@@ -2218,13 +2387,44 @@ class ParamsManager:
         C_noise_inv = self.build_noise_covariance(
             wfs_type=wfs_type,
             n_wfs=None,  # Auto-detect
-            im_full=im_full,
+            n_slopes_total=im_full.shape[0],
             noise_variance=noise_variance,
             C_noise=C_noise,
             use_elongation=recon_params['noise_elong_model'],
             active_wfs_mask=active_wfs_mask,
             verbose=verbose_flag
         )
+
+        # Optional debug export for IDL/SynIM comparisons.
+        inverse_cov_files = None
+        if save_inverse_covariances:
+            debug_dir = inverse_cov_output_dir or output_dir or self.rec_dir
+            os.makedirs(debug_dir, exist_ok=True)
+
+            if inverse_cov_prefix is None:
+                config_name = (os.path.basename(self.params_file).split('.')[0]
+                               if isinstance(self.params_file, str) else "config")
+                inverse_cov_prefix = (
+                    f"{config_name}_{wfs_type}_{component_type}_r0{r0:.3f}_L0{L0:.1f}"
+                )
+
+            c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.fits"
+            c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.fits"
+            c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
+            c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
+
+            fits.writeto(c_atm_inv_path, cpuArray(C_atm_for_mmse), overwrite=True)
+            fits.writeto(c_noise_inv_path, cpuArray(C_noise_inv), overwrite=True)
+
+            inverse_cov_files = {
+                'C_atm_inv': c_atm_inv_path,
+                'C_noise_inv': c_noise_inv_path,
+            }
+
+            if verbose_flag:
+                print("  ✓ Inverse covariance matrices saved:")
+                print(f"    - {c_atm_inv_filename}")
+                print(f"    - {c_noise_inv_filename}")
 
         print()
 
@@ -2235,8 +2435,8 @@ class ParamsManager:
 
         # Check: all must be cpu_float_dtype (regardless of endianness)
         expected_dtype = np.dtype(cpu_float_dtype)
-        for name, arr in [('im_full', im_full),
-                          ('C_atm_full', C_atm_full_inv),
+        for name, arr in [('im_full', im_for_mmse),
+                          ('C_atm_full', C_atm_for_mmse),
                           ('C_noise', C_noise_inv)]:
             arr_dtype = np.dtype(arr.dtype)
             if not (arr_dtype.kind == expected_dtype.kind and
@@ -2248,9 +2448,9 @@ class ParamsManager:
                 else:
                     raise TypeError(msg)
 
-        reconstructor = compute_mmse_reconstructor(
-            im_full,
-            C_atm_full_inv,
+        reconstructor_reduced = compute_mmse_reconstructor(
+            im_for_mmse,
+            C_atm_for_mmse,
             noise_variance=None,  # Already in C_noise
             C_noise=C_noise_inv,
             cinverse=True,
@@ -2258,6 +2458,15 @@ class ParamsManager:
             dtype=cpu_float_dtype,
             verbose=verbose_flag
         )
+
+        if n_low_modes_cut > 0:
+            reconstructor = self._restore_reconstructor_with_zero_rows(
+                rec_reduced=reconstructor_reduced,
+                keep_cols=keep_mode_cols,
+                n_full_modes=im_full.shape[1],
+            )
+        else:
+            reconstructor = reconstructor_reduced
 
         if verbose_flag:
             print(f"  ✓ Reconstructor computed: {reconstructor.shape}")
@@ -2343,6 +2552,7 @@ class ParamsManager:
             'n_wfs': n_wfs if 'n_wfs' in locals() else None,
             'rec_filename': rec_filename,
             'rec_path': rec_path,
+            'inverse_cov_files': inverse_cov_files,
             'r0': r0,
             'L0': L0
         }
@@ -2380,7 +2590,7 @@ class ParamsManager:
 
 
     def compute_tomographic_projection_matrix(self, output_dir=None, save=False,
-                                            verbose=None):
+                                            wfs_type='lgs', verbose=None):
         """
         Compute tomographic projection matrix following IDL compute_mcao_popt logic.
         
@@ -2396,6 +2606,8 @@ class ParamsManager:
         Args:
             output_dir (str, optional): Directory where PM files are stored
             save (bool): Whether to save the projection matrix to disk
+            wfs_type (str): Reconstruction type ('lgs', 'ngs', 'ref') used to
+                select mode-filter settings (e.g. n_low_modes_zero_filt)
             verbose (bool, optional): Override the class's verbose setting
         
         Returns:
@@ -2408,6 +2620,9 @@ class ParamsManager:
 
         verbose_flag = self.verbose if verbose is None else verbose
 
+        if wfs_type not in ['lgs', 'ngs', 'ref']:
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
+
         # Use cached reg_factor from initialization
         reg_factor = self.proj_reg_factor
 
@@ -2419,6 +2634,7 @@ class ParamsManager:
                 print(f"  Using YAML 'projection' section")
             else:
                 print(f"  Using IDL-style or default parameters")
+            print(f"  WFS type: {wfs_type}")
             print(f"  Regularization factor: {reg_factor}")
             print(f"{'='*60}\n")
 
@@ -2436,6 +2652,62 @@ class ParamsManager:
             print(f"      (n_opt_sources, n_dm_modes, n_pupil_modes)")
             print(f"    pm_full_layer shape: {pm_full_layer.shape}")
             print(f"      (n_opt_sources, n_layer_modes, n_pupil_modes)")
+
+        # Optional low-order mode cut on layer modes for tomographic projection.
+        # Compute on reduced layer-space, then restore full-size p_opt columns to zero.
+        recon_params = self._get_recon_params(wfs_type)
+        n_low_modes_cut = int(recon_params.get('n_low_modes_zero_filt', 0) or 0)
+        if n_low_modes_cut < 0:
+            raise ValueError("n_low_modes_zero_filt must be >= 0")
+
+        layer_mode_indices = []
+        for layer in extract_layer_list(self.params):
+            layer_idx = int(layer['index'])
+            layer_key = self._resolve_component_key('layer', layer_idx)
+            layer_cfg = self.params[layer_key]
+            n_modes = layer_cfg.get('nmodes', None)
+            if n_modes is None:
+                raise ValueError(f"nmodes not specified for {layer_key}")
+            start_mode = int(layer_cfg.get('start_mode', 0) or 0)
+            n_modes_effective = int(n_modes) - start_mode
+            if n_modes_effective < 0:
+                raise ValueError(
+                    f"Invalid start_mode={start_mode} for {layer_key} with nmodes={n_modes}"
+                )
+            layer_mode_indices.append(
+                list(range(start_mode, start_mode + n_modes_effective))
+            )
+
+        n_layer_modes_full = pm_full_layer.shape[1]
+        total_layer_modes_cfg = sum(len(mi) for mi in layer_mode_indices)
+        if total_layer_modes_cfg != n_layer_modes_full:
+            raise ValueError(
+                f"Layer mode mismatch: PM has {n_layer_modes_full} modes, "
+                f"but config-derived modes are {total_layer_modes_cfg}"
+            )
+
+        keep_layer_cols = np.arange(n_layer_modes_full, dtype=int)
+        drop_layer_cols = np.array([], dtype=int)
+        pm_full_layer_for_popt = pm_full_layer
+
+        if n_low_modes_cut > 0:
+            keep_layer_cols, drop_layer_cols = self._split_mode_columns_by_absolute_index(
+                layer_mode_indices,
+                n_low_modes_cut,
+            )
+            if keep_layer_cols.size == 0:
+                raise ValueError(
+                    "Low-mode cut removed all layer modes; reduce n_low_modes_zero_filt"
+                )
+
+            pm_full_layer_for_popt = pm_full_layer[:, keep_layer_cols, :]
+
+            if verbose_flag:
+                print(
+                    f"\n  Applying low-mode cut on layer PM: "
+                    f"kept {keep_layer_cols.size}/{n_layer_modes_full} modes "
+                    f"(dropped {drop_layer_cols.size}, absolute mode < {n_low_modes_cut})"
+                )
 
         # ==================== GET OPTICAL SOURCE WEIGHTS ====================
         if self.projection_params is not None:
@@ -2470,7 +2742,7 @@ class ParamsManager:
 
         # Get dimensions
         n_dm_modes = pm_full_dm.shape[1]
-        n_layer_modes = pm_full_layer.shape[1]
+        n_layer_modes = pm_full_layer_for_popt.shape[1]
         n_pupil_modes = pm_full_dm.shape[2]
 
         # Initialize accumulation matrices
@@ -2480,7 +2752,7 @@ class ParamsManager:
         # Accumulate weighted contributions from each optical source
         for i in range(n_opt):
             pdm_i = pm_full_dm[i, :, :]      # (n_dm_modes, n_pupil_modes)
-            pl_i = pm_full_layer[i, :, :]    # (n_layer_modes, n_pupil_modes)
+            pl_i = pm_full_layer_for_popt[i, :, :]    # (n_layer_modes, n_pupil_modes)
             w = weights_array[i] / total_weight
 
             # Accumulate: P_DM^T @ P_DM and P_DM^T @ P_Layer
@@ -2528,7 +2800,13 @@ class ParamsManager:
             print(f"  p_opt = (P_DM^T @ P_DM + λI)^(-1) @ P_DM^T @ P_Layer")
 
         # p_opt = (tpdm_pdm + reg_factor*I)^(-1) @ tpdm_pl
-        p_opt = tpdm_pdm_inv @ tpdm_pl
+        p_opt_reduced = tpdm_pdm_inv @ tpdm_pl
+
+        if n_low_modes_cut > 0:
+            p_opt = np.zeros((n_dm_modes, n_layer_modes_full), dtype=p_opt_reduced.dtype)
+            p_opt[:, keep_layer_cols] = p_opt_reduced
+        else:
+            p_opt = p_opt_reduced
 
         if verbose_flag:
             print(f"\n  ✓ Tomographic projection matrix computed: {p_opt.shape}")
@@ -2559,7 +2837,7 @@ class ParamsManager:
             config_name = (os.path.basename(self.params_file).split('.')[0]
                         if isinstance(self.params_file, str) else "config")
 
-            rec_filename = f"rec_{config_name}_tomographic_r{reg_factor:.0e}.fits"
+            rec_filename = f"rec_{config_name}_tomographic_{wfs_type}_r{reg_factor:.0e}.fits"
             rec_path = os.path.join(output_dir, rec_filename)
 
             # Save as FITS (SPECULA format)
@@ -2583,9 +2861,13 @@ class ParamsManager:
 
         # ==================== METADATA ====================
         info = {
+            'wfs_type': wfs_type,
             'n_opt_sources': n_opt,
             'n_dm_modes': n_dm_modes,
             'n_layer_modes': n_layer_modes,
+            'n_layer_modes_full': n_layer_modes_full,
+            'n_low_modes_zero_filt': n_low_modes_cut,
+            'n_layer_modes_dropped': int(drop_layer_cols.size),
             'n_pupil_modes': n_pupil_modes,
             'weights': weights_array,
             'reg_factor': reg_factor,
@@ -2723,16 +3005,24 @@ class ParamsManager:
 
             # Get start_mode
             comp_key = self._resolve_component_key(component_type, comp_idx)
+            component_metadata = self._get_component_generated_metadata(comp_key)
 
             # Total modes available
             total_modes = comp_params['dm_array'].shape[2]
+            pixel_dm = int(component_metadata.get('meta_pupil_pixels',
+                                                  comp_params['dm_array'].shape[0]))
+            meta_pupil_diameter = float(
+                component_metadata.get('meta_pupil_diameter_m',
+                                       pixel_dm * self.pixel_pitch)
+            )
 
             if verbose_flag:
                 print(f"  Total modes available: {total_modes}")
+                print(f"  Pixel DM: {pixel_dm}, Meta pupil diameter: {meta_pupil_diameter:.2f} m")
 
             # ========== GENERATE FILENAME (EXACTLY LIKE IDL) ==========
             cov_filename, base_tag = generate_cov_filename(
-                self.params[comp_key], self.pup_diam_m, r0, L0,
+                self.params[comp_key], meta_pupil_diameter, r0, L0,
                 full_config=self.params
             )
             cov_path = os.path.join(output_dir, cov_filename)
@@ -2791,7 +3081,7 @@ class ParamsManager:
 
                 C_atm_rad2 = compute_ifs_covmat(
                     comp_params['dm_mask'],
-                    self.pup_diam_m,
+                    meta_pupil_diameter,
                     dm2d,
                     r0,
                     L0,
@@ -2805,7 +3095,7 @@ class ParamsManager:
 
                 C_atm_rad2 = compute_ifs_covmat(
                     to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
-                    self.pup_diam_m,
+                    meta_pupil_diameter,
                     to_xp(xp, dm2d, dtype=float_dtype),
                     r0,
                     L0,
@@ -2828,7 +3118,7 @@ class ParamsManager:
             hdu.header['R0'] = (r0, 'Fried parameter [m]')
             hdu.header['L0'] = (L0, 'Outer scale [m]')
             hdu.header['UNITS'] = ('rad^2', 'Covariance units')
-            hdu.header['DIAMM'] = (self.pup_diam_m, 'Pupil diameter [m]')
+            hdu.header['DIAMM'] = (meta_pupil_diameter, 'Meta pupil diameter [m]')
             hdu.header['WAVELNM'] = (wavelengthInNm, 'Wavelength [nm]')
             hdu.header['STARTMOD'] = (0, 'Covariance includes ALL modes from 0')
             hdu.header['TOTMODES'] = (total_modes, 'Total modes in covariance')
@@ -3072,12 +3362,10 @@ class ParamsManager:
             if spot_size_arcsec is None:
                 raise ValueError(f"Spot size not defined for WFS {i+1} ({wfs_type})")
 
-            # If not defined, compute h_in_m from zenith angle
+            # Keep h_in_m as the zenith altitude. calc_noise_cov_elong()
+            # applies the zenith/airmass correction internally.
             if h_in_m is None:
-                zenith_angle_deg = main_params.get('zenithAngleInDeg', 0.0)
-                airmass = 1.0 / np.cos(np.deg2rad(zenith_angle_deg)) \
-                    if zenith_angle_deg < 90 else 1.0
-                h_in_m = 90000.0 * airmass
+                h_in_m = 90000.0
 
             # Get WFS-specific parameters
             n_sub_aps = wfs_params['wfs_nsubaps']
@@ -3179,7 +3467,7 @@ class ParamsManager:
         return C_noise_inv_full
 
     def build_noise_covariance(self, wfs_type='lgs', n_wfs=None,
-                            im_full=None, noise_variance=None,
+                            n_slopes_total=None, noise_variance=None,
                             C_noise=None, use_elongation=False,
                             active_wfs_mask=None, verbose=None):
         """
@@ -3192,7 +3480,7 @@ class ParamsManager:
         Args:
             wfs_type (str): Type of WFS ('lgs', 'ngs', 'ref')
             n_wfs (int, optional): Number of WFS. Auto-detected if None.
-            im_full (np.ndarray, optional): Full interaction matrix for shape inference
+            n_slopes_total (int, optional): Total number of slopes in assembled IM
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Pre-computed full noise covariance matrix
             use_elongation (bool): Whether to use elongated spot model for LGS
@@ -3237,10 +3525,11 @@ class ParamsManager:
         if n_wfs is None:
             n_wfs = len(active_indices)
 
-        n_slopes_total = im_full.shape[0]
-
-        if im_full is None:
-            raise ValueError("im_full must be provided if C_noise is not given")
+        if n_slopes_total is None:
+            raise ValueError("n_slopes_total must be provided if C_noise is not given")
+        n_slopes_total = int(n_slopes_total)
+        if n_slopes_total <= 0:
+            raise ValueError(f"n_slopes_total must be > 0, got {n_slopes_total}")
 
         if verbose_flag:
             print(f"  Number of {wfs_type.upper()} WFS: {n_wfs}")
@@ -3306,7 +3595,7 @@ class ParamsManager:
                     verbose=False,
                     specula_convention=True
                 )
-                # fill with 6 to avoid division by zero
+                # fill with 1e-6 to avoid division by zero
                 illumination[illumination < 1e-6] = 1e-6
                 illumination_list.append(np.repeat(illumination, 2).astype(cpu_float_dtype))
 

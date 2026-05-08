@@ -1604,6 +1604,46 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     return cpuArray(W_mmse)
 
 
+def update_component_calibration_metadata(component_config=None,
+                                          ifunc_tag=None,
+                                          m2c_tag=None,
+                                          meta_pupil_pixels=None,
+                                          pixel_pitch=None,
+                                          ifunc_nmodes_raw=None,
+                                          m2c_nmodes=None):
+    """Build and optionally persist generated calibration metadata."""
+    if meta_pupil_pixels is None:
+        raise ValueError("meta_pupil_pixels is required")
+    if pixel_pitch is None:
+        raise ValueError("pixel_pitch is required")
+
+    metadata = {
+        'meta_pupil_pixels': int(meta_pupil_pixels),
+        'pixel_pitch_m': float(pixel_pitch),
+        'meta_pupil_diameter_m': float(meta_pupil_pixels) * float(pixel_pitch),
+    }
+
+    if ifunc_nmodes_raw is not None:
+        metadata['ifunc_nmodes_raw'] = int(ifunc_nmodes_raw)
+    if m2c_nmodes is not None:
+        metadata['m2c_nmodes'] = int(m2c_nmodes)
+
+    effective_nmodes = m2c_nmodes if m2c_nmodes is not None else ifunc_nmodes_raw
+    if effective_nmodes is not None:
+        metadata['effective_nmodes'] = int(effective_nmodes)
+
+    if component_config is not None:
+        if ifunc_tag is not None:
+            component_config['ifunc_object'] = ifunc_tag
+        if m2c_tag is not None:
+            component_config['m2c_object'] = m2c_tag
+        if 'effective_nmodes' in metadata:
+            component_config['nmodes'] = metadata['effective_nmodes']
+        component_config['generated_metadata'] = metadata
+
+    return metadata
+
+
 def compute_influence_functions_and_modalbases(
     root_dir,
     pixel_pupil,
@@ -1763,6 +1803,7 @@ def compute_influence_functions_and_modalbases(
 
     ifunc_tags = {}
     m2c_tags = {}
+    component_metadata = {}
     ifunc_inv_tag = None
 
     for i, (alt, nact, comp_type, comp_idx) in enumerate(
@@ -1792,6 +1833,8 @@ def compute_influence_functions_and_modalbases(
             # Look for M2C file first, then fallback to IFunc
             n_modes = None
             m2c_name = None
+            ifunc_obj = IFunc.restore(str(ifunc_path))
+            ifunc_nmodes_raw = int(ifunc_obj.influence_function.shape[0])
 
             # Look for M2C files matching this base name
             m2c_dir = root_dir / "m2c"
@@ -1819,12 +1862,18 @@ def compute_influence_functions_and_modalbases(
             if n_modes is None:
                 if verbose:
                     print(f"    M2C not found, loading IFunc to determine n_modes")
-                ifunc_obj = IFunc.restore(str(ifunc_path))
-                n_modes = ifunc_obj.influence_function.shape[0]
+                n_modes = ifunc_nmodes_raw
                 m2c_name = f"{base_name}_{n_modes}modes"
                 if verbose:
                     print(f"    IFunc shape: {ifunc_obj.influence_function.shape},"
                           f" using {n_modes} modes")
+
+            component_metadata[comp_name] = update_component_calibration_metadata(
+                meta_pupil_pixels=meta_px,
+                pixel_pitch=pixel_pitch,
+                ifunc_nmodes_raw=ifunc_nmodes_raw,
+                m2c_nmodes=n_modes
+            )
 
             # Store correct tags
             ifunc_tags[comp_name] = base_name
@@ -1879,6 +1928,7 @@ def compute_influence_functions_and_modalbases(
         )
 
         n_modes = kl_basis.shape[0]
+        ifunc_nmodes_raw = influence_functions.shape[0]
 
         if verbose:
             print(f"    Modal base: {n_modes} modes")
@@ -1901,6 +1951,12 @@ def compute_influence_functions_and_modalbases(
 
         ifunc_tags[comp_name] = base_name
         m2c_tags[comp_name] = m2c_name
+        component_metadata[comp_name] = update_component_calibration_metadata(
+            meta_pupil_pixels=meta_px,
+            pixel_pitch=pixel_pitch,
+            ifunc_nmodes_raw=ifunc_nmodes_raw,
+            m2c_nmodes=n_modes
+        )
 
         # For ground layer, also save inverse
         if alt == 0:
@@ -1945,6 +2001,7 @@ def compute_influence_functions_and_modalbases(
         'pupil_mask_tag': mask_name,
         'ifunc_tags': ifunc_tags,
         'm2c_tags': m2c_tags,
+        'component_metadata': component_metadata,
         'ifunc_inv_tag': ifunc_inv_tag,
         'dm_indices': list(range(1, len(dm_altitudes) + 1)),
         'layer_indices': list(range(1, len(layer_altitudes) + 1))
@@ -2287,6 +2344,7 @@ __all__ = [
     'generate_cov_filename',
     'compute_layer_weights_from_turbulence',
     'compute_mmse_reconstructor',
+    'update_component_calibration_metadata',
     'compute_influence_functions_and_modalbases',
     'generate_filter_matrix_from_intmat',
     'save_filter_matrix',

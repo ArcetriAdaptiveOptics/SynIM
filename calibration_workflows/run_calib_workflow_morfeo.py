@@ -42,6 +42,7 @@ synim.init(device_idx=0, precision=1)
 from synim.params_manager import ParamsManager
 from synim.params_utils import compute_influence_functions_and_modalbases
 from synim.params_utils import generate_filter_matrix_from_intmat_file
+from synim.params_utils import update_component_calibration_metadata
 
 class MORFEOCalibrationWorkflow:
 
@@ -333,6 +334,7 @@ class MORFEOCalibrationWorkflow:
         self.generated_files['pupil_mask_tag'] = result['pupil_mask_tag']
         self.generated_files['ifunc_tags'] = result['ifunc_tags']
         self.generated_files['m2c_tags'] = result['m2c_tags']
+        self.generated_files['component_metadata'] = result['component_metadata']
         self.generated_files['ifunc_inv_tag'] = result['ifunc_inv_tag']
 
         # Update config with generated tags
@@ -343,46 +345,31 @@ class MORFEOCalibrationWorkflow:
             """Convert 'dm_1' or 'layer_1' to 'dm1' or 'layer1'"""
             return key.replace('_', '')
 
-        # Update DMs - iterate over result keys and match to config
         for result_key in result['ifunc_tags'].keys():
-            if result_key.startswith('dm'):
-                config_key = normalize_key(result_key)  # dm_1 -> dm1
+            if not (result_key.startswith('dm') or result_key.startswith('layer')):
+                continue
 
-                if config_key in self.config:
-                    self._update_config_field(f'{config_key}.ifunc_object',
-                                            result['ifunc_tags'][result_key])
-                    self._update_config_field(f'{config_key}.m2c_object',
-                                            result['m2c_tags'][result_key])
-                    # Extract n_modes from m2c tag
-                    m2c_tag = result['m2c_tags'][result_key]
-                    n_modes = int(m2c_tag.split('_')[-1].replace('modes', ''))
-                    self._update_config_field(f'{config_key}.nmodes', n_modes)
+            config_key = normalize_key(result_key)
+            if config_key not in self.config:
+                continue
 
-                    if self.verbose:
-                        self._log(f"  Updated {config_key}:")
-                        self._log(f"    ifunc: {result['ifunc_tags'][result_key]}")
-                        self._log(f"    m2c: {m2c_tag}")
-                        self._log(f"    nmodes: {n_modes}")
+            metadata = result['component_metadata'][result_key]
+            update_component_calibration_metadata(
+                self.config[config_key],
+                ifunc_tag=result['ifunc_tags'][result_key],
+                m2c_tag=result['m2c_tags'][result_key],
+                meta_pupil_pixels=metadata['meta_pupil_pixels'],
+                pixel_pitch=metadata['pixel_pitch_m'],
+                ifunc_nmodes_raw=metadata.get('ifunc_nmodes_raw'),
+                m2c_nmodes=metadata.get('m2c_nmodes')
+            )
 
-        # Update layers - iterate over result keys and match to config
-        for result_key in result['ifunc_tags'].keys():
-            if result_key.startswith('layer'):
-                config_key = normalize_key(result_key)  # layer_1 -> layer1
-
-                if config_key in self.config:
-                    self._update_config_field(f'{config_key}.ifunc_object',
-                                            result['ifunc_tags'][result_key])
-                    self._update_config_field(f'{config_key}.m2c_object',
-                                            result['m2c_tags'][result_key])
-                    m2c_tag = result['m2c_tags'][result_key]
-                    n_modes = int(m2c_tag.split('_')[-1].replace('modes', ''))
-                    self._update_config_field(f'{config_key}.nmodes', n_modes)
-
-                    if self.verbose:
-                        self._log(f"  Updated {config_key}:")
-                        self._log(f"    ifunc: {result['ifunc_tags'][result_key]}")
-                        self._log(f"    m2c: {m2c_tag}")
-                        self._log(f"    nmodes: {n_modes}")
+            if self.verbose:
+                self._log(f"  Updated {config_key}:")
+                self._log(f"    ifunc: {result['ifunc_tags'][result_key]}")
+                self._log(f"    m2c: {result['m2c_tags'][result_key]}")
+                self._log(f"    nmodes: {self.config[config_key]['nmodes']}")
+                self._log(f"    meta pupil: {metadata['meta_pupil_pixels']} px")
 
         # Update modal_analysis with inverse ifunc
         if result['ifunc_inv_tag']:
