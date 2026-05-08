@@ -2252,17 +2252,17 @@ class ParamsManager:
                     f"{config_name}_{wfs_type}_{component_type}_r0{r0:.3f}_L0{L0:.1f}"
                 )
 
-            c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.npy"
-            c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.npy"
+            c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.fits"
+            c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.fits"
             c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
             c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
 
-            np.save(c_atm_inv_path, cpuArray(C_atm_full_inv))
-            np.save(c_noise_inv_path, cpuArray(C_noise_inv))
+            fits.writeto(c_atm_inv_path, cpuArray(C_atm_full_inv), overwrite=True)
+            fits.writeto(c_noise_inv_path, cpuArray(C_noise_inv), overwrite=True)
 
             inverse_cov_files = {
                 'C_atm_inv': c_atm_inv_path,
-                'C_noise_inv': c_noise_inv_path
+                'C_noise_inv': c_noise_inv_path,
             }
 
             if verbose_flag:
