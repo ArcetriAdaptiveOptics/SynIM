@@ -2408,7 +2408,7 @@ class ParamsManager:
         C_noise_inv = self.build_noise_covariance(
             wfs_type=wfs_type,
             n_wfs=None,  # Auto-detect
-            im_full=im_full,
+            n_slopes_total=im_full.shape[0],
             noise_variance=noise_variance,
             C_noise=C_noise,
             use_elongation=recon_params['noise_elong_model'],
@@ -3416,7 +3416,7 @@ class ParamsManager:
         return C_noise_inv_full
 
     def build_noise_covariance(self, wfs_type='lgs', n_wfs=None,
-                            im_full=None, noise_variance=None,
+                            n_slopes_total=None, noise_variance=None,
                             C_noise=None, use_elongation=False,
                             active_wfs_mask=None, verbose=None):
         """
@@ -3429,7 +3429,7 @@ class ParamsManager:
         Args:
             wfs_type (str): Type of WFS ('lgs', 'ngs', 'ref')
             n_wfs (int, optional): Number of WFS. Auto-detected if None.
-            im_full (np.ndarray, optional): Full interaction matrix for shape inference
+            n_slopes_total (int, optional): Total number of slopes in assembled IM
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Pre-computed full noise covariance matrix
             use_elongation (bool): Whether to use elongated spot model for LGS
@@ -3474,10 +3474,11 @@ class ParamsManager:
         if n_wfs is None:
             n_wfs = len(active_indices)
 
-        n_slopes_total = im_full.shape[0]
-
-        if im_full is None:
-            raise ValueError("im_full must be provided if C_noise is not given")
+        if n_slopes_total is None:
+            raise ValueError("n_slopes_total must be provided if C_noise is not given")
+        n_slopes_total = int(n_slopes_total)
+        if n_slopes_total <= 0:
+            raise ValueError(f"n_slopes_total must be > 0, got {n_slopes_total}")
 
         if verbose_flag:
             print(f"  Number of {wfs_type.upper()} WFS: {n_wfs}")
