@@ -2094,6 +2094,9 @@ class ParamsManager:
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
                                         active_wfs_mask=None,
+                                        save_inverse_covariances=False,
+                                        inverse_cov_output_dir=None,
+                                        inverse_cov_prefix=None,
                                         verbose=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
@@ -2116,6 +2119,9 @@ class ParamsManager:
             overwrite (bool): Whether to overwrite existing files
             skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
             active_wfs_mask (list of bool, optional): Mask indicating active WFSs
+            save_inverse_covariances (bool): Whether to save inverse covariance matrices for debug/comparison
+            inverse_cov_output_dir (str, optional): Directory for inverse covariance debug files
+            inverse_cov_prefix (str, optional): Prefix for inverse covariance debug filenames
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
@@ -2232,6 +2238,37 @@ class ParamsManager:
             active_wfs_mask=active_wfs_mask,
             verbose=verbose_flag
         )
+
+        # Optional debug export for IDL/SynIM comparisons.
+        inverse_cov_files = None
+        if save_inverse_covariances:
+            debug_dir = inverse_cov_output_dir or output_dir or self.rec_dir
+            os.makedirs(debug_dir, exist_ok=True)
+
+            if inverse_cov_prefix is None:
+                config_name = (os.path.basename(self.params_file).split('.')[0]
+                               if isinstance(self.params_file, str) else "config")
+                inverse_cov_prefix = (
+                    f"{config_name}_{wfs_type}_{component_type}_r0{r0:.3f}_L0{L0:.1f}"
+                )
+
+            c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.npy"
+            c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.npy"
+            c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
+            c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
+
+            np.save(c_atm_inv_path, cpuArray(C_atm_full_inv))
+            np.save(c_noise_inv_path, cpuArray(C_noise_inv))
+
+            inverse_cov_files = {
+                'C_atm_inv': c_atm_inv_path,
+                'C_noise_inv': c_noise_inv_path
+            }
+
+            if verbose_flag:
+                print("  ✓ Inverse covariance matrices saved:")
+                print(f"    - {c_atm_inv_filename}")
+                print(f"    - {c_noise_inv_filename}")
 
         print()
 
@@ -2350,6 +2387,7 @@ class ParamsManager:
             'n_wfs': n_wfs if 'n_wfs' in locals() else None,
             'rec_filename': rec_filename,
             'rec_path': rec_path,
+            'inverse_cov_files': inverse_cov_files,
             'r0': r0,
             'L0': L0
         }
