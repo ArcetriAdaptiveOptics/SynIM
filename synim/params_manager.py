@@ -1472,7 +1472,7 @@ class ParamsManager:
                     im = self._apply_slopes_filter(
                         im,
                         wfs_type,
-                        ii+1,  # WFS index (1-based)
+                        wfs_idx,
                         verbose=self.verbose
                     )
 
@@ -2203,27 +2203,6 @@ class ParamsManager:
             print(f"\n  Assembled IM shape: {im_full.shape}")
             print(f"  Components: {component_indices}")
             print(f"  Modes per component: {[len(mi) for mi in mode_indices]}")
-
-        # Optional compatibility behavior for filtered slopes:
-        # zero low-order mode columns in assembled IM while preserving matrix shape.
-        n_low_modes_cut = self._get_low_modes_cut_if_applicable(
-            wfs_type=wfs_type,
-            apply_filter=apply_filter,
-            active_wfs_mask=None,
-            verbose=verbose_flag,
-        )
-        if n_low_modes_cut > 0:
-            keep_cols, drop_cols = self._split_mode_columns_by_absolute_index(
-                mode_indices,
-                n_low_modes_cut,
-            )
-            if drop_cols.size > 0:
-                im_full[:, drop_cols] = 0
-                if verbose_flag:
-                    print(
-                        f"  Zeroed {drop_cols.size} low-order mode columns in assembled IM "
-                        f"(absolute mode < {n_low_modes_cut})"
-                    )
 
         # Save as Intmat (SPECULA format)
         pupdata_tag = f"{config_name}_{wfs_type}_{component_type}"
