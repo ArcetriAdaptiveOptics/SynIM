@@ -353,6 +353,13 @@ class ParamsManager:
         return key
 
 
+    def _get_component_generated_metadata(self, component_key):
+        """Return persisted workflow metadata for a component, if available."""
+        component_config = self.params.get(component_key, {})
+        metadata = component_config.get('generated_metadata', {})
+        return metadata if isinstance(metadata, dict) else {}
+
+
     def _count_wfs(self, wfs_type):
         out = self.count_mcao_stars()
         return out.get(f'n_{wfs_type}', 0)
@@ -2723,12 +2730,16 @@ class ParamsManager:
 
             # Get start_mode
             comp_key = self._resolve_component_key(component_type, comp_idx)
+            component_metadata = self._get_component_generated_metadata(comp_key)
 
             # Total modes available
             total_modes = comp_params['dm_array'].shape[2]
-            # DM size in pixels (assuming square DM)
-            pixel_dm = comp_params['dm_array'].shape[0]
-            meta_pupil_diameter = pixel_dm * self.pixel_pitch
+            pixel_dm = int(component_metadata.get('meta_pupil_pixels',
+                                                  comp_params['dm_array'].shape[0]))
+            meta_pupil_diameter = float(
+                component_metadata.get('meta_pupil_diameter_m',
+                                       pixel_dm * self.pixel_pitch)
+            )
 
             if verbose_flag:
                 print(f"  Total modes available: {total_modes}")
