@@ -2611,7 +2611,7 @@ class ParamsManager:
 
 
     def compute_tomographic_projection_matrix(self, output_dir=None, save=False,
-                                            verbose=None):
+                                            wfs_type='lgs', verbose=None):
         """
         Compute tomographic projection matrix following IDL compute_mcao_popt logic.
         
@@ -2627,6 +2627,8 @@ class ParamsManager:
         Args:
             output_dir (str, optional): Directory where PM files are stored
             save (bool): Whether to save the projection matrix to disk
+            wfs_type (str): Reconstruction type ('lgs', 'ngs', 'ref') used to
+                select mode-filter settings (e.g. n_low_modes_zero_filt)
             verbose (bool, optional): Override the class's verbose setting
         
         Returns:
@@ -2639,6 +2641,9 @@ class ParamsManager:
 
         verbose_flag = self.verbose if verbose is None else verbose
 
+        if wfs_type not in ['lgs', 'ngs', 'ref']:
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
+
         # Use cached reg_factor from initialization
         reg_factor = self.proj_reg_factor
 
@@ -2650,6 +2655,7 @@ class ParamsManager:
                 print(f"  Using YAML 'projection' section")
             else:
                 print(f"  Using IDL-style or default parameters")
+            print(f"  WFS type: {wfs_type}")
             print(f"  Regularization factor: {reg_factor}")
             print(f"{'='*60}\n")
 
@@ -2667,6 +2673,62 @@ class ParamsManager:
             print(f"      (n_opt_sources, n_dm_modes, n_pupil_modes)")
             print(f"    pm_full_layer shape: {pm_full_layer.shape}")
             print(f"      (n_opt_sources, n_layer_modes, n_pupil_modes)")
+
+        # Optional low-order mode cut on layer modes for tomographic projection.
+        # Compute on reduced layer-space, then restore full-size p_opt columns to zero.
+        recon_params = self._get_recon_params(wfs_type)
+        n_low_modes_cut = int(recon_params.get('n_low_modes_zero_filt', 0) or 0)
+        if n_low_modes_cut < 0:
+            raise ValueError("n_low_modes_zero_filt must be >= 0")
+
+        layer_mode_indices = []
+        for layer in extract_layer_list(self.params):
+            layer_idx = int(layer['index'])
+            layer_key = self._resolve_component_key('layer', layer_idx)
+            layer_cfg = self.params[layer_key]
+            n_modes = layer_cfg.get('nmodes', None)
+            if n_modes is None:
+                raise ValueError(f"nmodes not specified for {layer_key}")
+            start_mode = int(layer_cfg.get('start_mode', 0) or 0)
+            n_modes_effective = int(n_modes) - start_mode
+            if n_modes_effective < 0:
+                raise ValueError(
+                    f"Invalid start_mode={start_mode} for {layer_key} with nmodes={n_modes}"
+                )
+            layer_mode_indices.append(
+                list(range(start_mode, start_mode + n_modes_effective))
+            )
+
+        n_layer_modes_full = pm_full_layer.shape[1]
+        total_layer_modes_cfg = sum(len(mi) for mi in layer_mode_indices)
+        if total_layer_modes_cfg != n_layer_modes_full:
+            raise ValueError(
+                f"Layer mode mismatch: PM has {n_layer_modes_full} modes, "
+                f"but config-derived modes are {total_layer_modes_cfg}"
+            )
+
+        keep_layer_cols = np.arange(n_layer_modes_full, dtype=int)
+        drop_layer_cols = np.array([], dtype=int)
+        pm_full_layer_for_popt = pm_full_layer
+
+        if n_low_modes_cut > 0:
+            keep_layer_cols, drop_layer_cols = self._split_mode_columns_by_absolute_index(
+                layer_mode_indices,
+                n_low_modes_cut,
+            )
+            if keep_layer_cols.size == 0:
+                raise ValueError(
+                    "Low-mode cut removed all layer modes; reduce n_low_modes_zero_filt"
+                )
+
+            pm_full_layer_for_popt = pm_full_layer[:, keep_layer_cols, :]
+
+            if verbose_flag:
+                print(
+                    f"\n  Applying low-mode cut on layer PM: "
+                    f"kept {keep_layer_cols.size}/{n_layer_modes_full} modes "
+                    f"(dropped {drop_layer_cols.size}, absolute mode < {n_low_modes_cut})"
+                )
 
         # ==================== GET OPTICAL SOURCE WEIGHTS ====================
         if self.projection_params is not None:
@@ -2701,7 +2763,7 @@ class ParamsManager:
 
         # Get dimensions
         n_dm_modes = pm_full_dm.shape[1]
-        n_layer_modes = pm_full_layer.shape[1]
+        n_layer_modes = pm_full_layer_for_popt.shape[1]
         n_pupil_modes = pm_full_dm.shape[2]
 
         # Initialize accumulation matrices
@@ -2711,7 +2773,7 @@ class ParamsManager:
         # Accumulate weighted contributions from each optical source
         for i in range(n_opt):
             pdm_i = pm_full_dm[i, :, :]      # (n_dm_modes, n_pupil_modes)
-            pl_i = pm_full_layer[i, :, :]    # (n_layer_modes, n_pupil_modes)
+            pl_i = pm_full_layer_for_popt[i, :, :]    # (n_layer_modes, n_pupil_modes)
             w = weights_array[i] / total_weight
 
             # Accumulate: P_DM^T @ P_DM and P_DM^T @ P_Layer
@@ -2759,7 +2821,13 @@ class ParamsManager:
             print(f"  p_opt = (P_DM^T @ P_DM + λI)^(-1) @ P_DM^T @ P_Layer")
 
         # p_opt = (tpdm_pdm + reg_factor*I)^(-1) @ tpdm_pl
-        p_opt = tpdm_pdm_inv @ tpdm_pl
+        p_opt_reduced = tpdm_pdm_inv @ tpdm_pl
+
+        if n_low_modes_cut > 0:
+            p_opt = np.zeros((n_dm_modes, n_layer_modes_full), dtype=p_opt_reduced.dtype)
+            p_opt[:, keep_layer_cols] = p_opt_reduced
+        else:
+            p_opt = p_opt_reduced
 
         if verbose_flag:
             print(f"\n  ✓ Tomographic projection matrix computed: {p_opt.shape}")
@@ -2790,7 +2858,7 @@ class ParamsManager:
             config_name = (os.path.basename(self.params_file).split('.')[0]
                         if isinstance(self.params_file, str) else "config")
 
-            rec_filename = f"rec_{config_name}_tomographic_r{reg_factor:.0e}.fits"
+            rec_filename = f"rec_{config_name}_tomographic_{wfs_type}_r{reg_factor:.0e}.fits"
             rec_path = os.path.join(output_dir, rec_filename)
 
             # Save as FITS (SPECULA format)
@@ -2814,9 +2882,13 @@ class ParamsManager:
 
         # ==================== METADATA ====================
         info = {
+            'wfs_type': wfs_type,
             'n_opt_sources': n_opt,
             'n_dm_modes': n_dm_modes,
             'n_layer_modes': n_layer_modes,
+            'n_layer_modes_full': n_layer_modes_full,
+            'n_low_modes_zero_filt': n_low_modes_cut,
+            'n_layer_modes_dropped': int(drop_layer_cols.size),
             'n_pupil_modes': n_pupil_modes,
             'weights': weights_array,
             'reg_factor': reg_factor,
