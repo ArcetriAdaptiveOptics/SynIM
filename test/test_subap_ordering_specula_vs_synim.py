@@ -28,9 +28,6 @@ from specula.lib.make_mask import make_mask
 
 # SynIM imports
 from synim.synim import compute_subaperture_illumination
-from synim.params_utils import find_subapdata
-from synim.params_manager import _idx_valid_sa_to_linear_for_illumination
-from specula.calib_manager import CalibManager
 
 
 def make_circular_pupil(npix, radius_fraction=0.4, off_axis_shift=(0, 0), obstruction_ratio=0.0):
@@ -820,19 +817,3 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         self.assertFalse(np.allclose(wrong, ref_map),
                          "Wrong row-major decode should not match (traps 90-degree errors)")
 
-    def test_params_manager_illumination_idx_conversion(self):
-        """Ensure params_manager helper preserves display_map ordering."""
-        n = 6
-        display_map = np.array([j * n + i for i in range(n) for j in range(n)], dtype=np.int64)
-
-        # Same format used by find_subapdata path: coords from unravel_index(display_map)
-        idx_valid_sa_2d = np.column_stack(np.unravel_index(display_map, (n, n)))
-        converted = _idx_valid_sa_to_linear_for_illumination(idx_valid_sa_2d, n)
-
-        self.assertTrue(np.array_equal(converted, display_map),
-                        "2D idx_valid_sa conversion must preserve display_map order")
-
-        # 1D input must pass through unchanged
-        passthrough = _idx_valid_sa_to_linear_for_illumination(display_map, n)
-        self.assertTrue(np.array_equal(passthrough, display_map),
-                        "1D idx_valid_sa should be left unchanged")

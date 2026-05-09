@@ -36,19 +36,6 @@ from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
 verbose_gpu_flag = False  # Global flag for verbose GPU memory printing
 
-
-def _idx_valid_sa_to_linear_for_illumination(idx_valid_sa, wfs_nsubaps):
-    """Convert 2D SPECULA-like idx_valid_sa to 1D linear indices for illumination."""
-    if idx_valid_sa is None:
-        return None
-
-    if getattr(idx_valid_sa, 'ndim', 0) == 2 and idx_valid_sa.shape[1] == 2:
-        # In this code path idx_valid_sa columns are (col, row), so display_map is:
-        # linear = col * nsubaps + row
-        return idx_valid_sa[:, 0] * wfs_nsubaps + idx_valid_sa[:, 1]
-
-    return idx_valid_sa
-
 class ParamsManager:
     """
     Class for managing parameters needed to compute interaction matrices 
