@@ -1166,23 +1166,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     if specula_convention:
         pup_mask = xp.transpose(pup_mask)
 
-    pup_diam_pix = pup_mask.shape[0]
-
-    # FIX 1: Calculate an output dimension (W) that is an EXACT MULTIPLE of wfs_nsubaps.
-    # This completely prevents `rebin` from truncating the array, which causes spatial shifts.
-    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
-    W = N * wfs_nsubaps
-
-    # Calculate the upscaling factor required to hit dimension W
-    upscale_mag = W / pup_diam_pix
-
-    # Safely combine upscaling with native WFS magnification
-    if not hasattr(wfs_magnification, '__len__'):
-        wfs_mag_x = wfs_mag_y = float(wfs_magnification)
-    else:
-        wfs_mag_x, wfs_mag_y = wfs_magnification[0], wfs_magnification[1]
-
-    total_mag = (wfs_mag_x * upscale_mag, wfs_mag_y * upscale_mag)
+    output_size = pup_mask.shape
 
     # Apply WFS transformations to pupil mask using the EXACT output size (W, W)
     trans_pup_mask = rotshiftzoom_array(
@@ -1192,11 +1176,10 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
         dm_magnification=(1, 1),
         wfs_translation=wfs_translation,
         wfs_rotation=wfs_rotation,
-        wfs_magnification=total_mag,
-        output_size=(W, W)
+        wfs_magnification=wfs_magnification,
+        output_size=output_size
     )
 
-    # FIX 2: REMOVED trans_pup_mask[trans_pup_mask < 0.5] = 0
     # We must keep the fractionally interpolated pixels (anti-aliased edges) 
     # to correctly integrate the flux per subaperture (e.g. across spider arms).
 
@@ -1204,7 +1187,6 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
         raise ValueError('Transformed pupil mask is empty.')
 
     # Rebin to WFS resolution - use 'sum' to get total flux per subaperture
-    # Now it perfectly maps an NxN patch into 1 pixel.
     pup_mask_sa = rebin(trans_pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
 
     # Normalize to theoretical maximum (fully illuminated subaperture)
