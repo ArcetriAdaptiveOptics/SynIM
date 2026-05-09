@@ -3624,18 +3624,16 @@ class ParamsManager:
             n_slopes_list.append(n_slopes_this_wfs)
 
             if n_slopes_this_wfs > 0:
-                idx_valid_sa_illum = _idx_valid_sa_to_linear_for_illumination(
-                    wfs_params_i['idx_valid_sa'],
-                    wfs_params_i['wfs_nsubaps']
-                )
-
+                # Pass idx_valid_sa in its native 2D [[col, row]] format with
+                # specula_convention=True. The 1D conversion path indexes into
+                # a row-major flattened array using col-major indices → wrong.
                 illumination = synim.compute_subaperture_illumination(
                     pup_mask=self.pup_mask,
                     wfs_nsubaps=wfs_params_i['wfs_nsubaps'],
                     wfs_rotation=wfs_params_i['wfs_rotation'],
                     wfs_translation=wfs_params_i['wfs_translation'],
                     wfs_magnification=wfs_params_i['wfs_magnification'],
-                    idx_valid_sa=idx_valid_sa_illum,
+                    idx_valid_sa=wfs_params_i['idx_valid_sa'],
                     verbose=False,
                     specula_convention=True
                 )

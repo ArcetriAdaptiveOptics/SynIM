@@ -1150,7 +1150,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     - wfs_rotation: float, WFS rotation in degrees
     - wfs_translation: tuple, WFS translation (x, y) in pixels
     - wfs_magnification: tuple, WFS magnification (x, y)
-    - idx_valid_sa: array, indices of valid subapertures
+    - idx_valid_sa: array, indices of valid subapertures (2D format preferred)
     - specula_convention: bool, whether to use SPECULA convention
     - verbose: bool, whether to print information
     
@@ -1166,9 +1166,25 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     if specula_convention:
         pup_mask = xp.transpose(pup_mask)
 
-    output_size = pup_mask.shape
+    pup_diam_pix = pup_mask.shape[0]
 
-    # Apply WFS transformations to pupil mask
+    # FIX 1: Calculate an output dimension (W) that is an EXACT MULTIPLE of wfs_nsubaps.
+    # This completely prevents `rebin` from truncating the array, which causes spatial shifts.
+    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
+    W = N * wfs_nsubaps
+
+    # Calculate the upscaling factor required to hit dimension W
+    upscale_mag = W / pup_diam_pix
+
+    # Safely combine upscaling with native WFS magnification
+    if not hasattr(wfs_magnification, '__len__'):
+        wfs_mag_x = wfs_mag_y = float(wfs_magnification)
+    else:
+        wfs_mag_x, wfs_mag_y = wfs_magnification[0], wfs_magnification[1]
+
+    total_mag = (wfs_mag_x * upscale_mag, wfs_mag_y * upscale_mag)
+
+    # Apply WFS transformations to pupil mask using the EXACT output size (W, W)
     trans_pup_mask = rotshiftzoom_array(
         pup_mask,
         dm_translation=(0, 0),
@@ -1176,15 +1192,19 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
         dm_magnification=(1, 1),
         wfs_translation=wfs_translation,
         wfs_rotation=wfs_rotation,
-        wfs_magnification=wfs_magnification,
-        output_size=output_size
+        wfs_magnification=total_mag,
+        output_size=(W, W)
     )
-    trans_pup_mask[trans_pup_mask < 0.5] = 0
+
+    # FIX 2: REMOVED trans_pup_mask[trans_pup_mask < 0.5] = 0
+    # We must keep the fractionally interpolated pixels (anti-aliased edges) 
+    # to correctly integrate the flux per subaperture (e.g. across spider arms).
 
     if xp.max(trans_pup_mask) <= 0:
         raise ValueError('Transformed pupil mask is empty.')
 
     # Rebin to WFS resolution - use 'sum' to get total flux per subaperture
+    # Now it perfectly maps an NxN patch into 1 pixel.
     pup_mask_sa = rebin(trans_pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
 
     # Normalize to theoretical maximum (fully illuminated subaperture)
@@ -1198,7 +1218,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     # Select only valid subapertures
     if idx_valid_sa is not None:
         if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # Convert SPECULA format indices
+            # Convert SPECULA format 2D indices back from transposed logic
             sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
             sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
             sa_2d = xp.transpose(sa_2d)
@@ -1214,6 +1234,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
             linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
             illumination = illumination_2d[linear_indices.astype(xp.int32)]
         else:
+            # Use all subapertures (fallback for 1D indices)
             illumination = illumination_2d[idx_valid_sa_new.astype(xp.int32)]
     else:
         # Use all subapertures
