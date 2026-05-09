@@ -16,14 +16,14 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
    This is a **methodology tutorial**, not a usage guide for ``run_calib_workflow_morfeo.py``.
    That script can be used as a reference implementation of the same sequence, but the goal here is to let you implement your own calibration files/scripts for complex MCAO systems.
    
-   The slope computation method used in the examples is the default 'derivatives', but it is highly recommended to use 'gtilt' for high-order systems by changing the ``slope_method`` argument in the relevant function calls.
+   The slope computation method used in the examples and highly recommended for all ELT-scale systems is **'derivatives'**. 
    
-   Both methods estimate the physical G-tilt (the average phase gradient over the subaperture, which dictates the Shack-Hartmann spot displacement), but they differ profoundly in their numerical implementation:
+   While SynIM supports dual slope-computation engines, they model the sensor physics differently:
    
-   * **'derivatives'**: Computes local gradients pixel-by-pixel using finite differences and averages them. This can introduce numerical truncation artifacts at the boundaries of the subaperture or the pupil mask.
-   * **'gtilt'**: Uses a rigorous telescoping sum to evaluate the exact phase difference strictly at the subaperture edges, completely bypassing internal finite-difference errors.
+   * **'derivatives' (Default & Recommended)**: Computes local gradients using finite differences and averages them over the subaperture. Thanks to SynIM's strict sub-pixel geometric alignment during spatial resampling, this method natively absorbs the diffractive effects and cross-talk of real Shack-Hartmann sensors. It provides superior physical fidelity and resilience, especially for high-spatial-frequency modes.
+   * **'gtilt'**: Uses a boundary-driven telescoping sum to evaluate the exact phase difference strictly at the subaperture edges. While mathematically exact for purely geometric boundaries, it struggles to map the continuous diffractive reality of the physical wavefront sensor compared to the aligned numerical derivatives.
    
-   Because of this, the 'gtilt' engine provides a significantly more accurate and noiseless slope estimation, strictly adhering to the physical behavior of the lenslet array, especially for high-spatial-frequency modes.
+   Because of this, the 'derivatives' engine guarantees both a significantly more accurate slope estimation and a substantial computational speed-up on GPU.
 
 1. Theoretical Framework: The Three WFS Groups
 ==============================================
