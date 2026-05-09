@@ -426,15 +426,20 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False):
             print("     Loading subapdata from file:", subap_path)
         subap_data = SubapData.restore(subap_path)
 
-        # 1. Get raw (Y, X) coordinates
+        # Preserve the original SubapData ordering used by SH Slopec.
+        # This aligns idx_valid_sa ordering with flux_per_subaperture vectors.
+        if hasattr(subap_data, 'display_map') and subap_data.display_map is not None:
+            display_map = np.asarray(subap_data.display_map, dtype=np.int64)
+            if display_map.ndim == 1 and display_map.size == subap_data.n_subaps:
+                coords = np.column_stack(
+                    np.unravel_index(display_map, (subap_data.nx, subap_data.ny))
+                )
+                return coords.astype(np.int64)
+
+        # Fallback: derive valid coordinates from the mask if display_map is not usable.
         coords = np.transpose(np.asarray(np.where(subap_data.single_mask())))
-
-        # 2. Sort by Y (primary) and then by X (secondary)
-        # In np.lexsort, the primary key is the last one in the tuple, so we put Y first and then X.
-        # coords[:, 1] is X, coords[:, 0] is Y.
         sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))
-
-        return coords[sort_idx]
+        return coords[sort_idx].astype(np.int64)
 
     return None
 

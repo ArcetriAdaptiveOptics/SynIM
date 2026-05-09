@@ -36,6 +36,19 @@ from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
 verbose_gpu_flag = False  # Global flag for verbose GPU memory printing
 
+
+def _idx_valid_sa_to_linear_for_illumination(idx_valid_sa, wfs_nsubaps):
+    """Convert 2D SPECULA-like idx_valid_sa to 1D linear indices for illumination."""
+    if idx_valid_sa is None:
+        return None
+
+    if getattr(idx_valid_sa, 'ndim', 0) == 2 and idx_valid_sa.shape[1] == 2:
+        # In this code path idx_valid_sa columns are (col, row), so display_map is:
+        # linear = col * nsubaps + row
+        return idx_valid_sa[:, 0] * wfs_nsubaps + idx_valid_sa[:, 1]
+
+    return idx_valid_sa
+
 class ParamsManager:
     """
     Class for managing parameters needed to compute interaction matrices 
@@ -2384,7 +2397,7 @@ class ParamsManager:
             raise ValueError(f"Invalid wfs_type: {wfs_type}")
 
         # *** USE CENTRALIZED METHOD ***
-        C_noise_inv = self.build_noise_covariance(
+        noise_cov_result = self.build_noise_covariance(
             wfs_type=wfs_type,
             n_wfs=None,  # Auto-detect
             n_slopes_total=im_full.shape[0],
@@ -2392,8 +2405,15 @@ class ParamsManager:
             C_noise=C_noise,
             use_elongation=recon_params['noise_elong_model'],
             active_wfs_mask=active_wfs_mask,
+            return_diagnostics=save_inverse_covariances,
             verbose=verbose_flag
         )
+
+        if save_inverse_covariances:
+            C_noise_inv, noise_cov_diag = noise_cov_result
+        else:
+            C_noise_inv = noise_cov_result
+            noise_cov_diag = None
 
         # Optional debug export for IDL/SynIM comparisons.
         inverse_cov_files = None
@@ -2410,21 +2430,33 @@ class ParamsManager:
 
             c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.fits"
             c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.fits"
+            illumination_filename = f"illumination_concat_{inverse_cov_prefix}.fits"
             c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
             c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
+            illumination_path = os.path.join(debug_dir, illumination_filename)
 
             fits.writeto(c_atm_inv_path, cpuArray(C_atm_for_mmse), overwrite=True)
             fits.writeto(c_noise_inv_path, cpuArray(C_noise_inv), overwrite=True)
+            if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
+                fits.writeto(
+                    illumination_path,
+                    cpuArray(noise_cov_diag['illumination_concat']),
+                    overwrite=True,
+                )
 
             inverse_cov_files = {
                 'C_atm_inv': c_atm_inv_path,
                 'C_noise_inv': c_noise_inv_path,
             }
+            if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
+                inverse_cov_files['illumination_concat'] = illumination_path
 
             if verbose_flag:
                 print("  ✓ Inverse covariance matrices saved:")
                 print(f"    - {c_atm_inv_filename}")
                 print(f"    - {c_noise_inv_filename}")
+                if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
+                    print(f"    - {illumination_filename}")
 
         print()
 
@@ -3469,7 +3501,8 @@ class ParamsManager:
     def build_noise_covariance(self, wfs_type='lgs', n_wfs=None,
                             n_slopes_total=None, noise_variance=None,
                             C_noise=None, use_elongation=False,
-                            active_wfs_mask=None, verbose=None):
+                            active_wfs_mask=None, return_diagnostics=False,
+                            verbose=None):
         """
         Build noise covariance matrix with multiple strategies:
         1. Use provided C_noise (highest priority)
@@ -3485,10 +3518,12 @@ class ParamsManager:
             C_noise (np.ndarray, optional): Pre-computed full noise covariance matrix
             use_elongation (bool): Whether to use elongated spot model for LGS
             active_wfs_mask (array-like, optional): Mask to indicate active WFS
+            return_diagnostics (bool): If True, also return debug diagnostics dict
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
-            np.ndarray: Noise covariance matrix (inverse, ready for MMSE)
+            np.ndarray or tuple: Noise covariance matrix (inverse, ready for MMSE),
+                optionally ``(C_noise_inv, diagnostics)`` when ``return_diagnostics=True``
             
         Raises:
             ValueError: If insufficient information provided
@@ -3513,6 +3548,8 @@ class ParamsManager:
             if verbose_flag:
                 print(f"{'='*60}\n")
 
+            if return_diagnostics:
+                return C_noise, {'illumination_concat': None}
             return C_noise
 
         # ==================== GET N_WFS AND N_SLOPES ====================
@@ -3564,6 +3601,8 @@ class ParamsManager:
                 print(f"  ✓ C_noise built: {C_noise_inv.shape}")
                 print(f"{'='*60}\n")
 
+            if return_diagnostics:
+                return C_noise_inv, {'illumination_concat': None}
             return C_noise_inv
 
         # ==================== COMPUTE ILLUMINATION (ALWAYS NEEDED) ====================
@@ -3585,13 +3624,18 @@ class ParamsManager:
             n_slopes_list.append(n_slopes_this_wfs)
 
             if n_slopes_this_wfs > 0:
+                idx_valid_sa_illum = _idx_valid_sa_to_linear_for_illumination(
+                    wfs_params_i['idx_valid_sa'],
+                    wfs_params_i['wfs_nsubaps']
+                )
+
                 illumination = synim.compute_subaperture_illumination(
                     pup_mask=self.pup_mask,
                     wfs_nsubaps=wfs_params_i['wfs_nsubaps'],
                     wfs_rotation=wfs_params_i['wfs_rotation'],
                     wfs_translation=wfs_params_i['wfs_translation'],
                     wfs_magnification=wfs_params_i['wfs_magnification'],
-                    idx_valid_sa=wfs_params_i['idx_valid_sa'],
+                    idx_valid_sa=idx_valid_sa_illum,
                     verbose=False,
                     specula_convention=True
                 )
@@ -3604,6 +3648,11 @@ class ParamsManager:
                         f"illumination [{np.min(illumination):.2f}, {np.max(illumination):.2f}]")
             else:
                 illumination_list.append(np.array([], dtype=cpu_float_dtype))
+
+        if illumination_list:
+            illumination_concat = np.concatenate(illumination_list).astype(cpu_float_dtype)
+        else:
+            illumination_concat = np.array([], dtype=cpu_float_dtype)
 
         # ==================== CASE 3: ELONGATION MODEL (LGS) ====================
         use_elong = use_elongation and wfs_type == 'lgs'
@@ -3628,7 +3677,7 @@ class ParamsManager:
             )
 
             # scale by illumination
-            illumination_inv_array = np.diag(np.concatenate(illumination_list))
+            illumination_inv_array = np.diag(illumination_concat)
             C_noise_inv = illumination_inv_array @ C_noise_inv
 
             if verbose_flag:
@@ -3640,6 +3689,8 @@ class ParamsManager:
                     print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
                 print(f"{'='*60}\n")
 
+            if return_diagnostics:
+                return C_noise_inv, {'illumination_concat': illumination_concat}
             return C_noise_inv
 
         # ==================== CASE 4: DIAGONAL MODEL ====================
@@ -3690,7 +3741,7 @@ class ParamsManager:
         C_noise_inv = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
         if illumination_list:
-            final_noise_variance = base_noise_variance / np.concatenate(illumination_list)
+            final_noise_variance = base_noise_variance / illumination_concat
             # Assign directly to diagonal
             np.fill_diagonal(C_noise_inv, 1 / final_noise_variance)
 
@@ -3703,4 +3754,6 @@ class ParamsManager:
                 print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
             print(f"{'='*60}\n")
 
+        if return_diagnostics:
+            return C_noise_inv, {'illumination_concat': illumination_concat}
         return C_noise_inv
