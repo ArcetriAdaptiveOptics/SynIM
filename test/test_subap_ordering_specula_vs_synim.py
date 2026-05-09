@@ -472,12 +472,13 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
             self.assertTrue(np.isfinite(mad),
                             "Mean absolute diff between normalized illum and flux is not finite")
 
-        self._plot_comparison(
-            flux_per_subap_specula, illum,
-            illum_pupil, intensity,
-            self.subap_on_diameter,
-            display_map
-        )
+        if self.plot_debug:
+            self._plot_comparison(
+                flux_per_subap_specula, illum,
+                illum_pupil, intensity,
+                self.subap_on_diameter,
+                display_map
+            )
 
         print("\n" + "="*70)
         print("✓ Test PASSED: Subaperture ordering is consistent")
