@@ -569,6 +569,45 @@ def rebin(array, new_shape, method='average'):
         if M == 0 or N == 0:
             raise ValueError("New shape dimensions must be greater than 0.")
 
+        # =====================================================================
+        # UNIVERSAL FIX FOR NON-INTEGER REBINNING
+        # Prevents asymmetric truncation by upscaling to an exact multiple first
+        # =====================================================================
+        if m % M != 0 or n % N != 0:
+            mult_m = max(int(xp.ceil(m / M)), 2)
+            mult_n = max(int(xp.ceil(n / N)), 2)
+            target_m = mult_m * M
+            target_n = mult_n * N
+
+            zoom_x = target_m / m
+            zoom_y = target_n / n
+
+            # Use affine_transform instead of zoom (which might be None in CuPy)
+            matrix = xp.array([[1.0/zoom_x, 0], [0, 1.0/zoom_y]], dtype=float_dtype)
+
+            # Align centers to prevent spatial shifts
+            center_in = xp.array([m, n], dtype=float_dtype) / 2.0
+            center_out = xp.array([target_m, target_n], dtype=float_dtype) / 2.0
+            offset_2d = center_in - xp.dot(matrix, center_out)
+
+            if array.ndim == 3:
+                matrix_3d = xp.eye(3, dtype=float_dtype)
+                matrix_3d[:2, :2] = matrix
+                offset = xp.zeros(3, dtype=float_dtype)
+                offset[:2] = offset_2d
+                array = affine_transform(
+                    array, matrix_3d, offset=offset,
+                    output_shape=(target_m, target_n, array.shape[2]), order=1
+                )
+            else:
+                array = affine_transform(
+                    array, matrix, offset=offset_2d,
+                    output_shape=(target_m, target_n), order=1
+                )
+
+            m, n = target_m, target_n
+        # =====================================================================
+
         if array.ndim == 3:
             if method == 'sum':
                 rebinned_array = xp.sum(

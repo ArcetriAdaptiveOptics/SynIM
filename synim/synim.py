@@ -1150,7 +1150,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     - wfs_rotation: float, WFS rotation in degrees
     - wfs_translation: tuple, WFS translation (x, y) in pixels
     - wfs_magnification: tuple, WFS magnification (x, y)
-    - idx_valid_sa: array, indices of valid subapertures
+    - idx_valid_sa: array, indices of valid subapertures (2D format preferred)
     - specula_convention: bool, whether to use SPECULA convention
     - verbose: bool, whether to print information
     
@@ -1168,7 +1168,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
 
     output_size = pup_mask.shape
 
-    # Apply WFS transformations to pupil mask
+    # Apply WFS transformations to pupil mask using the EXACT output size (W, W)
     trans_pup_mask = rotshiftzoom_array(
         pup_mask,
         dm_translation=(0, 0),
@@ -1179,7 +1179,9 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
         wfs_magnification=wfs_magnification,
         output_size=output_size
     )
-    trans_pup_mask[trans_pup_mask < 0.5] = 0
+
+    # We must keep the fractionally interpolated pixels (anti-aliased edges) 
+    # to correctly integrate the flux per subaperture (e.g. across spider arms).
 
     if xp.max(trans_pup_mask) <= 0:
         raise ValueError('Transformed pupil mask is empty.')
@@ -1198,7 +1200,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     # Select only valid subapertures
     if idx_valid_sa is not None:
         if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # Convert SPECULA format indices
+            # Convert SPECULA format 2D indices back from transposed logic
             sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
             sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
             sa_2d = xp.transpose(sa_2d)
@@ -1214,6 +1216,7 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
             linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
             illumination = illumination_2d[linear_indices.astype(xp.int32)]
         else:
+            # Use all subapertures (fallback for 1D indices)
             illumination = illumination_2d[idx_valid_sa_new.astype(xp.int32)]
     else:
         # Use all subapertures

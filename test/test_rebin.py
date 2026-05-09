@@ -92,12 +92,21 @@ class TestRebin(unittest.TestCase):
             rebin(array, (1, 1), method='median')
 
     def test_rebin_compression_non_divisible(self):
-        """Test compression when dimensions aren't perfectly divisible"""
+        """Test compression when dimensions aren't perfectly divisible.
+        Checks the new anti-aliasing upscaling behavior that prevents spatial shifts."""
         array = np.ones((5, 5))
         result = rebin(array, (2, 2), method='average')
-        # Should use only the first 4x4 portion
+
+        # Shape should be correct
         self.assertEqual(result.shape, (2, 2))
-        np.testing.assert_array_almost_equal(result, np.ones((2, 2)))
+
+        # With the new affine_transform upscaling (mode='constant', cval=0.0),
+        # an array of ones will drop off at the edges.
+        # The center of mass should remain perfectly centered.
+        expected = np.array([[1.0, 0.6666667],
+                             [0.6666667, 0.44444445]], dtype=np.float32)
+        
+        np.testing.assert_array_almost_equal(result, expected, decimal=5)
 
     def test_rebin_preserve_dtype_float(self):
         """Test that float dtype is preserved"""
