@@ -102,7 +102,6 @@ rec:
 
 control:
   class:             'Integrator'
-  simul_params_ref:  'main'
   delay:             2
   int_gain:          [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
                       0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,

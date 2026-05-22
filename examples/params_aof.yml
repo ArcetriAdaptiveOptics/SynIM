@@ -220,7 +220,6 @@ tomo_polc_lgs:
 
 iir_lgs:
   class:             'Integrator'
-  simul_params_ref:  'main'
   int_gain: [0.0,0.40]
   n_modes:  [2,1251]
   delay: 1.5
@@ -242,7 +241,6 @@ tomo_ngs:
 
 iir_ngs:
   class:             'Integrator'
-  simul_params_ref:  'main'
   int_gain: [0.3]
   n_modes:  [2]
   delay: 1.5
