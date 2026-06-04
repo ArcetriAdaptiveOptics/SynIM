@@ -29,9 +29,9 @@ Full documentation available at: **[synim.readthedocs.io](https://synim.readthed
 SynIM supports two slope computation methods for interaction matrices:
 
 - `derivatives` (default): compute numerical derivatives on the transformed phase
-- `gtilt` (optional): compute G-tilt from phase differences in each subaperture
+- `telsum` (optional): compute telescoping sum from phase differences in each subaperture
 
-The default behavior is `derivatives`. To enable G-tilt, pass `slope_method='gtilt'` when calling the low-level interaction-matrix APIs.
+The default behavior is `derivatives`. To enable telescoping sum, pass `slope_method='telsum'` when calling the low-level interaction-matrix APIs.
 
 ## Requirements
 

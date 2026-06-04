@@ -934,7 +934,7 @@ def generate_im_filename(params_file, wfs_type=None,
         dm_index (int, optional): Index of the DM (1-based)
         layer_index (int, optional): Index of the Layer (1-based)
         n_modes (int, optional): Number of modes used (if limited)
-        slope_method (str): Slope computation method ('derivatives' or 'gtilt').
+        slope_method (str): Slope computation method ('derivatives' or 'telsum').
             When not 'derivatives', the method name is appended to the filename.
         timestamp (bool): Whether to include a timestamp in the filename
         verbose (bool): Whether to print detailed information

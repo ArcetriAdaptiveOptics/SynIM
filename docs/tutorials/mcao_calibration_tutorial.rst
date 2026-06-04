@@ -21,7 +21,7 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
    While SynIM supports dual slope-computation engines, they model the sensor physics differently:
    
    * **'derivatives' (Default & Recommended)**: Computes local gradients using finite differences and averages them over the subaperture. Thanks to SynIM's strict sub-pixel geometric alignment during spatial resampling, this method natively absorbs the diffractive effects and cross-talk of real Shack-Hartmann sensors. It provides superior physical fidelity and resilience, especially for high-spatial-frequency modes.
-   * **'gtilt'**: Uses a boundary-driven telescoping sum to evaluate the exact phase difference strictly at the subaperture edges. While mathematically exact for purely geometric boundaries, it struggles to map the continuous diffractive reality of the physical wavefront sensor compared to the aligned numerical derivatives.
+   * **'telsum'**: Uses a boundary-driven telescoping sum to evaluate the exact phase difference strictly at the subaperture edges. While mathematically exact for purely geometric boundaries, it struggles to map the continuous diffractive reality of the physical wavefront sensor compared to the aligned numerical derivatives.
    
    Because of this, the 'derivatives' engine guarantees both a significantly more accurate slope estimation and a substantial computational speed-up on GPU.
 
@@ -246,7 +246,7 @@ Create a script ``step2_compute_ims.py``:
 
    yaml_file = 'params_morfeo_simplified.yml'
    root_dir  = '/raid1/guido/PASSATA/MORFEOtest/'
-   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'gtilt')
+   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'telsum')
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
 
@@ -364,7 +364,7 @@ Create a script ``step4_compute_reconstructors.py``:
    rec_dir   = root_dir + 'synrec/'
    synim_dir = root_dir + 'synim/'
    r0, L0    = 0.15, 25.0
-   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'gtilt')
+   slope_method = 'derivatives'  # default method for slope extraction (the other option is 'telsum')
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
 
