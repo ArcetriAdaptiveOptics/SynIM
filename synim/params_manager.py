@@ -1001,7 +1001,8 @@ class ParamsManager:
         return im
 
     def compute_interaction_matrices(self, output_im_dir, output_rec_dir,
-                                     wfs_type=None, slope_method='derivatives',
+                                     wfs_type=None, component_type=None,
+                                     slope_method='derivatives',
                                      overwrite=False, verbose=None,
                                      display=False):
         """
@@ -1012,6 +1013,7 @@ class ParamsManager:
             output_im_dir (str): Output directory for saved matrices
             output_rec_dir (str): Output directory for reconstruction matrices
             wfs_type (str, optional): Type of WFS ('ngs', 'lgs', 'ref') to use
+            component_type (str, optional): Type of component ('dm' or 'layer'). If None, compute for all.
             slope_method (str): Method for slope calculation ('derivatives', 'telsum')
             overwrite (bool, optional): Whether to overwrite existing files
             verbose (bool, optional): Override the class's verbose setting
@@ -1036,18 +1038,24 @@ class ParamsManager:
 
         # Combine DM and layer in a single components list
         components = []
-        for dm in self.dm_list:
-            components.append({
-                'type': 'dm',
-                'index': int(dm['index']),
-                'name': dm['name']
-            })
-        for layer in extract_layer_list(self.params):
-            components.append({
-                'type': 'layer',
-                'index': int(layer['index']),
-                'name': layer['name']
-            })
+        
+        # Add DMs if requested (or if component_type is None)
+        if component_type is None or component_type == 'dm':
+            for dm in self.dm_list:
+                components.append({
+                    'type': 'dm',
+                    'index': int(dm['index']),
+                    'name': dm['name']
+                })
+        
+        # Add layers if requested (or if component_type is None)
+        if component_type is None or component_type == 'layer':
+            for layer in extract_layer_list(self.params):
+                components.append({
+                    'type': 'layer',
+                    'index': int(layer['index']),
+                    'name': layer['name']
+                })
 
         if verbose_flag:
             print(f"Computing interaction matrices for {len(filtered_wfs_list)} WFS(s) "
@@ -2306,6 +2314,7 @@ class ParamsManager:
             output_im_dir=self.im_dir,
             output_rec_dir=self.rec_dir,
             wfs_type=wfs_type,
+            component_type=component_type,
             slope_method=slope_method,
             overwrite=overwrite,
             verbose=verbose_flag,

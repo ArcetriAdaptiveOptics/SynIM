@@ -120,6 +120,20 @@ result = params_mgr.compute_tomographic_reconstructor(
 # ===================================================================
 # Save DMs interaction matrix
 # ===================================================================
+# If component_type='layer' for the reconstructor, we need to compute DM IMs separately
+if component_type != 'dm':
+    print(f"\n{'='*70}")
+    print(f"COMPUTING DM INTERACTION MATRICES")
+    print(f"{'='*70}\n")
+    _ = params_mgr.compute_interaction_matrices(
+        output_im_dir=output_im_dir,
+        output_rec_dir=output_rec_dir,
+        wfs_type=wfs_type,
+        component_type='dm',
+        overwrite=True,
+        verbose=True,
+        display=False
+    )
 
 path = params_mgr.save_assembled_interaction_matrix(
     wfs_type=wfs_type,
