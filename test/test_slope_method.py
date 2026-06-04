@@ -6,10 +6,10 @@ import specula
 specula.init(device_idx=-1, precision=1)
 
 from synim.synim import (
-    compute_gtilt_with_extrapolation,
+    compute_telsum_with_extrapolation,
     compute_derivatives_with_extrapolation,
     _compute_slopes_from_derivatives,
-    _compute_slopes_from_gtilt
+    _compute_slopes_from_telsum
 )
 
 class TestSlopesMethods(unittest.TestCase):
@@ -49,12 +49,12 @@ class TestSlopesMethods(unittest.TestCase):
         Runs the exact data flow used in synim.py to compute final slopes.
         """
         # 1. Compute derivatives using the selected engine
-        if method == 'gtilt':
-            raw_gtilt_x, raw_gtilt_y = compute_gtilt_with_extrapolation(
+        if method == 'telsum':
+            raw_telsum_x, raw_telsum_y = compute_telsum_with_extrapolation(
                 data=phase, mask=mask, wfs_nsubaps=self.wfs_nsubaps
             )
-            slopes = _compute_slopes_from_gtilt(
-                raw_gtilt_x, raw_gtilt_y, mask, mask,
+            slopes = _compute_slopes_from_telsum(
+                raw_telsum_x, raw_telsum_y, mask, mask,
                 self.wfs_nsubaps, self.wfs_fov_arcsec, self.pup_diam_m,
                 None, False, False  # specula_convention=False
             )
@@ -77,20 +77,20 @@ class TestSlopesMethods(unittest.TestCase):
     def run_comparison(self, mask_name, mask):
         """Helper to run both methods and print the comparison."""
         print(f"\n--- {mask_name} ---")
-        tx_g, ty_g = self._simulate_pipeline(self.phase, mask, 'gtilt')
+        tx_t, ty_t = self._simulate_pipeline(self.phase, mask, 'telsum')
         tx_d, ty_d = self._simulate_pipeline(self.phase, mask, 'derivatives')
 
         print(f"Expected   : X={self.exp_x:.3e}, Y={self.exp_y:.3e}")
-        print(f"G-Tilt     : X={tx_g:.3e}, Y={ty_g:.3e}")
+        print(f"Telsum     : X={tx_t:.3e}, Y={ty_t:.3e}")
         print(f"Derivatives: X={tx_d:.3e}, Y={ty_d:.3e}")
 
-        # Assertions for G-Tilt (must be mathematically exact if illuminated)
-        if tx_g != 0.0:
-            np.testing.assert_allclose(tx_g, self.exp_x, err_msg=f"{mask_name} X failed")
-        if ty_g != 0.0:
-            np.testing.assert_allclose(ty_g, self.exp_y, err_msg=f"{mask_name} Y failed")
+        # Assertions for Telescoping Sum (must be mathematically exact if illuminated)
+        if tx_t != 0.0:
+            np.testing.assert_allclose(tx_t, self.exp_x, err_msg=f"{mask_name} X failed")
+        if ty_t != 0.0:
+            np.testing.assert_allclose(ty_t, self.exp_y, err_msg=f"{mask_name} Y failed")
 
-        return tx_g, ty_g, tx_d, ty_d
+        return tx_t, ty_t, tx_d, ty_d
 
     def test_all_cases(self):
         """Test different sub-aperture partial illumination scenarios."""

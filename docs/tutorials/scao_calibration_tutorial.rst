@@ -174,7 +174,7 @@ Now compute the same IM using SynIM's synthetic approach:
    For details on workflow selection logic and when each is optimal, see :ref:`Computation Workflows <computation_workflows>` in the General Documentation.
 
    By default, slope extraction uses ``slope_method='derivatives'``.
-   If needed, you can use the optional G-tilt mode by passing ``slope_method='gtilt'`` to low-level ``synim.interaction_matrix()`` or ``synim.interaction_matrices_multi_wfs()`` calls.
+   If needed, you can use the optional telescoping sum mode by passing ``slope_method='telsum'`` to low-level ``synim.interaction_matrix()`` or ``synim.interaction_matrices_multi_wfs()`` calls.
 
 Step 3: Generate Reconstruction Matrix
 ---------------------------------------

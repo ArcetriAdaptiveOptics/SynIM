@@ -946,7 +946,7 @@ class ParamsManager:
             wfs_index (int, optional): Index of the WFS (1-based)
             dm_index (int, optional): Index of the DM (1-based)
             layer_index (int, optional): Index of the Layer (1-based)
-            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
+            slope_method (str): Method for slope calculation ('derivatives', 'telsum')
             verbose (bool, optional): Override the class's verbose setting
             display (bool): Whether to display plots
 
@@ -1012,7 +1012,7 @@ class ParamsManager:
             output_im_dir (str): Output directory for saved matrices
             output_rec_dir (str): Output directory for reconstruction matrices
             wfs_type (str, optional): Type of WFS ('ngs', 'lgs', 'ref') to use
-            slope_method (str): Method for slope calculation ('derivatives', 'gtilt')
+            slope_method (str): Method for slope calculation ('derivatives', 'telsum')
             overwrite (bool, optional): Whether to overwrite existing files
             verbose (bool, optional): Override the class's verbose setting
             display (bool, optional): Whether to display plots
@@ -2253,7 +2253,7 @@ class ParamsManager:
             component_type (str): Type of component ('dm' or 'layer')
             noise_variance (float or array, optional): Noise variance per WFS
             C_noise (np.ndarray, optional): Full noise covariance matrix
-            slope_method (str): Method for slope computation ('derivatives', 'gtilt')
+            slope_method (str): Method for slope computation ('derivatives', 'telsum')
             output_dir (str, optional): Directory for saving results
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
