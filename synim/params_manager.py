@@ -2230,6 +2230,7 @@ class ParamsManager:
                                         noise_variance=None,
                                         C_noise=None,
                                         slope_method='derivatives',
+                                        reconstructor_method='mmse',
                                         output_dir=None,
                                         save=False, overwrite=False,
                                         skip_gpu_covariance=False,
@@ -2243,39 +2244,47 @@ class ParamsManager:
         
         This method integrates:
         1. Interaction matrix assembly (computed on-the-fly, not saved)
-        2. Covariance matrix computation/loading (cached to disk)
-        3. MMSE reconstructor calculation
+        2. Covariance matrix computation/loading (cached to disk) - skipped for 'pinv' method
+        3. Reconstructor calculation (MMSE or pseudo-inverse)
         
         Args:
             r0 (float): Fried parameter in meters
             L0 (float): Outer scale in meters
             wfs_type (str): Type of WFS ('lgs', 'ngs', 'ref')
             component_type (str): Type of component ('dm' or 'layer')
-            noise_variance (float or array, optional): Noise variance per WFS
-            C_noise (np.ndarray, optional): Full noise covariance matrix
+            noise_variance (float or array, optional): Noise variance per WFS (only for MMSE)
+            C_noise (np.ndarray, optional): Full noise covariance matrix (only for MMSE)
             slope_method (str): Method for slope computation ('derivatives', 'telsum')
+            reconstructor_method (str): Reconstructor type ('mmse' or 'pinv').
+                'mmse': Minimum Mean Square Error using atmospheric and noise covariances
+                'pinv': Simple pseudo-inverse of interaction matrix (useful for NGS with few modes)
             output_dir (str, optional): Directory for saving results
             save (bool): Whether to save the reconstructor
             overwrite (bool): Whether to overwrite existing files
-            skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation
+            skip_gpu_covariance (bool): Whether to skip GPU acceleration for covariance computation (MMSE only)
             active_wfs_mask (list of bool, optional): Mask indicating active WFSs
-            save_inverse_covariances (bool): Whether to save inverse covariance matrices for debug/comparison
-            inverse_cov_output_dir (str, optional): Directory for inverse covariance debug files
-            inverse_cov_prefix (str, optional): Prefix for inverse covariance debug filenames
+            save_inverse_covariances (bool): Whether to save inverse covariance matrices for debug/comparison (MMSE only)
+            inverse_cov_output_dir (str, optional): Directory for inverse covariance debug files (MMSE only)
+            inverse_cov_prefix (str, optional): Prefix for inverse covariance debug filenames (MMSE only)
             verbose (bool, optional): Override the class's verbose setting
             
         Returns:
             dict: Dictionary with:
-                - 'reconstructor': MMSE reconstructor matrix
+                - 'reconstructor': Reconstructor matrix (MMSE or pseudo-inverse)
                 - 'im_full': Full interaction matrix
-                - 'C_atm_full': Full atmospheric covariance matrix
-                - 'C_noise': Noise covariance matrix
+                - 'C_atm_full': Full atmospheric covariance matrix (None for pinv)
+                - 'C_noise': Noise covariance matrix (None for pinv)
                 - 'mode_indices': Mode indices per component
                 - 'component_indices': Component indices
                 - 'n_slopes_per_wfs': Number of slopes per WFS
                 - 'rec_filename': Filename if saved
+                - 'reconstructor_method': Method used ('mmse' or 'pinv')
         """
         verbose_flag = self.verbose if verbose is None else verbose
+        
+        # Validate reconstructor_method
+        if reconstructor_method not in ['mmse', 'pinv']:
+            raise ValueError(f"reconstructor_method must be 'mmse' or 'pinv', got '{reconstructor_method}'")
 
         if verbose_flag:
             print(f"\n{'='*70}")
@@ -2283,6 +2292,7 @@ class ParamsManager:
             print(f"{'='*70}")
             print(f"  WFS type: {wfs_type}")
             print(f"  Component type: {component_type}")
+            print(f"  Reconstructor method: {reconstructor_method.upper()}")
             print(f"  r0: {r0} m, L0: {L0} m")
             print(f"{'='*70}\n")
 
@@ -2320,163 +2330,195 @@ class ParamsManager:
             print(f"  Modes: {[len(mi) for mi in mode_indices]}")
             print()
 
-        # ==================== STEP 2: Compute/Load Covariances ====================
-        if verbose_flag:
-            print(f"STEP 2: Computing/Loading Covariance Matrices")
-            print(f"-" * 70)
+        # Initialize variables that may not be set for pinv
+        C_atm_full_inv = None
+        C_atm_for_mmse = None
+        C_noise_inv = None
+        n_low_modes_cut = 0
+        keep_mode_cols = None
+        drop_mode_cols = None
+        im_for_recon = im_full
+        inverse_cov_files = None
+        C_noise_from_input = False
 
-        cov_result = self.compute_covariance_matrices(
-            r0=r0,
-            L0=L0,
-            component_type=component_type,
-            output_dir=self.cov_dir,
-            overwrite=overwrite,
-            skip_gpu_covariance=skip_gpu_covariance,
-            verbose=verbose_flag
-        )
+        # ==================== STEP 2: Compute/Load Covariances (MMSE only) ====================
+        if reconstructor_method == 'mmse':
+            if verbose_flag:
+                print(f"STEP 2: Computing/Loading Covariance Matrices")
+                print(f"-" * 70)
 
-        # Assemble covariance for selected modes
-        C_atm_full_inv = self.assemble_covariance_matrix(
-            C_atm_blocks=cov_result['C_atm_blocks'],
-            component_indices=cov_result['component_indices'],
-            mode_indices=mode_indices,
-            verbose=verbose_flag,
-            return_inverse=True
-        )
-
-        if verbose_flag:
-            print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
-            print()
-
-        # Optional low-order mode cut for filtered slopes.
-        n_low_modes_cut = self._get_low_modes_cut_if_applicable(
-            wfs_type=wfs_type,
-            apply_filter=True,
-            active_wfs_mask=active_wfs_mask,
-            verbose=verbose_flag,
-        )
-        im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols = \
-            self._apply_low_mode_cut_to_mmse_inputs(
-                im_full=im_full,
-                C_atm_full_inv=C_atm_full_inv,
-                mode_indices=mode_indices,
-                n_low_modes_cut=n_low_modes_cut,
-                verbose=verbose_flag,
+            cov_result = self.compute_covariance_matrices(
+                r0=r0,
+                L0=L0,
+                component_type=component_type,
+                output_dir=self.cov_dir,
+                overwrite=overwrite,
+                skip_gpu_covariance=skip_gpu_covariance,
+                verbose=verbose_flag
             )
 
-        # ==================== STEP 3: Build Noise Covariance ====================
-        if verbose_flag:
-            print(f"STEP 3: Building Noise Covariance Matrix")
-            print(f"-" * 70)
-
-        if C_noise is not None:
-            C_noise_from_input = True
-        else:
-            C_noise_from_input = False
-
-        if wfs_type == 'lgs':
-            recon_params = self.lgs_recon_params
-        elif wfs_type == 'ngs':
-            recon_params = self.ngs_recon_params
-        elif wfs_type == 'ref':
-            recon_params = self.ref_recon_params
-        else:
-            raise ValueError(f"Invalid wfs_type: {wfs_type}")
-
-        # *** USE CENTRALIZED METHOD ***
-        noise_cov_result = self.build_noise_covariance(
-            wfs_type=wfs_type,
-            n_wfs=None,  # Auto-detect
-            n_slopes_total=im_full.shape[0],
-            noise_variance=noise_variance,
-            C_noise=C_noise,
-            use_elongation=recon_params['noise_elong_model'],
-            active_wfs_mask=active_wfs_mask,
-            return_diagnostics=save_inverse_covariances,
-            verbose=verbose_flag
-        )
-
-        if save_inverse_covariances:
-            C_noise_inv, noise_cov_diag = noise_cov_result
-        else:
-            C_noise_inv = noise_cov_result
-            noise_cov_diag = None
-
-        # Optional debug export for IDL/SynIM comparisons.
-        inverse_cov_files = None
-        if save_inverse_covariances:
-            debug_dir = inverse_cov_output_dir or output_dir or self.rec_dir
-            os.makedirs(debug_dir, exist_ok=True)
-
-            if inverse_cov_prefix is None:
-                config_name = (os.path.basename(self.params_file).split('.')[0]
-                               if isinstance(self.params_file, str) else "config")
-                inverse_cov_prefix = (
-                    f"{config_name}_{wfs_type}_{component_type}_r0{r0:.3f}_L0{L0:.1f}"
-                )
-
-            c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.fits"
-            c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.fits"
-            illumination_filename = f"illumination_concat_{inverse_cov_prefix}.fits"
-            c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
-            c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
-            illumination_path = os.path.join(debug_dir, illumination_filename)
-
-            fits.writeto(c_atm_inv_path, cpuArray(C_atm_for_mmse), overwrite=True)
-            fits.writeto(c_noise_inv_path, cpuArray(C_noise_inv), overwrite=True)
-            if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
-                fits.writeto(
-                    illumination_path,
-                    cpuArray(noise_cov_diag['illumination_concat']),
-                    overwrite=True,
-                )
-
-            inverse_cov_files = {
-                'C_atm_inv': c_atm_inv_path,
-                'C_noise_inv': c_noise_inv_path,
-            }
-            if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
-                inverse_cov_files['illumination_concat'] = illumination_path
+            # Assemble covariance for selected modes
+            C_atm_full_inv = self.assemble_covariance_matrix(
+                C_atm_blocks=cov_result['C_atm_blocks'],
+                component_indices=cov_result['component_indices'],
+                mode_indices=mode_indices,
+                verbose=verbose_flag,
+                return_inverse=True
+            )
 
             if verbose_flag:
-                print("  ✓ Inverse covariance matrices saved:")
-                print(f"    - {c_atm_inv_filename}")
-                print(f"    - {c_noise_inv_filename}")
+                print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
+                print()
+
+            # Optional low-order mode cut for filtered slopes.
+            n_low_modes_cut = self._get_low_modes_cut_if_applicable(
+                wfs_type=wfs_type,
+                apply_filter=True,
+                active_wfs_mask=active_wfs_mask,
+                verbose=verbose_flag,
+            )
+            im_for_recon, C_atm_for_mmse, keep_mode_cols, drop_mode_cols = \
+                self._apply_low_mode_cut_to_mmse_inputs(
+                    im_full=im_full,
+                    C_atm_full_inv=C_atm_full_inv,
+                    mode_indices=mode_indices,
+                    n_low_modes_cut=n_low_modes_cut,
+                    verbose=verbose_flag,
+                )
+        else:
+            # For pinv, skip covariance computation
+            if verbose_flag:
+                print(f"STEP 2: Skipping covariance computation (not needed for pseudo-inverse)")
+                print()
+
+        # ==================== STEP 3: Build Noise Covariance (MMSE only) ====================
+        if reconstructor_method == 'mmse':
+            if verbose_flag:
+                print(f"STEP 3: Building Noise Covariance Matrix")
+                print(f"-" * 70)
+
+            if C_noise is not None:
+                C_noise_from_input = True
+            else:
+                C_noise_from_input = False
+
+            if wfs_type == 'lgs':
+                recon_params = self.lgs_recon_params
+            elif wfs_type == 'ngs':
+                recon_params = self.ngs_recon_params
+            elif wfs_type == 'ref':
+                recon_params = self.ref_recon_params
+            else:
+                raise ValueError(f"Invalid wfs_type: {wfs_type}")
+
+            # *** USE CENTRALIZED METHOD ***
+            noise_cov_result = self.build_noise_covariance(
+                wfs_type=wfs_type,
+                n_wfs=None,  # Auto-detect
+                n_slopes_total=im_full.shape[0],
+                noise_variance=noise_variance,
+                C_noise=C_noise,
+                use_elongation=recon_params['noise_elong_model'],
+                active_wfs_mask=active_wfs_mask,
+                return_diagnostics=save_inverse_covariances,
+                verbose=verbose_flag
+            )
+
+            if save_inverse_covariances:
+                C_noise_inv, noise_cov_diag = noise_cov_result
+            else:
+                C_noise_inv = noise_cov_result
+                noise_cov_diag = None
+
+            # Optional debug export for IDL/SynIM comparisons.
+            if save_inverse_covariances:
+                debug_dir = inverse_cov_output_dir or output_dir or self.rec_dir
+                os.makedirs(debug_dir, exist_ok=True)
+
+                if inverse_cov_prefix is None:
+                    config_name = (os.path.basename(self.params_file).split('.')[0]
+                                   if isinstance(self.params_file, str) else "config")
+                    inverse_cov_prefix = (
+                        f"{config_name}_{wfs_type}_{component_type}_r0{r0:.3f}_L0{L0:.1f}"
+                    )
+
+                c_atm_inv_filename = f"C_atm_inv_{inverse_cov_prefix}.fits"
+                c_noise_inv_filename = f"C_noise_inv_{inverse_cov_prefix}.fits"
+                illumination_filename = f"illumination_concat_{inverse_cov_prefix}.fits"
+                c_atm_inv_path = os.path.join(debug_dir, c_atm_inv_filename)
+                c_noise_inv_path = os.path.join(debug_dir, c_noise_inv_filename)
+                illumination_path = os.path.join(debug_dir, illumination_filename)
+
+                fits.writeto(c_atm_inv_path, cpuArray(C_atm_for_mmse), overwrite=True)
+                fits.writeto(c_noise_inv_path, cpuArray(C_noise_inv), overwrite=True)
                 if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
-                    print(f"    - {illumination_filename}")
+                    fits.writeto(
+                        illumination_path,
+                        cpuArray(noise_cov_diag['illumination_concat']),
+                        overwrite=True,
+                    )
+
+                inverse_cov_files = {
+                    'C_atm_inv': c_atm_inv_path,
+                    'C_noise_inv': c_noise_inv_path,
+                }
+                if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
+                    inverse_cov_files['illumination_concat'] = illumination_path
+
+                if verbose_flag:
+                    print("  ✓ Inverse covariance matrices saved:")
+                    print(f"    - {c_atm_inv_filename}")
+                    print(f"    - {c_noise_inv_filename}")
+                    if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
+                        print(f"    - {illumination_filename}")
+        else:
+            # For pinv, skip noise covariance
+            if verbose_flag:
+                print(f"STEP 3: Skipping noise covariance (not needed for pseudo-inverse)")
 
         print()
 
-        # ==================== STEP 4: Compute MMSE Reconstructor ====================
+        # ==================== STEP 4: Compute Reconstructor ====================
         if verbose_flag:
-            print(f"STEP 4: Computing MMSE Reconstructor")
+            step_title = "MMSE Reconstructor" if reconstructor_method == 'mmse' else "Pseudo-Inverse Reconstructor"
+            print(f"STEP 4: Computing {step_title}")
             print(f"-" * 70)
 
-        # Check: all must be cpu_float_dtype (regardless of endianness)
-        expected_dtype = np.dtype(cpu_float_dtype)
-        for name, arr in [('im_full', im_for_mmse),
-                          ('C_atm_full', C_atm_for_mmse),
-                          ('C_noise', C_noise_inv)]:
-            arr_dtype = np.dtype(arr.dtype)
-            if not (arr_dtype.kind == expected_dtype.kind and
-                    arr_dtype.itemsize == expected_dtype.itemsize):
-                msg = (f"Data type mismatch for {name}: got {arr_dtype}, "
-                    f"expected {expected_dtype} (any endianness)")
-                if verbose_flag:
-                    print("WARNING:", msg)
-                else:
-                    raise TypeError(msg)
+        if reconstructor_method == 'mmse':
+            # Check: all must be cpu_float_dtype (regardless of endianness)
+            expected_dtype = np.dtype(cpu_float_dtype)
+            for name, arr in [('im_full', im_for_recon),
+                              ('C_atm_full', C_atm_for_mmse),
+                              ('C_noise', C_noise_inv)]:
+                arr_dtype = np.dtype(arr.dtype)
+                if not (arr_dtype.kind == expected_dtype.kind and
+                        arr_dtype.itemsize == expected_dtype.itemsize):
+                    msg = (f"Data type mismatch for {name}: got {arr_dtype}, "
+                        f"expected {expected_dtype} (any endianness)")
+                    if verbose_flag:
+                        print("WARNING:", msg)
+                    else:
+                        raise TypeError(msg)
 
-        reconstructor_reduced = compute_mmse_reconstructor(
-            im_for_mmse,
-            C_atm_for_mmse,
-            noise_variance=None,  # Already in C_noise
-            C_noise=C_noise_inv,
-            cinverse=True,
-            xp=np,
-            dtype=cpu_float_dtype,
-            verbose=verbose_flag
-        )
+            reconstructor_reduced = compute_mmse_reconstructor(
+                im_for_recon,
+                C_atm_for_mmse,
+                noise_variance=None,  # Already in C_noise
+                C_noise=C_noise_inv,
+                cinverse=True,
+                xp=np,
+                dtype=cpu_float_dtype,
+                verbose=verbose_flag
+            )
+        else:
+            # Compute pseudo-inverse reconstructor
+            from synim.params_utils import compute_pseudoinverse_reconstructor
+            reconstructor_reduced = compute_pseudoinverse_reconstructor(
+                im_for_recon,
+                xp=np,
+                dtype=cpu_float_dtype,
+                verbose=verbose_flag
+            )
 
         if n_low_modes_cut > 0:
             reconstructor = self._restore_reconstructor_with_zero_rows(
@@ -2511,24 +2553,37 @@ class ParamsManager:
 
             zenith_suffix = self._zenith_suffix(wfs_type)
             slope_suffix = f"_{slope_method}" if slope_method != 'derivatives' else ""
+            method_suffix = "_pinv" if reconstructor_method == 'pinv' else ""
             rec_filename = (f"rec_{config_name}_{wfs_type}_{component_type}_"
-                        f"r0{r0:.3f}_L0{L0:.1f}{zenith_suffix}{slope_suffix}")
-            if C_noise_from_input:
-                rec_filename += f"_Cnoise"
-            else:
-                if noise_variance is None:
-                    sigma2_in_nm2 = recon_params['sigma2_in_nm2']
-                    rec_filename += f"_var{sigma2_in_nm2:.3f}nm2"
+                        f"r0{r0:.3f}_L0{L0:.1f}{zenith_suffix}{slope_suffix}{method_suffix}")
+            
+            # Add noise parameters only for MMSE
+            if reconstructor_method == 'mmse':
+                if C_noise_from_input:
+                    rec_filename += f"_Cnoise"
                 else:
-                    rec_filename += f"_var{noise_variance:.3f}uSl2"
-            if recon_params['noise_elong_model']:
-                naThicknessInM = recon_params.get('naThicknessInM', None)
-                tGparameter = recon_params.get('tGparameter', None)
-                rec_filename += "_el"
-                if naThicknessInM is not None and naThicknessInM > 0:
-                    rec_filename += f"_Na{naThicknessInM/1000:.1f}km"
-                if tGparameter is not None and tGparameter > 0:
-                    rec_filename += f"_tg{tGparameter:.2f}"
+                    if wfs_type == 'lgs':
+                        recon_params = self.lgs_recon_params
+                    elif wfs_type == 'ngs':
+                        recon_params = self.ngs_recon_params
+                    elif wfs_type == 'ref':
+                        recon_params = self.ref_recon_params
+                    else:
+                        raise ValueError(f"Invalid wfs_type: {wfs_type}")
+                        
+                    if noise_variance is None:
+                        sigma2_in_nm2 = recon_params['sigma2_in_nm2']
+                        rec_filename += f"_var{sigma2_in_nm2:.3f}nm2"
+                    else:
+                        rec_filename += f"_var{noise_variance:.3f}uSl2"
+                if recon_params['noise_elong_model']:
+                    naThicknessInM = recon_params.get('naThicknessInM', None)
+                    tGparameter = recon_params.get('tGparameter', None)
+                    rec_filename += "_el"
+                    if naThicknessInM is not None and naThicknessInM > 0:
+                        rec_filename += f"_Na{naThicknessInM/1000:.1f}km"
+                    if tGparameter is not None and tGparameter > 0:
+                        rec_filename += f"_tg{tGparameter:.2f}"
 
             # ==================== BINARY SUFFIX ====================
             if active_wfs_mask is not None:
@@ -2572,6 +2627,7 @@ class ParamsManager:
             'rec_filename': rec_filename,
             'rec_path': rec_path,
             'inverse_cov_files': inverse_cov_files,
+            'reconstructor_method': reconstructor_method,
             'r0': r0,
             'L0': L0
         }
