@@ -234,6 +234,20 @@ Compute separate interaction matrices for each control branch:
 * **NGS (LO) IMs:** directly on physical DMs (low-order control path).
 * **REF IMs:** typically on Layer 0 for low-order truth/focus handling.
 
+.. important::
+   **Optimizing IM Computation with** ``component_type``
+   
+   To improve efficiency and avoid computing unnecessary matrices, use the ``component_type`` parameter:
+   
+   * For LGS tomographic reconstruction: use ``component_type='layer'`` (reconstructs on virtual atmospheric layers)
+   * For NGS low-order control: use ``component_type='dm'`` (reconstructs directly on physical DMs)
+   * For REF focus sensing: use ``component_type='layer'`` (typically Layer 0 only)
+   
+   If ``component_type`` is omitted (``None``), all IMs (both DM and layer) are computed, which may be wasteful.
+   
+   **Note:** LGS-to-DM IMs are needed later for projection matrices (Step E). If you use ``component_type='layer'``
+   for LGS in this step, you'll need to compute LGS-to-DM IMs separately before Step E.
+
 Create a script ``step2_compute_ims.py``:
 
 .. code-block:: python
@@ -253,6 +267,7 @@ Create a script ``step2_compute_ims.py``:
    # LGS IMs — one per WFS × layer combination
    lgs_ims = params_mgr.compute_interaction_matrices(
        wfs_type='lgs',
+       component_type='layer',  # Only layers for tomography
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
        slope_method=slope_method,
@@ -262,6 +277,7 @@ Create a script ``step2_compute_ims.py``:
    # NGS (LO) IMs — one per WFS × DM
    ngs_ims = params_mgr.compute_interaction_matrices(
        wfs_type='ngs',
+       component_type='dm',  # Only DMs for low-order control
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
        slope_method=slope_method,
@@ -271,6 +287,7 @@ Create a script ``step2_compute_ims.py``:
    # REF IMs — Layer 0 only (focus / truth sensing)
    ref_ims = params_mgr.compute_interaction_matrices(
        wfs_type='ref',
+       component_type='layer',  # Layer 0 for focus sensing
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
        slope_method=slope_method,
@@ -425,6 +442,13 @@ per DM-layer projection terms, then combine them into a single tomographic
 projection matrix optimized on the field and weights defined in
 ``projection.opt_sources``.
 
+.. important::
+   **Projection matrices require LGS-to-DM interaction matrices**
+   
+   If you used ``component_type='layer'`` when computing LGS IMs in Step B (recommended for efficiency),
+   you need to compute LGS-to-DM IMs before this step, as projection matrices map from layers to DMs
+   and require the DM influence on LGS measurements.
+
 Create a script ``step5_compute_projection.py``:
 
 .. code-block:: python
@@ -440,6 +464,16 @@ Create a script ``step5_compute_projection.py``:
    pm_dir    = root_dir + 'synpm/'
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
+
+   # Compute LGS-to-DM IMs if not already computed in Step B
+   # (Required if you used component_type='layer' for LGS in Step B)
+   lgs_dm_ims = params_mgr.compute_interaction_matrices(
+       wfs_type='lgs',
+       component_type='dm',  # DMs for projection matrices
+       output_im_dir=root_dir + 'synim/',
+       output_rec_dir=root_dir + 'synrec/',
+       overwrite=False, verbose=True, display=False)
+   print(f"LGS-to-DM: {len(lgs_dm_ims)} IMs")
 
    # Individual per DM-layer projection matrices
    pm_paths = params_mgr.compute_projection_matrices(
