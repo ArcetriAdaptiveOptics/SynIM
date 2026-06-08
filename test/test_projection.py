@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+from unittest.mock import patch, MagicMock
 
 from synim.synpm import projection_matrix
 from synim.utils import (
@@ -172,6 +173,7 @@ def projection_matrix_former(pup_diam_m, pup_mask,
     projection = np.dot(dm_valid_values.T, base_valid_values)
 
     return projection
+
 
 # ============================================================================
 # TESTS
@@ -479,3 +481,90 @@ class TestProjection(unittest.TestCase):
                 verbose=False, specula_convention=True,
                 specula_convention_inv=True
             )
+
+
+# ============================================================================
+# TOMOGRAPHIC PROJECTION ASSEMBLY TESTS
+# ============================================================================
+
+class TestTomographicProjectionAssembly(unittest.TestCase):
+    """
+    Test suite to verify the mode truncation and zero-padding behavior 
+    in the tomographic projection matrix assembly.
+    """
+
+    @patch('synim.params_manager.ParamsManager.compute_projection_matrix')
+    @patch('synim.params_manager.extract_dm_list')
+    @patch('synim.params_manager.extract_layer_list')
+    def test_mode_truncation_and_ttf_padding(self, mock_layer_list, mock_dm_list, mock_compute_pm):
+        from synim.params_manager import ParamsManager
+
+        # 1. Setup a dummy ParamsManager without calling __init__
+        pm = ParamsManager.__new__(ParamsManager)
+        pm.verbose = False
+        pm.proj_reg_factor = 1e-4
+
+        # Mock configuration dictionaries indicating total available modes per component
+        pm.params = {
+            'dm1': {'nmodes': 100, 'start_mode': 0},
+            'dm2': {'nmodes': 100, 'start_mode': 0},
+            'layer1': {'nmodes': 200, 'start_mode': 0},
+            'layer2': {'nmodes': 200, 'start_mode': 0}
+        }
+
+        mock_dm_list.return_value = [{'index': '1'}, {'index': '2'}]
+        mock_layer_list.return_value = [{'index': '1'}, {'index': '2'}]
+
+        pm._resolve_component_key = lambda ctype, idx: f"{ctype}{idx}"
+
+        # We want to skip 3 low modes (Tip, Tilt, Focus)
+        pm._get_recon_params = MagicMock(return_value={'n_low_modes_zero_filt': 3})
+
+        # Set target truncation configurations (e.g. from YAML file)
+        pm.ref_n_modes_dm = [50, 40]      # Target DM modes: 90 total
+        pm.ref_n_modes_layer = [60, 70]   # Target Layer modes: 130 total
+
+        # Single optical source with weight 1.0
+        pm.projection_params = {
+            'opt_sources': [{'weight': 1.0}]
+        }
+
+        # 2. Create dummy full projection matrices (as if loaded from disk)
+        # Shapes: (n_opt_sources, n_total_modes, n_pupil_modes)
+        # We use n_pupil_modes = 500 for testing
+        dummy_full_dm = np.random.randn(1, 200, 500).astype(np.float32)
+        dummy_full_layer = np.random.randn(1, 400, 500).astype(np.float32)
+
+        mock_compute_pm.return_value = (None, dummy_full_dm, dummy_full_layer)
+
+        # 3. Call the target function
+        p_opt, _, _, info = pm.compute_tomographic_projection_matrix(
+            output_dir=None, save=False, wfs_type='ref', verbose=False
+        )
+
+        # 4. Assertions
+
+        # A. Check if the final shape strictly matches the target truncation limits
+        expected_dm_modes = 50 + 40
+        expected_layer_modes = 60 + 70
+        self.assertEqual(
+            p_opt.shape,
+            (expected_dm_modes, expected_layer_modes),
+            "The projection matrix shape does not match the truncated targets."
+        )
+
+        # B. Check if the low modes (Tip, Tilt, Focus) were correctly zero-padded
+        # Layer 1 target block: cols 0 to 59. Low modes are 0, 1, 2.
+        self.assertTrue(np.all(p_opt[:, 0:3] == 0.0), "Layer 1 low modes are not zeroed.")
+        # Verify the rest of Layer 1 is not zeroed out
+        self.assertFalse(np.all(p_opt[:, 3:60] == 0.0), "Layer 1 high modes should not be zero.")
+
+        # Layer 2 target block: cols 60 to 129. Low modes are 60, 61, 62.
+        self.assertTrue(np.all(p_opt[:, 60:63] == 0.0), "Layer 2 low modes are not zeroed.")
+        # Verify the rest of Layer 2 is not zeroed out
+        self.assertFalse(np.all(p_opt[:, 63:130] == 0.0), "Layer 2 high modes should not be zero.")
+
+        # C. Check info metadata
+        self.assertEqual(info['n_dm_modes_target'], 90)
+        self.assertEqual(info['n_layer_modes_target'], 130)
+        self.assertEqual(info['n_low_modes_zero_filt'], 3)
