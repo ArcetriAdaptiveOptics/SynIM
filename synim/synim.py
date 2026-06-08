@@ -46,13 +46,13 @@ def _repair_interpolated_phase(data, mask, threshold=0.999999):
     return data, mask
 
 
-def compute_gtilt_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=False):
+def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=False):
     """
-    Computes the raw G-tilt (average phase difference per pixel) for each subaperture.
-    Acts as the G-tilt equivalent of computing continuous derivatives.
+    Computes the raw telescoping sum (average phase difference per pixel) for each subaperture.
+    Acts as the telescoping sum equivalent of computing continuous derivatives.
     """
     if wfs_nsubaps is None:
-        raise ValueError("wfs_nsubaps must be provided to compute G-tilt.")
+        raise ValueError("wfs_nsubaps must be provided to compute telescoping sum.")
 
     pup_diam_pix = data.shape[0]
     N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
@@ -61,7 +61,7 @@ def compute_gtilt_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=
     # ON-THE-FLY INTERPOLATION
     if pup_diam_pix != W:
         if verbose:
-            print(f"  * G-Tilt: Interpolating grid from {pup_diam_pix} to {W} (N={N})")
+            print(f"  * Telescoping Sum: Interpolating grid from {pup_diam_pix} to {W} (N={N})")
         mag = W / pup_diam_pix
         data = rotshiftzoom_array(data, dm_magnification=(mag, mag), output_size=(W, W))
         if mask is not None:
@@ -97,20 +97,20 @@ def compute_gtilt_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=
     weight_dy = xp.sum(valid_dy, axis=(1, 3))
 
     # Normalize to get Delta Phi per valid baseline
-    raw_gtilt_x = xp.where(weight_dx > 0, (sum_dx / xp.where(weight_dx > 0, weight_dx, 1.0)), 0.0)
-    raw_gtilt_y = xp.where(weight_dy > 0, (sum_dy / xp.where(weight_dy > 0, weight_dy, 1.0)), 0.0)
+    raw_telsum_x = xp.where(weight_dx > 0, (sum_dx / xp.where(weight_dx > 0, weight_dx, 1.0)), 0.0)
+    raw_telsum_y = xp.where(weight_dy > 0, (sum_dy / xp.where(weight_dy > 0, weight_dy, 1.0)), 0.0)
 
-    return raw_gtilt_x, raw_gtilt_y
+    return raw_telsum_x, raw_telsum_y
 
 
-def _compute_slopes_from_gtilt(raw_gtilt_x, raw_gtilt_y, pup_mask, dm_mask,
+def _compute_slopes_from_telsum(raw_telsum_x, raw_telsum_y, pup_mask, dm_mask,
                                wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
                                idx_valid_sa, verbose, specula_convention):
     """
-    Formats the raw G-tilt into the final 1D slopes array.
+    Formats the raw telescoping sum into the final 1D slopes array.
     Signature is fully symmetrical to _compute_slopes_from_derivatives.
     """
-    is_3d = raw_gtilt_x.ndim == 3
+    is_3d = raw_telsum_x.ndim == 3
 
     # 1. Deduce N internally
     pup_diam_pix = pup_mask.shape[0]
@@ -127,14 +127,14 @@ def _compute_slopes_from_gtilt(raw_gtilt_x, raw_gtilt_y, pup_mask, dm_mask,
     combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
 
     # 3. Apply mask
-    gtilt_x = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
-              else combined_mask_sa, raw_gtilt_x, 0.0)
-    gtilt_y = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
-              else combined_mask_sa, raw_gtilt_y, 0.0)
+    telsum_x = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
+              else combined_mask_sa, raw_telsum_x, 0.0)
+    telsum_y = xp.where(combined_mask_sa[:, :, xp.newaxis] if is_3d \
+              else combined_mask_sa, raw_telsum_y, 0.0)
 
     # 4. Reshape to 2D matrix
-    wfs_signal_x_2d = gtilt_x.reshape((-1, gtilt_x.shape[2] if is_3d else 1))
-    wfs_signal_y_2d = gtilt_y.reshape((-1, gtilt_y.shape[2] if is_3d else 1))
+    wfs_signal_x_2d = telsum_x.reshape((-1, telsum_x.shape[2] if is_3d else 1))
+    wfs_signal_y_2d = telsum_y.reshape((-1, telsum_y.shape[2] if is_3d else 1))
 
     # 5. Select valid subapertures using provided indices
     if idx_valid_sa is not None:
@@ -384,13 +384,13 @@ def apply_dm_transformations_separated(pup_diam_m, pup_mask, dm_array, dm_mask,
 
     trans_dm_array = apply_mask(trans_dm_array, trans_dm_mask)
 
-    # Compute derivatives or gtilt on DM-transformed array
+    # Compute derivatives or telescoping sum on DM-transformed array
     if slope_method == 'derivatives':
         derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask
         )
-    elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
+    elif slope_method == 'telsum':
+        derivatives_x, derivatives_y = compute_telsum_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps, verbose=verbose
         )
     else:
@@ -507,13 +507,13 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
 
     trans_dm_array = apply_mask(trans_dm_array, trans_dm_mask)
 
-    # Compute derivatives or gtilt on already-transformed array
+    # Compute derivatives or telescoping sum on already-transformed array
     if slope_method == 'derivatives':
         derivatives_x, derivatives_y = compute_derivatives_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask
         )
-    elif slope_method == 'gtilt':
-        derivatives_x, derivatives_y = compute_gtilt_with_extrapolation(
+    elif slope_method == 'telsum':
+        derivatives_x, derivatives_y = compute_telsum_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps, verbose=verbose
         )
     else:
@@ -606,8 +606,8 @@ def apply_wfs_transformations_separated(derivatives_x, derivatives_y,
             wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
             verbose, specula_convention
         )
-    elif slope_method == 'gtilt':
-        return _compute_slopes_from_gtilt(
+    elif slope_method == 'telsum':
+        return _compute_slopes_from_telsum(
             trans_der_x, trans_der_y, trans_pup_mask, dm_mask,
             wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
             idx_valid_sa, verbose, specula_convention
@@ -632,8 +632,8 @@ def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_m
             wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
             verbose, specula_convention
         )
-    elif slope_method == 'gtilt':
-        return _compute_slopes_from_gtilt(
+    elif slope_method == 'telsum':
+        return _compute_slopes_from_telsum(
             derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
             wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
             idx_valid_sa, verbose, specula_convention
@@ -780,7 +780,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     - wfs_configs: list of dict, each containing WFS parameters
     - gs_pol_coo: tuple or None (DEPRECATED)
     - gs_height: float or None (DEPRECATED)
-    - slope_method: str, 'derivatives' or 'gtilt'
+    - slope_method: str, 'derivatives' or 'telsum'
     - specula_convention: bool, optional
     - im_on_cpu: bool, optional, force output interaction matrices on CPU
     - minimize_memory: bool, optional, delete intermediate variables to save memory

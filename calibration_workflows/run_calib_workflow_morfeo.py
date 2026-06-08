@@ -552,6 +552,7 @@ class MORFEOCalibrationWorkflow:
         self._log("Computing LGS interaction matrices...")
         im_paths = params_mgr.compute_interaction_matrices(
             wfs_type='lgs',
+            component_type='layer',  # Only layers for tomography
             output_im_dir=str(self.root_dir / "synim"),
             output_rec_dir=str(self.root_dir / "synrec"),
             overwrite=self.overwrite,
@@ -739,6 +740,7 @@ class MORFEOCalibrationWorkflow:
         self._log("Computing NGS interaction matrices...")
         ngs_paths = params_mgr.compute_interaction_matrices(
             wfs_type='ngs',
+            component_type='dm',  # Only DMs for low-order control
             output_im_dir=str(self.root_dir / "synim"),
             output_rec_dir=str(self.root_dir / "synrec"),
             overwrite=self.overwrite,
@@ -750,6 +752,7 @@ class MORFEOCalibrationWorkflow:
         self._log("Computing REF interaction matrices...")
         ref_paths = params_mgr.compute_interaction_matrices(
             wfs_type='ref',
+            component_type='layer',  # Layer 0 for focus sensing
             output_im_dir=str(self.root_dir / "synim"),
             output_rec_dir=str(self.root_dir / "synrec"),
             overwrite=self.overwrite,
@@ -1009,6 +1012,20 @@ class MORFEOCalibrationWorkflow:
         )
 
         output_pm_dir = self.root_dir / "synpm"
+
+        # Compute LGS-to-DM interaction matrices (needed for projection)
+        # These were not computed in Step 2 (which only computed LGS-to-layer IMs)
+        self._log("Computing LGS-to-DM interaction matrices for projection...")
+        lgs_dm_paths = params_mgr.compute_interaction_matrices(
+            wfs_type='lgs',
+            component_type='dm',  # DMs for projection matrices
+            output_im_dir=str(self.root_dir / "synim"),
+            output_rec_dir=str(self.root_dir / "synrec"),
+            overwrite=self.overwrite,
+            verbose=self.verbose,
+            display=False
+        )
+        self._log(f"✓ Generated {len(lgs_dm_paths)} LGS-to-DM interaction matrices")
 
         # Compute individual projection matrices
         self._log("Computing projection matrices...")

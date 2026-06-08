@@ -934,7 +934,7 @@ def generate_im_filename(params_file, wfs_type=None,
         dm_index (int, optional): Index of the DM (1-based)
         layer_index (int, optional): Index of the Layer (1-based)
         n_modes (int, optional): Number of modes used (if limited)
-        slope_method (str): Slope computation method ('derivatives' or 'gtilt').
+        slope_method (str): Slope computation method ('derivatives' or 'telsum').
             When not 'derivatives', the method name is appended to the filename.
         timestamp (bool): Whether to include a timestamp in the filename
         verbose (bool): Whether to print detailed information
@@ -1459,6 +1459,43 @@ def compute_layer_weights_from_turbulence(params,
         print(f"{'='*60}\n")
 
     return weights
+
+
+def compute_pseudoinverse_reconstructor(interaction_matrix, xp=np, 
+                                        dtype=np.float32, verbose=False):
+    """
+    Compute a simple pseudo-inverse reconstructor.
+    
+    This method computes R = pinv(A) where A is the interaction matrix.
+    It's particularly useful for NGS cases with few modes where full
+    covariance computation would be overkill.
+    
+    Args:
+        interaction_matrix (numpy.ndarray): Interaction matrix A relating modes to slopes
+        xp (module, optional): Numerical library to use (e.g., numpy or cupy).
+        dtype (data-type, optional): Data type for computations.
+        verbose (bool, optional): Whether to print detailed information during computation.
+        
+    Returns:
+        numpy.ndarray: Pseudo-inverse reconstructor matrix
+    """
+    if verbose:
+        print("Computing pseudo-inverse reconstructor")
+    
+    A = to_xp(xp, interaction_matrix, dtype=dtype)
+    
+    if verbose:
+        print(f"  Interaction matrix shape: {A.shape}")
+        print(f"  Computing pinv(A)...")
+    
+    # Compute pseudo-inverse
+    R_pinv = xp.linalg.pinv(A, rcond=1e-14)
+    
+    if verbose:
+        print(f"  Reconstructor shape: {R_pinv.shape}")
+        print("Pseudo-inverse reconstruction matrix computed")
+    
+    return cpuArray(R_pinv)
 
 
 def compute_mmse_reconstructor(interaction_matrix, C_atm,

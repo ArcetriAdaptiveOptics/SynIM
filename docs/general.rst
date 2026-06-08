@@ -43,12 +43,12 @@ SynIM is organized into several main modules:
    - ``interaction_matrix()``: Main function with intelligent workflow selection
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
-   - ``compute_gtilt_with_extrapolation()``: G-tilt estimation from phase differences per subaperture
+   - ``compute_telsum_with_extrapolation()``: Telescoping sum estimation from phase differences per subaperture
 
    Slope extraction supports two methods controlled by ``slope_method`` argument of the main functions:
 
    - ``derivatives`` (default): numerical derivatives with extrapolation-aware edge handling
-   - ``gtilt`` (optional): average phase differences (G-tilt) in each subaperture
+   - ``telsum`` (optional): average phase differences (telescoping sum) in each subaperture
 
 **synpm.py**
    Core functions for projection matrix computation:
