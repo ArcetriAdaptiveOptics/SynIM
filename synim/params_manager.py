@@ -1258,7 +1258,7 @@ class ParamsManager:
         if component_type not in ['dm', 'layer']:
             raise ValueError("component_type must be either 'dm' or 'layer'")
 
-        # Count WFSs of the specified type in the configuration       
+        # Count WFSs of the specified type in the configuration
         wfs_list_full = [wfs for wfs in self.wfs_list if wfs_type in wfs['name']]
         if active_wfs_mask is not None:
             wfs_list = [wfs for i, wfs in enumerate(wfs_list_full) if active_wfs_mask[i]]

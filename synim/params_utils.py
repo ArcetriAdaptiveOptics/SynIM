@@ -734,15 +734,17 @@ def extract_dm_list(config):
     """Extract all DM configurations from config"""
     dm_list = []
 
+    # Collect numbered DMs (dm1, dm2, ...) using strict pattern
     for key in config:
-        if key == 'dm' or (isinstance(key, str) and key.startswith('dm')):
+        if isinstance(key, str) and re.match(r'^dm\d+$', key):
             dm_list.append({
                 'name': key,
-                'index': re.findall(r'\d+', key)[0] if re.findall(r'\d+', key) else '1',
+                'index': re.findall(r'\d+', key)[0],
                 'config': config[key]
             })
 
-    # If no DMs found, create a default one
+    # Fall back to bare 'dm' key only when no numbered DMs were found,
+    # to avoid duplicate index '1' when both 'dm' and 'dm1' exist in config.
     if len(dm_list) == 0 and 'dm' in config:
         dm_list.append({
             'name': 'dm',
