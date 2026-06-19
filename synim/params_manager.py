@@ -37,9 +37,11 @@ from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
 class ParamsManager:
     """
-    Class for managing parameters needed to compute interaction matrices 
+    Class for managing parameters needed to compute interaction matrices
     for all combinations of DMs and WFSs without redundant loading.
     """
+
+    _monitor = _NullMonitor()  # class-level fallback when __init__ is bypassed
 
     def __init__(self, params_file, root_dir=None, verbose=False, monitor=False):
         """
