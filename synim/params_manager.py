@@ -16,6 +16,7 @@ import synim.synpm as synpm
 # Import all utility functions from params_utils
 from synim.utils import *
 from synim.params_utils import *
+from synim.resource_monitor import ResourceMonitor, _NullMonitor
 
 try:
     import specula
@@ -34,15 +35,13 @@ from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
-verbose_gpu_flag = False  # Global flag for verbose GPU memory printing
-
 class ParamsManager:
     """
     Class for managing parameters needed to compute interaction matrices 
     for all combinations of DMs and WFSs without redundant loading.
     """
 
-    def __init__(self, params_file, root_dir=None, verbose=False):
+    def __init__(self, params_file, root_dir=None, verbose=False, monitor=False):
         """
         Initialize the manager and load all common parameters.
         
@@ -59,6 +58,13 @@ class ParamsManager:
             self.params = params_file
 
         self.verbose = verbose
+
+        if isinstance(monitor, ResourceMonitor):
+            self._monitor = monitor
+        elif monitor:
+            self._monitor = ResourceMonitor()
+        else:
+            self._monitor = _NullMonitor()
 
         self.target_device_idx = default_target_device_idx
         self.precision = global_precision
@@ -466,21 +472,6 @@ class ParamsManager:
                 print()
 
         return im_for_mmse, C_atm_for_mmse, keep_mode_cols, drop_mode_cols
-
-
-    def _print_gpu_memory(self, label="", verbose=True):
-        """Print current GPU memory usage."""
-        if not verbose or not hasattr(xp, 'cuda'):
-            return
-
-        try:
-            import cupy as cp
-            mempool = cp.get_default_memory_pool()
-            print(f"\n  --- GPU Memory {label}:")
-            print(f"        Used:  {mempool.used_bytes() / 1024**3:.2f} GB")
-            print(f"        Total: {mempool.total_bytes() / 1024**3:.2f} GB")
-        except:
-            pass
 
 
     def _resolve_component_key(self, component_type, comp_idx):
@@ -1028,7 +1019,7 @@ class ParamsManager:
 
         verbose_flag = self.verbose if verbose is None else verbose
 
-        self._print_gpu_memory("(initial)", verbose_gpu_flag)
+        self._monitor.start_section("compute_interaction_matrices")
 
         # Filter WFS list by type if specified
         if wfs_type is not None:
@@ -1038,7 +1029,7 @@ class ParamsManager:
 
         # Combine DM and layer in a single components list
         components = []
-        
+
         # Add DMs if requested (or if component_type is None)
         if component_type is None or component_type == 'dm':
             for dm in self.dm_list:
@@ -1047,7 +1038,7 @@ class ParamsManager:
                     'index': int(dm['index']),
                     'name': dm['name']
                 })
-        
+
         # Add layers if requested (or if component_type is None)
         if component_type is None or component_type == 'layer':
             for layer in extract_layer_list(self.params):
@@ -1159,8 +1150,6 @@ class ParamsManager:
                     print(f"\n  Computing {len(wfs_configs)} interaction"
                           f" matrices using multi-WFS...")
 
-                self._print_gpu_memory("(before IM computation)", verbose_gpu_flag)
-
                 # Use multi-WFS computation
                 im_dict, derivatives_info = synim.interaction_matrices_multi_wfs(
                     pup_diam_m=self.pup_diam_m,
@@ -1176,8 +1165,6 @@ class ParamsManager:
                     im_on_cpu=True,
                     minimize_memory=True
                 )
-
-                self._print_gpu_memory("(after IM computation)", verbose_gpu_flag)
 
                 if verbose_flag:
                     print(f"  Used {derivatives_info['workflow'].upper()} workflow")
@@ -1223,6 +1210,7 @@ class ParamsManager:
             print(f"Completed: {len(saved_matrices)} interaction matrices computed/loaded")
             print(f"{'='*60}\n")
 
+        self._monitor.end_section()
         return saved_matrices
 
 
@@ -1250,6 +1238,8 @@ class ParamsManager:
             tuple: (im_full, n_slopes_per_wfs, mode_indices, component_indices) -
                 Assembled matrix and associated parameters
         """
+        self._monitor.start_section("assemble_interaction_matrices")
+
         # Set up output directory
         if output_im_dir is None:
             raise ValueError("output_im_dir must be specified.")
@@ -1535,6 +1525,7 @@ class ParamsManager:
             if self.verbose:
                 print(f"Saved full interaction matrix to {output_filename}")
 
+        self._monitor.end_section()
         return im_full, n_slopes_per_wfs, mode_indices, component_indices
 
 
@@ -1734,6 +1725,8 @@ class ParamsManager:
         # Use verbose flag from instance if not overridden
         verbose_flag = self.verbose if verbose is None else verbose
 
+        self._monitor.start_section("compute_projection_matrices")
+
         # ==================== GET COMPONENTS ====================
         components = []
         for dm in self.dm_list:
@@ -1789,6 +1782,7 @@ class ParamsManager:
             if verbose_flag:
                 print(f"\n✓ All {len(saved_matrices)} projection matrices already exist")
                 print(f"  Set overwrite=True to recompute")
+            self._monitor.end_section()
             return saved_matrices
 
         # ==================== LOAD BASE (ONLY IF NEEDED) ====================
@@ -1898,6 +1892,7 @@ class ParamsManager:
             print(f"Completed: {len(saved_matrices)} projection matrices")
             print(f"{'='*60}\n")
 
+        self._monitor.end_section()
         return saved_matrices
 
 
@@ -2289,7 +2284,7 @@ class ParamsManager:
                 - 'reconstructor_method': Method used ('mmse' or 'pinv')
         """
         verbose_flag = self.verbose if verbose is None else verbose
-        
+
         # Validate reconstructor_method
         if reconstructor_method not in ['mmse', 'pinv']:
             raise ValueError(f"reconstructor_method must be 'mmse' or 'pinv', got '{reconstructor_method}'")
@@ -2493,6 +2488,11 @@ class ParamsManager:
             print(f"STEP 4: Computing {step_title}")
             print(f"-" * 70)
 
+        section_name = ("compute_mmse_reconstructor"
+                        if reconstructor_method == 'mmse'
+                        else "compute_pseudoinverse_reconstructor")
+        self._monitor.start_section(section_name)
+
         if reconstructor_method == 'mmse':
             # Check: all must be cpu_float_dtype (regardless of endianness)
             expected_dtype = np.dtype(cpu_float_dtype)
@@ -2528,6 +2528,8 @@ class ParamsManager:
                 dtype=cpu_float_dtype,
                 verbose=verbose_flag
             )
+
+        self._monitor.end_section()
 
         if n_low_modes_cut > 0:
             reconstructor = self._restore_reconstructor_with_zero_rows(
@@ -2703,6 +2705,8 @@ class ParamsManager:
         """
 
         verbose_flag = self.verbose if verbose is None else verbose
+
+        self._monitor.start_section("compute_tomographic_projection_matrix")
 
         if wfs_type not in ['lgs', 'ngs', 'ref']:
             raise ValueError(f"Invalid wfs_type: {wfs_type}")
@@ -2979,14 +2983,19 @@ class ParamsManager:
             'rec_filename': rec_filename,
             'rec_path': rec_path
         }
-    
+
         if verbose_flag:
             print(f"\n{'='*60}")
             print(f"Tomographic Projection Computation Complete")
             print(f"{'='*60}\n")
 
+        self._monitor.end_section()
         return p_opt, pm_full_dm, pm_full_layer, info
 
+
+    def resource_report(self):
+        """Print peak CPU, RAM and GPU usage for each tracked section."""
+        self._monitor.report()
 
     def list_wfs(self):
         """Return a list of all WFS names and types."""
@@ -3052,6 +3061,8 @@ class ParamsManager:
         """
 
         verbose_flag = self.verbose if verbose is None else verbose
+
+        self._monitor.start_section("compute_covariance_matrices")
 
         # Validate component_type
         if component_type not in ['dm', 'layer']:
@@ -3194,9 +3205,6 @@ class ParamsManager:
                     oversampling=2
                 )
             else:
-                self._print_gpu_memory(label="Before covariance computation: ",
-                                       verbose=verbose_gpu_flag)
-
                 C_atm_rad2 = compute_ifs_covmat(
                     to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
                     meta_pupil_diameter,
@@ -3245,6 +3253,7 @@ class ParamsManager:
             print(f"  Files in: {output_dir}")
             print(f"{'='*60}\n")
 
+        self._monitor.end_section()
         return {
             'C_atm_blocks': C_atm_blocks,
             'component_indices': component_indices,
@@ -3277,6 +3286,8 @@ class ParamsManager:
             np.ndarray: Full covariance matrix with selected modes
         """
         verbose_flag = self.verbose if verbose is None else verbose
+
+        self._monitor.start_section("assemble_covariance_matrix")
 
         # If mode_indices not provided, get from modal_combination
         if mode_indices is None:
@@ -3375,6 +3386,7 @@ class ParamsManager:
         if verbose_flag:
             print(f"\n  ✓ Full covariance matrix assembled: {C_atm_full.shape}")
 
+        self._monitor.end_section()
         return C_atm_full
 
     def _build_elongated_noise_covariance(self, wfs_type,
@@ -3601,6 +3613,21 @@ class ParamsManager:
             ValueError: If insufficient information provided
         """
         verbose_flag = self.verbose if verbose is None else verbose
+
+        self._monitor.start_section("build_noise_covariance")
+        try:
+            return self._build_noise_covariance_impl(
+                verbose_flag, wfs_type, n_wfs, n_slopes_total,
+                noise_variance, C_noise, use_elongation,
+                active_wfs_mask, return_diagnostics
+            )
+        finally:
+            self._monitor.end_section()
+
+    def _build_noise_covariance_impl(
+            self, verbose_flag, wfs_type, n_wfs, n_slopes_total,
+            noise_variance, C_noise, use_elongation,
+            active_wfs_mask, return_diagnostics):
 
         if verbose_flag:
             print(f"\n{'='*60}")
