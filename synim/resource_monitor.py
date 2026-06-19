@@ -39,6 +39,7 @@ class ResourceMonitor:
         self._stop_event = threading.Event()
         self._process = psutil.Process(os.getpid())
         self._process.cpu_percent(interval=None)  # warm-up; first call always returns 0
+        self._gpu_device_idx = None
         self._has_gpu = self._detect_gpu()
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
@@ -48,9 +49,16 @@ class ResourceMonitor:
     # ------------------------------------------------------------------
 
     def _detect_gpu(self):
+        """Return True and cache the active device index if CuPy is available."""
         try:
             import cupy as cp
-            cp.get_default_memory_pool().used_bytes()
+            import synim as _synim
+            dev_idx = _synim.default_target_device_idx
+            if dev_idx is None or dev_idx < 0:
+                return False
+            with cp.cuda.Device(dev_idx):
+                cp.get_default_memory_pool().used_bytes()
+            self._gpu_device_idx = dev_idx
             return True
         except Exception:
             return False
@@ -69,7 +77,8 @@ class ResourceMonitor:
                     if self._has_gpu:
                         try:
                             import cupy as cp
-                            used = cp.get_default_memory_pool().used_bytes()
+                            with cp.cuda.Device(self._gpu_device_idx):
+                                used = cp.get_default_memory_pool().used_bytes()
                             self._current['peak_gpu'] = max(self._current['peak_gpu'], used)
                         except Exception:
                             pass
