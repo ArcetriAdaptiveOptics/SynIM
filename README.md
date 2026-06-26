@@ -57,11 +57,16 @@ We require tests for all new features to ensure the stability of the project.
 If you use SynIM in your research, please cite:
 
 ```bibtex
-@software{synim2025,
-  author = {Agapito, Guido},
-  title = {SynIM: Synthetic Interaction Matrix Generator},
-  year = {2025},
-  url = {https://github.com/ArcetriAdaptiveOptics/SynIM}
+@misc{agapito2026synim,
+  title         = {SynIM: a high-performance GPU-accelerated Python library for
+                   synthetic interaction and tomographic reconstruction matrices
+                   in next-generation adaptive optics},
+  author        = {Agapito, Guido and Rossi, Fabio and Puglisi, Alfio},
+  year          = {2026},
+  eprint        = {2606.07759},
+  archivePrefix = {arXiv},
+  primaryClass  = {astro-ph.IM},
+  url           = {https://arxiv.org/abs/2606.07759}
 }
 ```
 
