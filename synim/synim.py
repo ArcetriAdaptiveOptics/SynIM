@@ -666,8 +666,18 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
                        gs_pol_coo != (0, 0) or dm_height != 0
     has_wfs_transform = has_transformations(wfs_rotation, wfs_translation, wfs_mag_global)
 
-    # Choose workflow
-    use_combined = (has_dm_transform and has_wfs_transform) or slope_method == 'tilt'
+    # Choose workflow. NOTE: the separated workflow's WFS step
+    # (apply_wfs_transformations_separated) rotates derivatives_x and
+    # derivatives_y independently via rotshiftzoom_array - this repositions
+    # each component spatially but never mixes them with a rotation matrix,
+    # so it is NOT a valid rotation of a vector/gradient field whenever
+    # wfs_rotation != 0 (confirmed empirically: it decorrelates completely
+    # from the equivalent DM-side rotation, which is applied to the scalar
+    # phase before differentiation and is therefore always correct). Pure
+    # shift/magnification (wfs_rotation == 0) do not need component mixing
+    # and remain safe under the separated workflow.
+    use_combined = (has_dm_transform and has_wfs_transform) or slope_method == 'tilt' \
+                   or wfs_rotation != 0
 
     if verbose:
         print(f"\n{'='*60}")
