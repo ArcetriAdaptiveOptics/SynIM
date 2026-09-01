@@ -43,14 +43,16 @@ class ParamsManager:
 
     _monitor = _NullMonitor()  # class-level fallback when __init__ is bypassed
 
-    def __init__(self, params_file, root_dir=None, verbose=False, monitor=False):
+    def __init__(self, params_file, root_dir=None, verbose=False, monitor=False,
+                 require_subapdata_file=True):
         """
         Initialize the manager and load all common parameters.
-        
+
         Args:
             params_file (str or dict): Path to YAML configuration file or dictionary
             root_dir (str, optional): Root directory to override in params
             verbose (bool): Whether to print detailed information
+            require_subapdata_file (bool): If True, missing subapdata files raise an error.
         """
         # Load configuration
         self.params_file = params_file
@@ -70,6 +72,7 @@ class ParamsManager:
 
         self.target_device_idx = default_target_device_idx
         self.precision = global_precision
+        self.require_subapdata_file = require_subapdata_file
 
         # Set root_dir if provided
         if root_dir:
@@ -119,6 +122,9 @@ class ParamsManager:
         self.dm_cache = {}  # Key: dm_index, Value: dict with dm_array, dm_mask, etc.
         self.wfs_cache = {}  # Key: (wfs_type, wfs_index), Value: dict with wfs params
 
+    def set_require_subapdata_file(self, value):
+        """Set whether missing subapdata files should raise an error."""
+        self.require_subapdata_file = bool(value)
 
     def _load_pupil_mask(self):
         """
@@ -804,7 +810,12 @@ class ParamsManager:
 
         # Load SubapData for valid subapertures
         idx_valid_sa = find_subapdata(
-            self.cm, wfs_params, wfs_key, self.params, verbose=self.verbose
+            self.cm,
+            wfs_params,
+            wfs_key,
+            self.params,
+            verbose=self.verbose,
+            require_file=self.require_subapdata_file,
         )
 
         # *** Convert to xp if not None ***
