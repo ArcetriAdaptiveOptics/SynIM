@@ -350,12 +350,18 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                          " Need either 'ifunc_tag', 'ifunc_object', or 'type_str'.")
 
 
-def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False):
+def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=True):
     """
     Find and load SubapData for valid subapertures.
-    
+
+    Parameters
+    ----------
+    require_file : bool, optional
+        If True, a subapdata tag/path that resolves to a non-existing file raises
+        FileNotFoundError. If False, missing files are silently treated as absent.
+
     NOTE: Returns numpy array from disk - caller should convert with to_xp if needed
-    
+
     Returns:
         numpy.ndarray: Array of valid subaperture indices (numpy) or None
     """
@@ -416,9 +422,18 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False):
         if verbose:
             print("     No subapdata file found. Using default.")
         return None
-    else:
+
+    if not os.path.exists(subap_path):
+        if require_file:
+            raise FileNotFoundError(
+                f"SubapData file declared but not found for {wfs_key}: {subap_path}"
+            )
         if verbose:
-            print("     Subapdata file found:", subap_path)
+            print(f"     Subapdata tag found but file is missing: {subap_path}")
+        return None
+
+    if verbose:
+        print("     Subapdata file found:", subap_path)
 
     # Try to load the subapdata if a path was found
     if subap_path and os.path.exists(subap_path):

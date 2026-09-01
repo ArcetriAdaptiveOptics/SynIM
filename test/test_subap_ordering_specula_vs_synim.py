@@ -27,6 +27,7 @@ from specula.processing_objects.sh import SH
 from specula.lib.make_mask import make_mask
 
 # SynIM imports
+from synim.params_utils import find_subapdata
 from synim.synim import compute_subaperture_illumination
 
 
@@ -100,6 +101,31 @@ def make_circular_pupil_with_spider(npix, radius_fraction=0.4, off_axis_shift=(0
     )
 
     return mask.astype(np.float32)
+
+
+class TestSubapdataFileHandling(unittest.TestCase):
+    """Validate strict handling of missing subapdata files."""
+
+    def test_find_subapdata_requires_existing_file_by_default(self):
+        class DummyCalibManager:
+            def filename(self, kind, tag):
+                return "/tmp/definitely_missing_subapdata.fits"
+
+        params = {'slopec': {'subapdata_object': 'missing_subapdata'}}
+        cm = DummyCalibManager()
+
+        with self.assertRaises(FileNotFoundError):
+            find_subapdata(cm, {}, 'sh_1', params, require_file=True)
+
+    def test_find_subapdata_can_skip_missing_file_when_allowed(self):
+        class DummyCalibManager:
+            def filename(self, kind, tag):
+                return "/tmp/definitely_missing_subapdata.fits"
+
+        params = {'slopec': {'subapdata_object': 'missing_subapdata'}}
+        cm = DummyCalibManager()
+
+        self.assertIsNone(find_subapdata(cm, {}, 'sh_1', params, require_file=False))
 
 
 class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
