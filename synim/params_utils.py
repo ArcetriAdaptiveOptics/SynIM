@@ -139,7 +139,7 @@ def extract_source_height(config, wfs_key):
     """
     # Compute airmass
     if 'main' in config:
-        zenith_angle = config['main'].get('zenithAngleInDeg', None)
+        zenith_angle = config['main'].get('zenithAngleInDeg', 0.0)
         zenith_rad = np.deg2rad(zenith_angle)
         airmass = 1.0 / np.cos(zenith_rad)
     else:
