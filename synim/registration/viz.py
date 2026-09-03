@@ -55,12 +55,12 @@ def _element_colors(system):
 
 
 def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
-                             height_margin=1.3, show_labels=True, fontsize=9,
-                             ngs_ray_length=None, colors=None):
+                             height_margin=1.3, show_labels=False, legend=True,
+                             fontsize=9, ngs_ray_length=None, colors=None):
     """
     Draw the altitude schematic of `system` on `ax` (a new figure/axes is
-    created if `ax` is None). Only short name tags are drawn on the plot
-    itself - see `plot_mis_registration_table` for the actual numbers.
+    created if `ax` is None) - see `plot_mis_registration_table` for the
+    actual mis-registration numbers.
 
     Parameters
     ----------
@@ -69,7 +69,9 @@ def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
     slice_axis : int
         Which guide star position component (0=x, 1=y) to project onto
         the horizontal axis - this is a 2D slice, so guide stars that
-        differ only in the other component will appear to overlap.
+        differ only in the other component will appear to overlap (and,
+        with several guide stars at symmetric angles - e.g. an evenly
+        spaced ring - end up literally on top of each other).
     half_width : float
         Half-width of the pupil/DM reference bars, in the same unit as
         the plotted guide star ray positions (arbitrary/cosmetic:
@@ -78,7 +80,13 @@ def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
         The plot's vertical extent is `height_margin` times the highest
         DM/finite-GS altitude.
     show_labels : bool
-        If True, tag each DM/WFS with its short name next to the element.
+        If True, tag each DM/WFS with its short name next to the element
+        (inline text) - gets crowded with more than a handful of
+        elements, especially combined with the `slice_axis` overlap above;
+        `legend` (the default) is the readable alternative for those cases.
+    legend : bool
+        If True (default), add a legend mapping colour -> DM/WFS name
+        instead of (or alongside) inline labels.
     ngs_ray_length : float, optional
         How far up to draw an NGS's (infinite-height) chief ray; defaults
         to the plot's top margin.
@@ -116,7 +124,8 @@ def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
     # Each DM as a horizontal bar, with a small marker for its own shift.
     for dm in dms:
         color = colors[dm.name]
-        ax.plot([-half_width, half_width], [dm.height, dm.height], color=color, lw=2, zorder=1)
+        ax.plot([-half_width, half_width], [dm.height, dm.height], color=color, lw=2,
+                 zorder=1, label=dm.name)
         ax.plot(dm.shift[slice_axis], dm.height, marker="^", color=color, markersize=8, zorder=3)
         if show_labels:
             ax.annotate(dm.name, (half_width, dm.height), xytext=(4, 4),
@@ -134,9 +143,13 @@ def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
             z_top = ngs_ray_length
             ax.annotate("", xy=(theta_rad * z_top, z_top), xytext=(0.0, 0.0),
                         arrowprops=dict(arrowstyle="->", color=color, lw=1.5), zorder=2)
+            # `annotate`'s arrow is not legend-tracked: an invisible proxy
+            # line carries the label instead.
+            ax.plot([], [], color=color, lw=1.5, label=wfs.name)
             label_pos = (theta_rad * z_top, z_top)
         else:
-            ax.plot([0.0, theta_rad * gs_height], [0.0, gs_height], color=color, lw=1.5, zorder=2)
+            ax.plot([0.0, theta_rad * gs_height], [0.0, gs_height], color=color, lw=1.5,
+                     zorder=2, label=wfs.name)
             ax.plot(theta_rad * gs_height, gs_height, marker="*", color=color,
                      markersize=14, zorder=3)
             label_pos = (theta_rad * gs_height, gs_height)
@@ -155,6 +168,8 @@ def plot_altitude_schematic(system, ax=None, slice_axis=0, half_width=1.0,
     ax.set_ylim(-0.05 * top, top * 1.05)
     ax.margins(x=0.15)
     ax.set_title("Altitude schematic")
+    if legend:
+        ax.legend(fontsize=fontsize - 1, loc="best", framealpha=0.9, ncol=2)
     return ax
 
 
