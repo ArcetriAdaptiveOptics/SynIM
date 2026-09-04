@@ -74,11 +74,28 @@ SynIM is organized into several main modules:
 
 **utils.py**
    General utility functions:
-   
+
    - Array rebinning and masking
    - Geometric transformations
    - Zernike polynomials
    - FITS I/O helpers
+
+**registration/**
+   Unlike every module above, this does not compute a pixel/influence-
+   function interaction or projection matrix. It is a purely geometric
+   (2D affine) model of how a DM actuator grid lines up with a WFS
+   sub-aperture grid in a system with several DMs and WFSs at different
+   conjugation altitudes (MCAO/GLAO), following
+   `Agapito, Plantet & Heritier (2024) <https://doi.org/10.48550/arXiv.2406.15336>`_:
+
+   - ``geometry.py``: affine transforms (shift, rotation, magnification, anamorphosis)
+   - ``model.py``: ``GuideStar``, ``DM``, ``WFS`` and ``System`` - the global mis-registration model
+   - ``reconstruction.py``: global parameters from local measurements, by Gauss-Newton inversion
+   - ``analysis.py``: sensitivity, degeneracy and noise-propagation analysis
+   - ``viz.py``: altitude schematic, mis-registration table, top-down footprint views
+
+   See :doc:`registration` for a full introduction and
+   :doc:`tutorials/registration_morfeo_tutorial` for a worked example.
 
 .. _computation_workflows:
 
@@ -217,7 +234,7 @@ Common validation checks:
 File Organization
 -----------------
 
-SynIM follows SPECULA's directory structure for seamless integration. The ``ParamsManager`` automatically creates and manages these directories based on the ``root_dir`` parameter in your configuration:
+SynIM follows SPECULA directory structure for seamless integration. The ``ParamsManager`` automatically creates and manages these directories based on the ``root_dir`` parameter in your configuration:
 
 .. code-block:: python
 
@@ -259,7 +276,7 @@ SynIM follows SPECULA's directory structure for seamless integration. The ``Para
        └── rec/         # Reconstructors and Projection matrices (SPECULA format)
 
 
-**Note:** When using SynIM with SPECULA, both tools can share the same ``root_dir`` and ``ifunc/`` directory. SPECULA uses additional directories (``im/``, ``rec/``) which can coexist alongside SynIM's directories.
+**Note:** When using SynIM with SPECULA, both tools can share the same ``root_dir`` and ``ifunc/`` directory. SPECULA uses additional directories (``im/``, ``rec/``) which can coexist alongside SynIM directories.
 
 Filename Conventions
 ~~~~~~~~~~~~~~~~~~~~

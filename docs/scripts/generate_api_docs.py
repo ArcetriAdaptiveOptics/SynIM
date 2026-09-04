@@ -16,6 +16,32 @@ def generate_module_doc(module_name, title=None):
 """
     return content
 
+def generate_registration_doc():
+    """
+    Generate the RST page for the `synim.registration` subpackage: one
+    `automodule` block per submodule, since it is a subpackage (not a
+    single flat module like the others), so `generate_module_doc`'s
+    single-module template does not apply.
+    """
+    title = "Mis-registration Geometry (registration)"
+    submodules = [
+        ("geometry", "Affine geometry primitives"),
+        ("model", "Global mis-registration model (GuideStar, DM, WFS, System)"),
+        ("reconstruction", "Global-from-local reconstruction"),
+        ("analysis", "Sensitivity and noise-propagation analysis"),
+        ("viz", "Visualization"),
+    ]
+    sections = "\n".join(
+        f"{heading}\n{'-' * len(heading)}\n\n"
+        f".. automodule:: synim.registration.{name}\n"
+        "   :members:\n"
+        "   :undoc-members:\n"
+        "   :show-inheritance:\n"
+        for name, heading in submodules
+    )
+    return f"{title}\n{'=' * len(title)}\n\n{sections}"
+
+
 def generate_api_index():
     """Generate API index page"""
     content = """API Reference
@@ -29,6 +55,7 @@ def generate_api_index():
    params_manager
    params_utils
    utils
+   registration
 
 """
     return content
@@ -63,6 +90,13 @@ def main():
         with open(api_docs_path / f"{module_name}.rst", 'w') as f:
             f.write(content)
         print("  ✓ Generated")
+
+    # The registration subpackage has several submodules, so it gets its
+    # own page with one automodule block each (see generate_registration_doc).
+    print("Generating api/registration.rst...")
+    with open(api_docs_path / "registration.rst", 'w') as f:
+        f.write(generate_registration_doc())
+    print("  ✓ Generated")
 
     print("\n" + "="*50)
     print("Done! Generated files:")

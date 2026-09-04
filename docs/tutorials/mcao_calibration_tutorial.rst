@@ -20,7 +20,7 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
    
    While SynIM supports dual slope-computation engines, they model the sensor physics differently:
    
-   * **'derivatives' (Default & Recommended)**: Computes local gradients using finite differences and averages them over the subaperture. Thanks to SynIM's strict sub-pixel geometric alignment during spatial resampling, this method natively absorbs the diffractive effects and cross-talk of real Shack-Hartmann sensors. It provides superior physical fidelity and resilience, especially for high-spatial-frequency modes.
+   * **'derivatives' (Default & Recommended)**: Computes local gradients using finite differences and averages them over the subaperture. Thanks to SynIM strict sub-pixel geometric alignment during spatial resampling, this method natively absorbs the diffractive effects and cross-talk of real Shack-Hartmann sensors. It provides superior physical fidelity and resilience, especially for high-spatial-frequency modes.
    * **'telsum'**: Uses a boundary-driven telescoping sum to evaluate the exact phase difference strictly at the subaperture edges. While mathematically exact for purely geometric boundaries, it struggles to map the continuous diffractive reality of the physical wavefront sensor compared to the aligned numerical derivatives.
    
    Because of this, the 'derivatives' engine guarantees both a significantly more accurate slope estimation and a substantial computational speed-up on GPU.

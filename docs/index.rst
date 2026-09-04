@@ -23,6 +23,7 @@ Key Features
 - 🎯 **Smart caching** to minimize redundant computations
 - 🔀 **Multi-WFS optimization** for faster batch computation
 - 🚀 **GPU acceleration** via CuPy for high-performance computation
+- 🧭 **Mis-registration geometry**: a geometric (not pixel-based) model linking global (WFS/DM/guide-star) and local (per-pair) registration in MCAO/GLAO systems, with inversion and sensitivity analysis
 
 
 User Guide
@@ -34,6 +35,7 @@ User Guide
    Installation <installation>
    Basics <general>
    Configuration & Legacy Migration <configuration>
+   Mis-registration Geometry <registration>
 
 Tutorials
 ---------
@@ -42,6 +44,7 @@ Tutorials
 
    SCAO calibration tutorial <tutorials/scao_calibration_tutorial>
    MCAO calibration tutorial (MORFEO) <tutorials/mcao_calibration_tutorial>
+   Mis-registration geometry tutorial (MORFEO LGS) <tutorials/registration_morfeo_tutorial>
 
 API Reference
 -------------

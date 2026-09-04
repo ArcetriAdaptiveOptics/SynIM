@@ -9,4 +9,5 @@ API Reference
    params_manager
    params_utils
    utils
+   registration
 
