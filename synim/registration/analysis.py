@@ -52,9 +52,9 @@ def describe_mode(v, specs, top_n=3):
     """
     Human-readable description of one right singular vector `v` (a linear
     combination of `specs`, i.e. one column of Lambda's V / row of Vt):
-    the `top_n` specs with the largest |coefficient|, as
-    ``[(spec.get_label(), coefficient), ...]``, sorted by |coefficient|
-    descending.
+    the `top_n` specs with the largest absolute coefficient, as
+    ``[(spec.get_label(), coefficient), ...]``, sorted by absolute
+    coefficient descending.
     """
     order = np.argsort(-np.abs(v))[:top_n]
     return [(specs[i].get_label(), float(v[i])) for i in order]

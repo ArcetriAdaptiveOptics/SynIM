@@ -74,11 +74,24 @@ SynIM is organized into several main modules:
 
 **utils.py**
    General utility functions:
-   
+
    - Array rebinning and masking
    - Geometric transformations
    - Zernike polynomials
    - FITS I/O helpers
+
+**registration/**
+   Global-to-local mis-registration geometry for WFAO systems, following
+   `Agapito, Plantet & Heritier (2024) <https://doi.org/10.48550/arXiv.2406.15336>`_:
+
+   - ``geometry.py``: affine transforms (shift, rotation, magnification, anamorphosis)
+   - ``model.py``: ``GuideStar``, ``DM``, ``WFS`` and ``System`` - the global mis-registration model
+   - ``reconstruction.py``: global parameters from local measurements, by Gauss-Newton inversion
+   - ``analysis.py``: sensitivity, degeneracy and noise-propagation analysis
+   - ``viz.py``: altitude schematic, mis-registration table, top-down footprint views
+
+   See :doc:`registration` for a full introduction and
+   :doc:`tutorials/registration_morfeo_tutorial` for a worked example.
 
 .. _computation_workflows:
 
