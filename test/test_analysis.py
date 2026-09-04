@@ -6,8 +6,8 @@ from synim.registration.reconstruction import (
     ParameterSpec, jacobian, apply_alpha, local_params_vector,
 )
 from synim.registration.analysis import (
-    svd_of_jacobian, normalize_jacobian, condition_number, describe_mode, describe_modes,
-    reconstruction_matrix, covariance_from_noise, monte_carlo_noise_propagation,
+    normalize_jacobian, condition_number, describe_mode,
+    reconstruction_matrix, covariance_from_noise,
     monte_carlo_gauss_newton, analyze,
 )
 
@@ -174,6 +174,65 @@ class TestMonteCarloGaussNewton(unittest.TestCase):
         self.assertEqual(covariance.shape, (3, 3))
         # non-overlapping shifts, near-linear: negligible bias expected
         np.testing.assert_allclose(mean, true_alpha, atol=0.01)
+
+
+class TestNormalizeJacobian(unittest.TestCase):
+    def test_scales_columns(self):
+        Lambda = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        scaled = normalize_jacobian(Lambda, [None, None, None], [2.0, 0.5, 1.0])
+        np.testing.assert_allclose(scaled, [[2.0, 1.0, 3.0], [8.0, 2.5, 6.0]])
+
+    def test_dict_scale_uses_spec_field(self):
+        specs = [ParameterSpec("dm", "dm0", "shift", 0),
+                 ParameterSpec("dm", "dm0", "rotation")]
+        Lambda = np.array([[1.0, 1.0]])
+        scaled = normalize_jacobian(Lambda, specs, {"shift": 10.0, "rotation": 0.1})
+        np.testing.assert_allclose(scaled, [[10.0, 0.1]])
+
+    def test_missing_field_in_dict_raises(self):
+        specs = [ParameterSpec("dm", "dm0", "magnification")]
+        with self.assertRaises(KeyError):
+            normalize_jacobian(np.array([[1.0]]), specs, {"shift": 1.0})
+
+    def test_does_not_change_rank_or_exact_null_space(self):
+        # The "shift every WFS + every DM together" gauge freedom (see
+        # 03_sensitivity_and_degeneracy.py in the MORFEO example) is exact
+        # only when every WFS's guide star shares the same height, so the
+        # DM-side compensation does not depend on which WFS it is paired
+        # with - build such a system explicitly here (uniform LGS height).
+        system = System(pixel_pitch=0.2)
+        for i, angle in enumerate([0.0, 120.0, 240.0]):
+            gs = GuideStar(name=f"gs{i}", position=tuple(30.0 * np.array(
+                [np.cos(np.radians(angle)), np.sin(np.radians(angle))])), height=90000.0)
+            system.add_wfs(WFS(name=f"wfs{i}", guide_star=gs))
+        system.add_dm(DM(name="dm0", height=0.0))
+        system.add_dm(DM(name="dm1", height=6000.0))
+        pairs = system.pairs()
+
+        specs = []
+        for w in ("wfs0", "wfs1", "wfs2"):
+            specs += [ParameterSpec("wfs", w, "shift", 0), ParameterSpec("wfs", w, "shift", 1)]
+        for d in ("dm0", "dm1"):
+            specs += [ParameterSpec("dm", d, "shift", 0), ParameterSpec("dm", d, "shift", 1)]
+        Lambda = jacobian(system, specs, pairs, dof=("shift_x", "shift_y"))
+
+        # Rescaling columns by an invertible (all-nonzero) diagonal matrix
+        # cannot change the rank - a degenerate direction stays degenerate.
+        # (Finite-difference noise keeps the smallest singular values from
+        # being bit-exact zero, so use the same RELATIVE threshold as
+        # elsewhere in this project - e.g. 03_sensitivity_and_degeneracy.py
+        # - rather than numpy.linalg.matrix_rank's near-machine-epsilon
+        # default, which is too strict to see them as degenerate here.)
+        def _rank(Lambda_):
+            S = np.linalg.svd(Lambda_, compute_uv=False)
+            return int(np.sum(S > 1e-6 * S[0]))
+
+        rank_before = _rank(Lambda)
+        scale = {"shift": 0.02}
+        Lambda_scaled = normalize_jacobian(Lambda, specs, scale)
+        rank_after = _rank(Lambda_scaled)
+        self.assertEqual(rank_before, rank_after)
+        self.assertLess(rank_before, len(specs))  # this system is exactly degenerate
 
 
 if __name__ == "__main__":
