@@ -19,13 +19,24 @@ generalizing the SCAO registration method of Heritier et al. (2021) to
 systems with several WFSs and DMs (MCAO/GLAO).
 
 .. important::
-   This subpackage does **not** estimate local mis-registration. It
-   takes local measurements as given - produced elsewhere, for example
-   by SPRINT (already implemented in `SPECULA
+   Despite living in SynIM, this is **not** the pixel/influence-function
+   interaction matrix computed by :func:`synim.synim.interaction_matrix`
+   (or the projection matrices in ``synpm.py``): it never touches a
+   phase screen, a WFS signal or an influence function. It works
+   entirely on 2D affine geometry - the shift, rotation, magnification
+   and anamorphosis relating one coordinate grid to another - which is
+   what "interaction" means here: how the actuator grid of a DM lines up
+   with the sub-aperture grid of a WFS in a system where several DMs and
+   WFSs, conjugated at different altitudes, do not share one simple
+   pairing (an MCAO/GLAO system, unlike SCAO).
+
+   This subpackage also does **not** estimate local mis-registration
+   itself. It takes local measurements as given - produced elsewhere,
+   for example by SPRINT (already implemented in `SPECULA
    <https://github.com/ArcetriAdaptiveOptics/SPECULA>`_) - and provides
    the forward map from global parameters to local measurements, its
    inversion, and tools to study its conditioning and noise sensitivity.
-   It does not touch interaction matrices or on-sky calibration.
+   It does not touch on-sky calibration either.
 
 Local and global parameters
 ----------------------------
@@ -75,8 +86,8 @@ built system already represents a perfectly aligned instrument.
 The forward model: from global to local
 ------------------------------------------
 
-``System.local_params`` composes a WFS's own mis-registration, the
-guide-star parallax at a DM's altitude, and that DM's own
+``System.local_params`` composes a WFS own mis-registration, the
+guide-star parallax at a DM altitude, and that DM own
 mis-registration into the local shift/rotation/magnification/
 anamorphosis of one pair:
 
@@ -106,8 +117,8 @@ parsed SPECULA/SynIM YAML configuration, reusing
 
 Only the WFS fields already used elsewhere in SynIM (``rotation``,
 ``xShiftPhInPixel``/``yShiftPhInPixel``, ``magnification``,
-``anamorph45``) are read this way; a DM's own shift/magnification and a
-guide star's position/altitude error have no dedicated key in that
+``anamorph45``) are read this way; a DM own shift/magnification and a
+guide star position/altitude error have no dedicated key in that
 format and default to zero - set them directly on the returned objects,
 or through the reconstruction tools below.
 
@@ -148,7 +159,7 @@ from the sensitivity matrix built above:
   (each scaled by its own parallax factor) leaves every local
   measurement unchanged - an exact gauge freedom, since only the
   *relative* WFS-DM alignment is observable;
-- a guide star's position error and that WFS's own shift affect a
+- a guide star position error and that WFS own shift affect a
   single WFS-DM pair identically, and can only be told apart using
   several DMs at different altitudes.
 
@@ -168,7 +179,7 @@ cross-check (``montecarlo_std``, via `monte_carlo_noise_propagation`).
 
 .. important::
    That Monte Carlo check reconstructs with a single linear step,
-   linearized exactly at the true values used to generate ``report``'s
+   linearized exactly at the true values used to generate ``report``
    sensitivity matrix - the same linear model behind ``analytic_std``.
    Its expectation therefore equals those true values by construction,
    so it can validate the analytic UNCERTAINTY, but it is unbiased by

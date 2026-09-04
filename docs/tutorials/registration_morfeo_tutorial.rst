@@ -13,7 +13,7 @@ required.
 .. note::
    For a companion example built from a real MORFEO SPECULA
    configuration - including the extra visualizations available through
-   SPECULA's ``plot_utils`` - see
+   SPECULA' ``plot_utils`` - see
    ``SPECULA_scripts/morfeo/mis_registration_geometry/`` alongside this
    repository.
 
@@ -23,7 +23,7 @@ required.
 MORFEO senses six laser guide stars (LGS) on an evenly spaced ring at
 45 arcsec, and corrects with three DMs at 600 m, 6500 m and 17500 m.
 This tutorial keeps to the LGS path: a 1x1 low-order sensor, like
-MORFEO's natural guide star channel, has no sub-aperture grid to
+MORFEO natural guide star channel, has no sub-aperture grid to
 register, so it carries no useful shift/rotation/magnification of its
 own.
 
@@ -69,7 +69,7 @@ as the cone effect narrows each footprint and the parallax shifts it.
 ================================
 
 Inject a mis-registration on two DMs and one WFS, compute the local
-parameters it produces (standing in for a local estimator's
+parameters it produces (standing in for a local estimator
 measurement), and recover it by Gauss-Newton inversion:
 
 .. code-block:: python

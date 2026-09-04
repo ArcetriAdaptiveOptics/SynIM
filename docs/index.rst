@@ -23,7 +23,7 @@ Key Features
 - 🎯 **Smart caching** to minimize redundant computations
 - 🔀 **Multi-WFS optimization** for faster batch computation
 - 🚀 **GPU acceleration** via CuPy for high-performance computation
-- 🧭 **Mis-registration geometry** linking global (WFS/DM/guide-star) and local (per-pair) registration, with inversion and sensitivity analysis
+- 🧭 **Mis-registration geometry**: a geometric (not pixel-based) model linking global (WFS/DM/guide-star) and local (per-pair) registration in MCAO/GLAO systems, with inversion and sensitivity analysis
 
 
 User Guide

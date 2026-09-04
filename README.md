@@ -19,7 +19,7 @@ It also supports GPU acceleration. Some of its functionalities are provided by [
 - 💾 **SPECULA-compatible** FITS format for data exchange
 - 🎯 **Smart caching** to minimize redundant computations
 - 🚀 **GPU acceleration** via CuPy for high-performance computation
-- 🧭 **Mis-registration geometry** (`synim.registration`): the relation between global (WFS/DM/guide-star) and local (per-pair) mis-registration, its inversion, and sensitivity/noise analysis - see the [documentation](https://synim.readthedocs.io/en/latest/registration.html)
+- 🧭 **Mis-registration geometry** (`synim.registration`): a geometric (not pixel-based) model of the relation between global (WFS/DM/guide-star) and local (per-pair) mis-registration in MCAO/GLAO systems, its inversion, and sensitivity/noise analysis - see the [documentation](https://synim.readthedocs.io/en/latest/registration.html)
 
 ## Documentation
 
