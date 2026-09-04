@@ -13,22 +13,35 @@ actuator index expressed as a physical position) to the true, mis-registered
 position `y`, both expressed in the same physical unit (e.g. sub-aperture
 pitch).
 
-`build_affine` builds `M` from the four named mis-registration parameters
-used throughout this project and in `synim.utils.rotshiftzoom_array`:
+`build_affine` builds `M` from the five named mis-registration parameters
+used throughout this project and in `synim.utils.rotshiftzoom_array`/
+`synim.synim`:
 
     shift          (x, y) translation, in the same units as position
     rotation       degrees, standard image/matrix convention (+Y is "down",
                    a positive angle rotates +X towards +Y)
-    magnification  isotropic scale factor (1.0 = no magnification); this is
-                   the "one parameter for simplicity" of the SPIE paper
+    magnification  isotropic scale factor (1.0 = no magnification); alone,
+                   this is the "one parameter for simplicity" of the SPIE
+                   paper
     anamorphosis_45  diagonal (45 deg) shear/stretch factor (1.0 = none),
                    same definition as `wfs_anamorphosis_45` in
                    `synim.utils.rotshiftzoom_array`
+    anamorphosis_90  ratio between the Y and X magnification (1.0 = none,
+                   i.e. isotropic), same definition as `wfs_anamorphosis_90`
+                   in `synim.synim` (there folded directly into an
+                   anisotropic `wfs_magnification = (mag, mag *
+                   anamorphosis_90)` rather than kept as a separate factor)
 
-The composition order (magnification, then 45 deg anamorphosis, then
-rotation, with the shift added last and therefore unaffected by the linear
-part) was reverse-engineered from, and is validated against, the physical
-behaviour of `rotshiftzoom_array` as pinned down by
+Together, magnification, anamorphosis_45 and anamorphosis_90 span every
+possible pure shape distortion (no rotation) of a 2x2 linear map - three
+numbers for three degrees of freedom - so no further "shape" parameter is
+needed.
+
+The composition order (magnification and anamorphosis_90 together as an
+anisotropic scale, then 45 deg anamorphosis, then rotation, with the shift
+added last and therefore unaffected by the linear part) was
+reverse-engineered from, and is validated against, the physical behaviour
+of `rotshiftzoom_array`/`synim.synim` as pinned down by
 `test/test_rotshiftzoom.py` (DM/WFS shift independent of/scaled by
 magnification and rotation) - see
 `test/test_geometry_vs_pixel_synim.py` for the numerical cross-check.
@@ -112,12 +125,13 @@ class AffineTransform:
 
 
 def build_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
-                  anamorphosis_45=1.0):
+                  anamorphosis_45=1.0, anamorphosis_90=1.0):
     """
     Build the forward `AffineTransform` for a WFS-side (or generic/local)
     mis-registration:
 
-        y = R(rotation) @ Anam(anamorphosis_45) @ (magnification * x) + shift
+        S = magnification * diag(1, anamorphosis_90)
+        y = R(rotation) @ Anam(anamorphosis_45) @ (S @ x) + shift
 
     `shift` is added last (i.e. NOT affected by rotation, magnification or
     anamorphosis): it represents a pure detector shift, expressed directly
@@ -145,8 +159,13 @@ def build_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
         the reciprocal of `wfs_anamorphosis_45` as passed to
         `synim.utils.rotshiftzoom_array` (verified empirically - see
         `test_geometry_vs_pixel_synim.py::test_anamorphosis_convention`).
+    anamorphosis_90 : float
+        Ratio between the Y and X magnification (1.0 = none). This
+        directly matches `wfs_anamorphosis_90` as used in `synim.synim`
+        (``wfs_magnification = (mag, mag * anamorphosis_90)``) - no
+        reciprocal correction needed, unlike `anamorphosis_45`.
     """
-    S = np.eye(2) * float(magnification)
+    S = np.diag([1.0, float(anamorphosis_90)]) * float(magnification)
     A = anamorphosis_matrix(float(anamorphosis_45))
     R = rotation_matrix(float(rotation))
     M = R @ A @ S
@@ -155,26 +174,28 @@ def build_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
 
 
 def build_dm_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
-                     anamorphosis_45=1.0):
+                     anamorphosis_45=1.0, anamorphosis_90=1.0):
     """
     Build the forward `AffineTransform` for a DM-side mis-registration
     relative to the pupil (or the GS-parallax/cone-effect map from
-    `shiftzoom_from_source_dm_params`, which does not use `anamorphosis_45`):
+    `shiftzoom_from_source_dm_params`, which uses neither anamorphosis
+    term):
 
-        y = R(rotation) @ Anam(anamorphosis_45) @ (magnification * x) + magnification * shift
+        S = magnification * diag(1, anamorphosis_90)
+        y = R(rotation) @ Anam(anamorphosis_45) @ (S @ x) + magnification * shift
 
     Unlike `build_affine`, `shift` here IS scaled by `magnification` (it
     represents e.g. a GS footprint offset expressed at the DM plane, which
     is naturally subject to the same cone-effect scaling as everything
     else) but, like in `build_affine`, is still unaffected by `rotation`
-    and `anamorphosis_45` (a pure shape distortion of the DM's own
+    and by the anamorphosis terms (a pure shape distortion of the DM's own
     actuator grid does not move a shift already expressed as a physical
     offset). `rotshiftzoom_array` has no DM-side anamorphosis term (only
-    `wfs_anamorphosis_45` on the WFS side); this is a registration-package
-    extension for a mis-registration category the SPIE paper allows for
-    ("X and Y magnification or higher order distortion can also be
-    considered", Sec. 2) but the pixel-based pipeline does not yet
-    implement, so there is no `rotshiftzoom_array` cross-check for it.
+    the WFS side has one); this is a registration-package extension for a
+    mis-registration category the SPIE paper allows for ("X and Y
+    magnification or higher order distortion can also be considered",
+    Sec. 2) but the pixel-based pipeline does not implement on the DM
+    side, so there is no `rotshiftzoom_array` cross-check for it.
 
     Parameters
     ----------
@@ -185,8 +206,10 @@ def build_dm_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
         Isotropic scale factor (1.0 = none).
     anamorphosis_45 : float
         Diagonal (45 deg) shear/stretch factor (1.0 = none).
+    anamorphosis_90 : float
+        Ratio between the Y and X magnification (1.0 = none).
     """
-    S = np.eye(2) * float(magnification)
+    S = np.diag([1.0, float(anamorphosis_90)]) * float(magnification)
     A = anamorphosis_matrix(float(anamorphosis_45))
     R = rotation_matrix(float(rotation))
     M = R @ A @ S
@@ -198,26 +221,26 @@ def build_dm_affine(shift=(0.0, 0.0), rotation=0.0, magnification=1.0,
 def decompose_affine(transform):
     """
     Invert `build_affine`: recover (shift, rotation, magnification,
-    anamorphosis_45) from an `AffineTransform`.
+    anamorphosis_45, anamorphosis_90) from an `AffineTransform`.
 
-    This is an exact, closed-form inverse under the assumption used
-    throughout this project that magnification is isotropic (the "one
-    parameter for simplicity" of the SPIE paper). Writing
-    ``M = R(rotation) @ Anam(anamorphosis_45) @ (magnification * I)`` out
-    with ``a = (1+k)/2``, ``b = (1-k)/2`` (``k`` = anamorphosis_45) gives:
+    This is an exact, closed-form inverse, built from the Gram matrix
+    ``G = M.T @ M``, which is invariant under the left rotation `R` (i.e.
+    it only sees the shape part ``N = Anam(k45) @ diag(mag, mag*k90)``,
+    which the rotation does not affect: ``G = N.T @ N``). Using
+    ``Anam(k45) @ Anam(k45) == Anam(k45**2)`` (Anam is a fixed-eigenbasis
+    matrix, so squaring it squares its eigenvalues) gives, with
+    ``p = (1 + k45**2) / 2`` and ``q = (1 - k45**2) / 2``:
 
-        M00 + M11 = magnification * cos(rotation) * (1 + k)
-        M10 - M01 = magnification * sin(rotation) * (1 + k)
-        M01 + M10 = magnification * cos(rotation) * (1 - k)
-        M11 - M00 = magnification * sin(rotation) * (1 - k)
+        G00 = mag**2 * p
+        G11 = (mag*k90)**2 * p
+        G01 = mag**2 * k90 * q
 
-    so the norms of the two pairs above are ``magnification * (1 + k)`` and
-    ``magnification * |1 - k|`` (assuming k > -1, i.e. magnification * (1+k)
-    > 0, which always holds for a physical anamorphosis); the sign lost in
-    the second norm is recovered from whether ``(M01+M10, M11-M00)`` points
-    along or against ``(M00+M11, M10-M01)`` (i.e. whether k is below or
-    above 1). ``k == 1`` (no anamorphosis) is the well behaved limit where
-    the second pair is identically zero.
+    ``r = G01 / sqrt(G00*G11)`` therefore equals ``q / p``, giving
+    ``k45**2 = (1-r)/(1+r)`` (the positive root: an anamorphosis factor is
+    a ratio of two positive lengths). ``mag`` and ``k90`` follow from
+    ``G00``/``G11`` and ``p``, and finally `rotation` from how `M`'s first
+    column compares to the now fully known shape matrix `N`'s first
+    column (see the source for the exact, short derivation).
 
     Returns
     -------
@@ -225,19 +248,35 @@ def decompose_affine(transform):
     rotation : float, degrees
     magnification : float
     anamorphosis_45 : float
+    anamorphosis_90 : float
     """
     M = transform.M
-    P, S_ = M[0, 0] + M[1, 1], M[1, 0] - M[0, 1]  # mag * (1 + k) * (cos, sin)
-    R_, Q = M[0, 1] + M[1, 0], M[1, 1] - M[0, 0]  # mag * (1 - k) * (cos, sin)
+    G = M.T @ M
+    if G[0, 0] <= 0.0 or G[1, 1] <= 0.0:
+        raise ValueError("Singular affine transform: cannot recover rotation/magnification/anamorphosis.")
 
-    plus = np.hypot(P, S_)                         # mag * (1 + k)
-    minus_sign = np.sign(P * R_ + S_ * Q) or 1.0
-    minus = minus_sign * np.hypot(R_, Q)           # mag * (1 - k), signed
+    # |r| <= 1 always holds: G is a Gram matrix, hence positive
+    # semi-definite, i.e. G01**2 <= G00*G11 (Cauchy-Schwarz).
+    r = G[0, 1] / np.sqrt(G[0, 0] * G[1, 1])
+    anamorphosis_45 = float(np.sqrt((1.0 - r) / (1.0 + r)))
 
-    magnification = float((plus + minus) / 2.0)
-    if magnification == 0.0:
-        raise ValueError("Singular affine transform: cannot recover rotation/anamorphosis.")
-    anamorphosis_45 = float((plus - minus) / (2.0 * magnification))
-    rotation = float(np.degrees(np.arctan2(S_, P)))
+    p = (1.0 + anamorphosis_45 ** 2) / 2.0
+    d1 = float(np.sqrt(G[0, 0] / p))   # = magnification
+    d2 = float(np.sqrt(G[1, 1] / p))   # = magnification * anamorphosis_90
+    magnification = d1
+    anamorphosis_90 = d2 / d1
 
-    return np.array(transform.t, dtype=float), rotation, magnification, anamorphosis_45
+    # N = Anam(anamorphosis_45) @ diag(d1, d2); its first column is
+    # (a*d1, b*d1) with a=(1+k45)/2, b=(1-k45)/2. M's first column is
+    # R(rotation) applied to that (known) vector, so rotation follows by
+    # solving R(rotation) @ (a*d1, b*d1) = M[:, 0] for the angle (a
+    # 2-equation, 1-unknown system, consistent by construction).
+    a = (1.0 + anamorphosis_45) / 2.0
+    b = (1.0 - anamorphosis_45) / 2.0
+    tx, ty = M[0, 0], M[1, 0]
+    cos_r = (a * tx + b * ty) / (p * d1)
+    sin_r = (a * ty - b * tx) / (p * d1)
+    rotation = float(np.degrees(np.arctan2(sin_r, cos_r)))
+
+    return (np.array(transform.t, dtype=float), rotation, magnification,
+            anamorphosis_45, anamorphosis_90)

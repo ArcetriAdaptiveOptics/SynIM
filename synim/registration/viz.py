@@ -200,12 +200,13 @@ def plot_mis_registration_table(system, ax=None, colors=None, fontsize=9):
         colors = _element_colors(system)
     ax.axis("off")
 
-    dm_header = ["DM", "height [m]", "shift x", "shift y", "rot [deg]", "mag", "anam"]
+    dm_header = ["DM", "height [m]", "shift x", "shift y", "rot [deg]", "mag", "anam45", "anam90"]
     dm_rows = [[dm.name, f"{dm.height:.0f}", _fmt(dm.shift[0]), _fmt(dm.shift[1]),
-                _fmt(dm.rotation), _fmt(dm.magnification, 4), _fmt(dm.anamorphosis_45, 4)]
+                _fmt(dm.rotation), _fmt(dm.magnification, 4), _fmt(dm.anamorphosis_45, 4),
+                _fmt(dm.anamorphosis_90, 4)]
                for dm in system.dms.values()]
 
-    wfs_header = ["WFS", "guide star", "shift x", "shift y", "rot [deg]", "mag", "anam"]
+    wfs_header = ["WFS", "guide star", "shift x", "shift y", "rot [deg]", "mag", "anam45", "anam90"]
     wfs_rows = []
     gs_header = ["guide star", "pos [\"]", "pos err [\"]", "height [m]", "height err [m]"]
     gs_rows = []
@@ -213,7 +214,7 @@ def plot_mis_registration_table(system, ax=None, colors=None, fontsize=9):
         gs = wfs.guide_star
         wfs_rows.append([wfs.name, gs.name, _fmt(wfs.shift[0]), _fmt(wfs.shift[1]),
                           _fmt(wfs.rotation), _fmt(wfs.magnification, 4),
-                          _fmt(wfs.anamorphosis_45, 4)])
+                          _fmt(wfs.anamorphosis_45, 4), _fmt(wfs.anamorphosis_90, 4)])
         height_str = "inf" if np.isinf(gs.height) else _fmt(gs.height, 6)
         gs_rows.append([gs.name, f"({_fmt(gs.position[0])}, {_fmt(gs.position[1])})",
                          f"({_fmt(gs.position_shift[0])}, {_fmt(gs.position_shift[1])})",

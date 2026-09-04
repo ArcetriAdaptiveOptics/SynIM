@@ -159,7 +159,7 @@ from the sensitivity matrix built above:
   (each scaled by its own parallax factor) leaves every local
   measurement unchanged - an exact gauge freedom, since only the
   *relative* WFS-DM alignment is observable;
-- a guide star position error and that WFS own shift affect a
+- a guide star position error and the shift of the WFS affect a
   single WFS-DM pair identically, and can only be told apart using
   several DMs at different altitudes.
 

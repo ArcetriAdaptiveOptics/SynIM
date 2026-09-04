@@ -13,7 +13,7 @@ required.
 .. note::
    For a companion example built from a real MORFEO SPECULA
    configuration - including the extra visualizations available through
-   SPECULA' ``plot_utils`` - see
+   SPECULA ``plot_utils`` - see
    ``SPECULA_scripts/morfeo/mis_registration_geometry/`` alongside this
    repository.
 

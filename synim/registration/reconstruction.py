@@ -29,10 +29,12 @@ __all__ = [
 ]
 
 # Which local degrees of freedom to stack per pair, and in which order.
-LOCAL_DOF = ("shift_x", "shift_y", "rotation", "magnification", "anamorphosis_45")
+LOCAL_DOF = ("shift_x", "shift_y", "rotation", "magnification",
+             "anamorphosis_45", "anamorphosis_90")
 
 _DEFAULT_STEP = {"rotation": 1e-4, "shift": 1e-4, "position_shift": 1e-4,
-                  "height_shift": 1e-2, "magnification": 1e-5, "anamorphosis_45": 1e-5}
+                  "height_shift": 1e-2, "magnification": 1e-5,
+                  "anamorphosis_45": 1e-5, "anamorphosis_90": 1e-5}
 
 
 @dataclass(frozen=True)
@@ -42,11 +44,11 @@ class ParameterSpec:
     Lambda: which object and field of the `System` it controls.
 
     kind : 'wfs', 'dm' or 'gs'
-    name : the WFS/DM/guide-star name in the System (for 'gs', the guide
-        star's own `.name`, looked up across all WFSs)
+    name : the WFS/DM/guide-star name in the System (for 'gs', the `.name`
+        of the guide star, looked up across all WFSs)
     field : attribute name ('shift', 'rotation', 'magnification',
-        'anamorphosis_45' for kind='wfs'/'dm'; 'position_shift',
-        'height_shift' for kind='gs')
+        'anamorphosis_45', 'anamorphosis_90' for kind='wfs'/'dm';
+        'position_shift', 'height_shift' for kind='gs')
     component : vector component (0=x, 1=y) for a tuple field, None for a
         scalar field
     """
@@ -113,9 +115,10 @@ def local_params_vector(system, pairs, dof=LOCAL_DOF):
     """
     values = []
     for wfs_name, dm_name in pairs:
-        shift, rotation, magnification, anam = system.local_params(wfs_name, dm_name)
+        shift, rotation, magnification, anam45, anam90 = system.local_params(wfs_name, dm_name)
         full = {"shift_x": shift[0], "shift_y": shift[1], "rotation": rotation,
-                "magnification": magnification, "anamorphosis_45": anam}
+                "magnification": magnification, "anamorphosis_45": anam45,
+                "anamorphosis_90": anam90}
         values.extend(full[d] for d in dof)
     return np.array(values, dtype=float)
 

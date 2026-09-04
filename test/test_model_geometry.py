@@ -83,11 +83,12 @@ class TestDmIsPupilCase(unittest.TestCase):
         system.add_wfs(wfs)
         system.add_dm(dm)
 
-        shift, rotation, magnification, anam = system.local_params("wfs1", "dm1")
+        shift, rotation, magnification, anam45, anam90 = system.local_params("wfs1", "dm1")
         np.testing.assert_allclose(shift, (0.0, 0.0), atol=1e-10)
         self.assertAlmostEqual(rotation, 0.0, places=8)
         self.assertAlmostEqual(magnification, 1.0, places=8)
-        self.assertAlmostEqual(anam, 1.0, places=8)
+        self.assertAlmostEqual(anam45, 1.0, places=8)
+        self.assertAlmostEqual(anam90, 1.0, places=8)
 
 
 class TestGsPositionErrorIsObservableLocally(unittest.TestCase):
@@ -109,7 +110,7 @@ class TestGsPositionErrorIsObservableLocally(unittest.TestCase):
         system.add_wfs(wfs)
         system.add_dm(dm)
 
-        shift, rotation, magnification, anam = system.local_params("wfs1", "dm2")
+        shift, rotation, magnification, anam45, anam90 = system.local_params("wfs1", "dm2")
 
         mag_factor = gs_height / (gs_height - dm_height)
         expected_shift = -(np.array(pos_shift_asec) * (np.pi / 180 / 3600)
@@ -118,7 +119,8 @@ class TestGsPositionErrorIsObservableLocally(unittest.TestCase):
         np.testing.assert_allclose(shift, expected_shift, atol=1e-8)
         self.assertAlmostEqual(rotation, 0.0, places=8)
         self.assertAlmostEqual(magnification, mag_factor, places=8)
-        self.assertAlmostEqual(anam, 1.0, places=8)
+        self.assertAlmostEqual(anam45, 1.0, places=8)
+        self.assertAlmostEqual(anam90, 1.0, places=8)
 
 
 class TestMultiWfsDmSystem(unittest.TestCase):
@@ -137,11 +139,12 @@ class TestMultiWfsDmSystem(unittest.TestCase):
                               shift=(0.05 * j, 0.0), rotation=-0.2 * j))
 
         for wfs_name, dm_name in system.pairs():
-            shift, rotation, magnification, anam = system.local_params(wfs_name, dm_name)
+            shift, rotation, magnification, anam45, anam90 = system.local_params(wfs_name, dm_name)
             self.assertTrue(np.all(np.isfinite(shift)))
             self.assertTrue(np.isfinite(rotation))
             self.assertGreater(magnification, 0.0)
-            self.assertGreater(anam, 0.0)
+            self.assertGreater(anam45, 0.0)
+            self.assertGreater(anam90, 0.0)
 
 
 if __name__ == "__main__":

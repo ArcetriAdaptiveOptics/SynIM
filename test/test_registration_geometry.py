@@ -9,9 +9,10 @@ from synim.registration.geometry import (
 class TestGeometryRoundTrip(unittest.TestCase):
     """Round-trip build_affine -> decompose_affine over a grid of parameters."""
 
-    def _check_roundtrip(self, shift, rotation, magnification, anamorphosis_45):
-        t = build_affine(shift, rotation, magnification, anamorphosis_45)
-        rec_shift, rec_rot, rec_mag, rec_anam = decompose_affine(t)
+    def _check_roundtrip(self, shift, rotation, magnification, anamorphosis_45,
+                          anamorphosis_90=1.0):
+        t = build_affine(shift, rotation, magnification, anamorphosis_45, anamorphosis_90)
+        rec_shift, rec_rot, rec_mag, rec_anam45, rec_anam90 = decompose_affine(t)
 
         np.testing.assert_allclose(rec_shift, shift, atol=1e-9)
         self.assertAlmostEqual(
@@ -19,7 +20,8 @@ class TestGeometryRoundTrip(unittest.TestCase):
             msg=f"rotation mismatch: got {rec_rot}, expected {rotation}"
         )
         self.assertAlmostEqual(rec_mag, magnification, places=6)
-        self.assertAlmostEqual(rec_anam, anamorphosis_45, places=6)
+        self.assertAlmostEqual(rec_anam45, anamorphosis_45, places=6)
+        self.assertAlmostEqual(rec_anam90, anamorphosis_90, places=6)
 
     def test_identity(self):
         self._check_roundtrip((0.0, 0.0), 0.0, 1.0, 1.0)
@@ -35,9 +37,18 @@ class TestGeometryRoundTrip(unittest.TestCase):
         for mag in [0.5, 0.8, 1.0, 1.01, 1.5, 2.0]:
             self._check_roundtrip((0.0, 0.0), 0.0, mag, 1.0)
 
-    def test_anamorphosis_only(self):
+    def test_anamorphosis_45_only(self):
         for k in [0.5, 0.8, 1.0, 1.2, 1.5]:
             self._check_roundtrip((0.0, 0.0), 0.0, 1.0, k)
+
+    def test_anamorphosis_90_only(self):
+        for k in [0.5, 0.8, 1.0, 1.2, 1.5]:
+            self._check_roundtrip((0.0, 0.0), 0.0, 1.0, 1.0, k)
+
+    def test_anamorphosis_45_and_90_combined(self):
+        for k45, k90 in [(0.8, 1.3), (1.2, 0.7), (0.9, 0.9), (1.4, 1.4)]:
+            self._check_roundtrip((0.0, 0.0), 0.0, 1.0, k45, k90)
+            self._check_roundtrip((0.0, 0.0), 37.0, 1.1, k45, k90)
 
     def test_combined_grid(self):
         rng = np.random.default_rng(0)
@@ -45,8 +56,9 @@ class TestGeometryRoundTrip(unittest.TestCase):
             shift = tuple(rng.uniform(-5, 5, size=2))
             rotation = rng.uniform(-179, 179)
             magnification = rng.uniform(0.5, 1.5)
-            anam = rng.uniform(0.7, 1.3)
-            self._check_roundtrip(shift, rotation, magnification, anam)
+            anam45 = rng.uniform(0.7, 1.3)
+            anam90 = rng.uniform(0.7, 1.3)
+            self._check_roundtrip(shift, rotation, magnification, anam45, anam90)
 
 
 class TestGeometryComposition(unittest.TestCase):

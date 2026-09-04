@@ -30,14 +30,15 @@ from .geometry import build_affine, build_dm_affine, decompose_affine
 __all__ = ["GuideStar", "DM", "WFS", "System", "gs_parallax_transform"]
 
 # NOTE on yml loading (System.from_params_manager, below): by design this
-# reuses synim.params_utils's existing extraction helpers read-only and
-# never modifies synim/params_manager.py or synim/params_utils.py. Only
-# the WFS mis-registration fields (rotation, shift, magnification,
-# anamorphosis_45) have an established key in that yml schema; DM
-# shift/magnification and GS position/height error do not (there is no
-# nominal-vs-actual split for them there), so they are left at their
-# identity default and are meant to be set programmatically afterwards
-# (e.g. via `reconstruction.apply_alpha`/`ParameterSpec`).
+# reuses the existing extraction helpers of synim.params_utils read-only
+# and never modifies synim/params_manager.py or synim/params_utils.py.
+# Only the WFS mis-registration fields (rotation, shift, magnification,
+# anamorphosis_45, anamorphosis_90) have an established key in that yml
+# schema; DM shift/magnification/anamorphosis and GS position/height
+# error do not (there is no nominal-vs-actual split for them there), so
+# they are left at their identity default and are meant to be set
+# programmatically afterwards (e.g. via
+# `reconstruction.apply_alpha`/`ParameterSpec`).
 
 ARCSEC2RAD = np.pi / 180 / 3600
 
@@ -77,12 +78,13 @@ class DM:
     rotation: float = 0.0
     magnification: float = 1.0
     anamorphosis_45: float = 1.0
+    anamorphosis_90: float = 1.0
 
     def transform(self):
         """Own mis-registration transform vs the pupil: nominal actuator
         grid -> true physical actuator position."""
         return build_dm_affine(self.shift, self.rotation, self.magnification,
-                                self.anamorphosis_45)
+                                self.anamorphosis_45, self.anamorphosis_90)
 
 
 @dataclass
@@ -96,12 +98,13 @@ class WFS:
     rotation: float = 0.0
     magnification: float = 1.0
     anamorphosis_45: float = 1.0
+    anamorphosis_90: float = 1.0
 
     def transform(self):
         """Own mis-registration transform vs the pupil: nominal
         sub-aperture grid -> true physical sub-aperture position."""
         return build_affine(self.shift, self.rotation, self.magnification,
-                             self.anamorphosis_45)
+                             self.anamorphosis_45, self.anamorphosis_90)
 
 
 def gs_parallax_transform(guide_star, dm_height, pixel_pitch):
@@ -138,19 +141,21 @@ def gs_parallax_transform(guide_star, dm_height, pixel_pitch):
 
 def _read_shift_mag_anam(params):
     """
-    Read (shift, magnification, anamorphosis_45) from a WFS or DM yml
-    section, using the same key convention for both (see
+    Read (shift, magnification, anamorphosis_45, anamorphosis_90) from a
+    WFS or DM yml section, using the same key convention for both (see
     `System.from_params_manager`): `xShiftPhInPixel`/`yShiftPhInPixel` (or
-    `translation`), `magnification`, `anamorph45`. All default to
-    identity (0 shift, 1 magnification/anamorphosis) when absent, which is
-    always the case today for DM sections (no established key there yet).
+    `translation`), `magnification`, `anamorph45`, `anamorph90`. All
+    default to identity (0 shift, 1 magnification/anamorphosis) when
+    absent, which is always the case today for DM sections (no
+    established key there yet).
     """
     x_shift = params.get("xShiftPhInPixel", 0.0)
     y_shift = params.get("yShiftPhInPixel", 0.0)
     shift = tuple(params.get("translation", [x_shift, y_shift]))
     magnification = params.get("magnification", 1.0)
     anamorphosis_45 = params.get("anamorph45", 1.0)
-    return shift, magnification, anamorphosis_45
+    anamorphosis_90 = params.get("anamorph90", 1.0)
+    return shift, magnification, anamorphosis_45, anamorphosis_90
 
 
 @dataclass
@@ -192,8 +197,9 @@ class System:
         return wfs_transform.inverse().compose(parallax).compose(dm_transform)
 
     def local_params(self, wfs_name, dm_name):
-        """Local (shift, rotation, magnification, anamorphosis_45) for one
-        WFS-DM pair, i.e. what a local (SPRINT-like) estimator measures."""
+        """Local (shift, rotation, magnification, anamorphosis_45,
+        anamorphosis_90) for one WFS-DM pair, i.e. what a local
+        (SPRINT-like) estimator measures."""
         return decompose_affine(self.local_transform(wfs_name, dm_name))
 
     def pairs(self):
@@ -248,7 +254,7 @@ class System:
             wfs_params = entry["config"]
 
             rotation = wfs_params.get("rotation", wfs_params.get("rotAnglePhInDeg", 0.0))
-            shift, magnification, anamorphosis_45 = _read_shift_mag_anam(wfs_params)
+            shift, magnification, anamorphosis_45, anamorphosis_90 = _read_shift_mag_anam(wfs_params)
 
             gs_r, gs_theta_deg = extract_source_coordinates(raw_config, wfs_key)
             gs_position = tuple(polar_to_xy(gs_r, np.deg2rad(gs_theta_deg)))
@@ -257,18 +263,19 @@ class System:
             guide_star = GuideStar(name=f"gs_{wfs_key}", position=gs_position, height=gs_height)
             system.add_wfs(WFS(name=wfs_key, guide_star=guide_star, shift=shift,
                                 rotation=rotation, magnification=magnification,
-                                anamorphosis_45=anamorphosis_45))
+                                anamorphosis_45=anamorphosis_45, anamorphosis_90=anamorphosis_90))
 
         for entry in extract_dm_list(raw_config):
             if dm_names is not None and entry["name"] not in dm_names:
                 continue
             dm_params = entry["config"]
-            dm_shift, dm_magnification, dm_anamorphosis_45 = _read_shift_mag_anam(dm_params)
+            dm_shift, dm_magnification, dm_anamorphosis_45, dm_anamorphosis_90 = _read_shift_mag_anam(dm_params)
             system.add_dm(DM(name=entry["name"],
                               height=dm_params.get("height", 0.0),
                               shift=dm_shift,
                               rotation=dm_params.get("rotation", 0.0),
                               magnification=dm_magnification,
-                              anamorphosis_45=dm_anamorphosis_45))
+                              anamorphosis_45=dm_anamorphosis_45,
+                              anamorphosis_90=dm_anamorphosis_90))
 
         return system

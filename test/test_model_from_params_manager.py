@@ -54,7 +54,7 @@ class TestSystemFromParamsManager(unittest.TestCase):
         config = parse_params_file(os.path.join(TEST_DIR, "params_scao_sh_shift_test.yml"))
         system = System.from_params_manager(config)
         for wfs_name, dm_name in system.pairs():
-            shift, rotation, magnification, anam = system.local_params(wfs_name, dm_name)
+            shift, rotation, magnification, anam45, anam90 = system.local_params(wfs_name, dm_name)
             self.assertTrue(np.all(np.isfinite(shift)))
 
 

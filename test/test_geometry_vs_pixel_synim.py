@@ -151,6 +151,30 @@ class TestGeometryVsPixelSynim(unittest.TestCase):
         on_minus_diag = coms[np.argmax(np.abs(coms[:, 0] - coms[:, 1]))]
         np.testing.assert_allclose(on_minus_diag, (d / k_code, -d / k_code), atol=0.5)
 
+    def test_anamorphosis_90_convention(self):
+        """
+        `synim.synim` builds an anisotropic `wfs_magnification = (mag, mag
+        * wfs_anamorphosis_90)` for `rotshiftzoom_array` - unlike
+        `anamorphosis_45` (a fixed-eigenbasis shear, reciprocal to the
+        code's own parameter - see `test_anamorphosis_convention`),
+        `anamorphosis_90` is a direct axis-aligned magnification ratio, so
+        `build_affine(anamorphosis_90=k)` should match that convention
+        with no reciprocal.
+        """
+        dy, dx = 15.0, 9.0
+        blob = np.exp(-(((self._yy - (self.center + dy)) ** 2
+                          + (self._xx - (self.center + dx)) ** 2) / (2 * 5 ** 2)))
+        mag, k90 = 1.3, 1.6
+
+        out = rotshiftzoom_array(blob, wfs_magnification=(mag, mag * k90),
+                                  output_size=(self.size, self.size))
+        actual = _centroid(out) - self.center
+
+        wfs = build_affine(magnification=mag, anamorphosis_90=k90)
+        predicted = wfs(np.array([dy, dx]))
+        np.testing.assert_allclose(actual, predicted, atol=0.5,
+                                    err_msg=f"actual={actual} predicted={predicted}")
+
 
 if __name__ == "__main__":
     unittest.main()
