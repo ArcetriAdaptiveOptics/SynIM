@@ -163,7 +163,23 @@ from the sensitivity matrix built above:
 ``ParameterSpec`` entries dominate each direction; passing ``sigma``
 (the local-measurement noise, one value or one per degree of freedom)
 also returns the resulting global-parameter uncertainty, both from the
-pseudo-inverse directly and from a Monte Carlo cross-check.
+pseudo-inverse directly (``analytic_std``) and from a Monte Carlo
+cross-check (``montecarlo_std``, via `monte_carlo_noise_propagation`).
+
+.. important::
+   That Monte Carlo check reconstructs with a single linear step,
+   linearized exactly at the true values used to generate ``report``'s
+   sensitivity matrix - the same linear model behind ``analytic_std``.
+   Its expectation therefore equals those true values by construction,
+   so it can validate the analytic UNCERTAINTY, but it is unbiased by
+   construction and cannot reveal an estimation BIAS. To check for a
+   real bias, run `monte_carlo_gauss_newton` instead: it repeats the
+   actual iterative estimator (`gauss_newton_invert`) from a given
+   starting system - typically the nominal one, as an operational
+   estimator would, not knowing the true values in advance. Compare its
+   returned mean to the true values, in units of ``std / sqrt(n_trials)``
+   (the standard error of that mean), to tell a real bias from Monte
+   Carlo sampling noise.
 
 Visualization
 --------------

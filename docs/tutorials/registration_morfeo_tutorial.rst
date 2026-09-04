@@ -153,6 +153,24 @@ weakly sensitive to a realistic sodium-layer altitude error - a real
 system needs a dedicated technique (for example focus sensing) for
 that parameter, not geometric registration alone.
 
+Both estimates above are UNCERTAINTY, not BIAS: `analyze` reconstructs
+with a single linear step linearized exactly at the truth, so its
+expectation equals the truth by construction. To check for a real bias,
+run the actual iterative estimator, starting from the nominal system,
+over many noisy realizations:
+
+.. code-block:: python
+
+   from synim.registration.analysis import monte_carlo_gauss_newton
+
+   _, mean, covariance = monte_carlo_gauss_newton(
+       system, specs, pairs, measurements, sigma, n_trials=300)
+   bias = mean - true_alpha
+   standard_error = np.sqrt(np.diag(covariance) / 300)
+   print(bias / standard_error)  # values of order 1-2 are just sampling noise
+
+See :ref:`registration` for why the two checks are not interchangeable.
+
 Summary
 =========
 

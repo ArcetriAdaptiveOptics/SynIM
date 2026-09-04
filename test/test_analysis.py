@@ -2,11 +2,13 @@ import unittest
 import numpy as np
 
 from synim.registration.model import GuideStar, DM, WFS, System
-from synim.registration.reconstruction import ParameterSpec, jacobian, apply_alpha
+from synim.registration.reconstruction import (
+    ParameterSpec, jacobian, apply_alpha, local_params_vector,
+)
 from synim.registration.analysis import (
     svd_of_jacobian, condition_number, describe_mode, describe_modes,
     reconstruction_matrix, covariance_from_noise, monte_carlo_noise_propagation,
-    analyze,
+    monte_carlo_gauss_newton, analyze,
 )
 
 
@@ -130,6 +132,48 @@ class TestNoisePropagation(unittest.TestCase):
         expected_cov = (R * sigma ** 2) @ R.T
         np.testing.assert_allclose(cov, expected_cov)
         np.testing.assert_allclose(std, np.sqrt(np.diag(expected_cov)))
+
+    def test_analyze_exposes_montecarlo_mean(self):
+        system = _build_3wfs_2dm_system()
+        pairs = system.pairs()
+        specs = [ParameterSpec("dm", "dm0", "shift", 0)]
+        report = analyze(system, specs, pairs, dof=("shift_x", "shift_y"), sigma=0.02,
+                          n_trials=200, rng=np.random.default_rng(0))
+        self.assertIn("montecarlo_mean", report)
+        self.assertEqual(report["montecarlo_mean"].shape, (1,))
+
+
+class TestMonteCarloGaussNewton(unittest.TestCase):
+    """
+    Unlike `monte_carlo_noise_propagation` (a single linear step
+    linearized exactly at the truth, unbiased by construction),
+    `monte_carlo_gauss_newton` runs the real iterative estimator starting
+    from a given system - here the untouched nominal one, as a real
+    estimator would.
+    """
+
+    def test_matches_true_alpha_for_a_well_conditioned_case(self):
+        system = _build_3wfs_2dm_system()
+        pairs = system.pairs()
+        specs = [
+            ParameterSpec("dm", "dm0", "shift", 0),
+            ParameterSpec("dm", "dm1", "shift", 0),
+            ParameterSpec("wfs", "wfs0", "shift", 0),
+        ]
+        dof = ("shift_x", "shift_y")
+        true_alpha = np.array([0.3, -0.4, 0.2])
+        true_system = apply_alpha(system, specs, true_alpha)
+        D_true = local_params_vector(true_system, pairs, dof=dof)
+
+        rng = np.random.default_rng(1)
+        samples, mean, covariance = monte_carlo_gauss_newton(
+            system, specs, pairs, D_true, sigma=0.01, dof=dof,
+            n_trials=200, n_iter=3, rng=rng)
+
+        self.assertEqual(samples.shape, (200, 3))
+        self.assertEqual(covariance.shape, (3, 3))
+        # non-overlapping shifts, near-linear: negligible bias expected
+        np.testing.assert_allclose(mean, true_alpha, atol=0.01)
 
 
 if __name__ == "__main__":

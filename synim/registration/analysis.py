@@ -28,7 +28,7 @@ from .reconstruction import get_alpha, apply_alpha, local_params_vector, LOCAL_D
 __all__ = [
     "svd_of_jacobian", "condition_number", "describe_mode", "describe_modes",
     "reconstruction_matrix", "covariance_from_noise",
-    "monte_carlo_noise_propagation", "analyze",
+    "monte_carlo_noise_propagation", "monte_carlo_gauss_newton", "analyze",
 ]
 
 
@@ -136,6 +136,14 @@ def monte_carlo_noise_propagation(system0, specs, pairs, D_true, sigma,
     `gauss_newton_invert`, which would additionally re-linearize at every
     iteration).
 
+    Because this reconstruction is linear and linearized exactly at
+    `system0`'s own values, its expectation over noise equals those
+    values by construction: it can validate the analytic COVARIANCE, but
+    it is unbiased by construction and therefore cannot reveal a real
+    estimation BIAS. For that, use `monte_carlo_gauss_newton`, which runs
+    the actual iterative estimator instead - typically starting from a
+    different (e.g. nominal) system.
+
     Returns
     -------
     alpha_hat_samples : ndarray, shape (n_trials, n_specs)
@@ -158,7 +166,69 @@ def monte_carlo_noise_propagation(system0, specs, pairs, D_true, sigma,
     alpha_hat_samples = alpha0 + (D_meas - D0) @ R.T
 
     mean = alpha_hat_samples.mean(axis=0)
-    covariance = np.cov(alpha_hat_samples, rowvar=False)
+    # `numpy.cov` returns a bare 0-d scalar (not a 1x1 array) for a single
+    # variable, which breaks callers expecting a (n_specs, n_specs) matrix
+    # (e.g. `numpy.diag`) - reshape defensively.
+    covariance = np.cov(alpha_hat_samples, rowvar=False).reshape(len(specs), len(specs))
+    return alpha_hat_samples, mean, covariance
+
+
+def monte_carlo_gauss_newton(system_start, specs, pairs, D_true, sigma,
+                              dof=LOCAL_DOF, n_trials=500, n_iter=6,
+                              rcond=1e-10, rng=None):
+    """
+    Monte Carlo study of the REAL iterative estimator
+    (`reconstruction.gauss_newton_invert`): for each of `n_trials` noisy
+    local measurements ``D_meas = D_true + noise``, run the full
+    Gauss-Newton iteration from `system_start` (typically the NOMINAL
+    system, not the true one - i.e. what an operational estimator
+    actually starts from) to convergence, re-linearizing at every step.
+
+    Unlike `monte_carlo_noise_propagation` (a single linear step
+    linearized exactly at the truth, unbiased by construction - see its
+    docstring), this can reveal a genuine estimation BIAS, from:
+
+      - `system_start` not being the true system (a real estimator does
+        not know the truth in advance);
+      - the nonlinearity of the local <-> global map itself (the same
+        nonlinearity that makes `gauss_newton_invert` take several
+        iterations even without noise);
+      - noise interacting with a poorly conditioned direction (large
+        noise-driven excursions can leave the region where the
+        linearization is a good approximation).
+
+    This is `n_iter` times more expensive per trial than
+    `monte_carlo_noise_propagation` (one `jacobian` evaluation per
+    iteration instead of one total), so `n_trials` defaults lower.
+
+    Returns
+    -------
+    alpha_hat_samples : ndarray, shape (n_trials, n_specs)
+    mean : ndarray, shape (n_specs,)
+        Compare to the true `alpha` (e.g. via `apply_alpha`/`get_alpha`
+        on the system `D_true` was generated from): a nonzero
+        ``mean - true_alpha`` is the estimator's bias.
+    covariance : ndarray, shape (n_specs, n_specs)
+    """
+    from .reconstruction import gauss_newton_invert  # local import: avoids a cycle at module load
+
+    if rng is None:
+        rng = np.random.default_rng()
+    sigma = np.broadcast_to(np.asarray(sigma, dtype=float), (len(pairs) * len(dof),))
+
+    alpha_hat_samples = np.empty((n_trials, len(specs)))
+    for trial in range(n_trials):
+        noise = rng.normal(scale=sigma)
+        D_meas = D_true + noise
+        alpha_hat, _, _ = gauss_newton_invert(
+            system_start, specs, pairs, D_meas, dof=dof, n_iter=n_iter, rcond=rcond)
+        alpha_hat_samples[trial] = alpha_hat
+
+    mean = alpha_hat_samples.mean(axis=0)
+    # `numpy.cov` returns a bare 0-d scalar (not a 1x1 array) for a single
+    # variable, which breaks callers expecting a (n_specs, n_specs) matrix
+    # (e.g. `numpy.diag`) - reshape defensively.
+    covariance = np.cov(alpha_hat_samples, rowvar=False).reshape(len(specs), len(specs))
     return alpha_hat_samples, mean, covariance
 
 
@@ -173,7 +243,13 @@ def analyze(system0, specs, pairs, dof=LOCAL_DOF, sigma=None, n_modes=None,
     `modes` (`describe_modes` output, ordered like `singular_values`,
     i.e. best-determined first), and - only if `sigma` is given -
     `analytic_std`, `analytic_covariance`, `montecarlo_std`,
-    `montecarlo_covariance`.
+    `montecarlo_covariance`, `montecarlo_mean`.
+
+    The Monte Carlo entries come from `monte_carlo_noise_propagation`
+    (a single linear step linearized at `system0`'s own values): good to
+    cross-check `analytic_std`/`analytic_covariance`, but unbiased by
+    construction, so `montecarlo_mean` is not a real bias estimate - use
+    `monte_carlo_gauss_newton` directly for that.
     """
     from .reconstruction import jacobian  # local import: avoids a cycle at module load
 
@@ -199,6 +275,11 @@ def analyze(system0, specs, pairs, dof=LOCAL_DOF, sigma=None, n_modes=None,
             "analytic_std": analytic_std,
             "montecarlo_covariance": mc_cov,
             "montecarlo_std": np.sqrt(np.diag(mc_cov)),
+            # mc_mean == get_alpha(system0, specs) up to Monte Carlo noise,
+            # by construction (see monte_carlo_noise_propagation) - exposed
+            # mainly as a sanity check, not as a bias estimate; for a real
+            # bias estimate see `monte_carlo_gauss_newton`.
+            "montecarlo_mean": mc_mean,
         })
 
     return report
