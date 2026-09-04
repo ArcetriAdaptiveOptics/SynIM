@@ -6,7 +6,7 @@ from synim.registration.reconstruction import (
     ParameterSpec, jacobian, apply_alpha, local_params_vector,
 )
 from synim.registration.analysis import (
-    svd_of_jacobian, condition_number, describe_mode, describe_modes,
+    svd_of_jacobian, normalize_jacobian, condition_number, describe_mode, describe_modes,
     reconstruction_matrix, covariance_from_noise, monte_carlo_noise_propagation,
     monte_carlo_gauss_newton, analyze,
 )
