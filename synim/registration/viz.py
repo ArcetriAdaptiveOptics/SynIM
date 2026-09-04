@@ -28,12 +28,21 @@ mis-registered) guide star constellation.
 
 `plot_system_overview` puts the schematic, the table and (optionally,
 if a pupil diameter is given) the footprint panels together in one figure.
+
+`plot_mode_bar`/`plot_mode_gs_quiver` visualize one SVD mode of a
+sensitivity matrix (`analysis.svd_of_jacobian`, one row of `Vt`, i.e. one
+coefficient per `ParameterSpec`): a bar chart is a complete, unfiltered
+view (unlike `analysis.describe_mode`'s small-coefficient cutoff, which
+can hide contributions that are individually small but collectively
+needed for an exact degeneracy), and the sky quiver is a geometric view
+of the guide-star-position part of a mode, when it has one.
 """
 import numpy as np
 
 __all__ = [
     "plot_altitude_schematic", "plot_mis_registration_table",
     "plot_dm_footprint", "plot_dm_footprints", "plot_system_overview",
+    "plot_mode_bar", "plot_mode_gs_quiver",
 ]
 
 ARCSEC2RAD = np.pi / 180 / 3600
@@ -418,3 +427,118 @@ def plot_system_overview(system, slice_axis=0, pupil_diameter=None, figsize=None
                                  **(table_kwargs or {}))
     fig.tight_layout()
     return fig, axes
+
+
+_KIND_COLORS = {"wfs": "tab:blue", "dm": "tab:orange", "gs": "tab:green"}
+
+
+def plot_mode_bar(specs, coefficients, ax=None, top_n=30, fontsize=8, title=None):
+    """
+    Horizontal bar chart of one mode's coefficients (e.g. one row of
+    `Vt` from `analysis.svd_of_jacobian`, one value per entry of `specs`),
+    sorted by absolute value and colour-coded by element kind (WFS/DM/GS).
+
+    A complete, unfiltered view: `analysis.describe_mode`'s small-
+    coefficient cutoff is meant for a quick read of the dominant terms,
+    but it can hide contributions that are individually small yet
+    collectively necessary for an exact degeneracy - see the module
+    docstring.
+
+    Parameters
+    ----------
+    specs : list of reconstruction.ParameterSpec
+    coefficients : array-like, same length as `specs`
+    ax : matplotlib.axes.Axes, optional
+    top_n : int
+        Show only the `top_n` largest-magnitude coefficients (default
+        30); pass `None` to show all of `specs`.
+    title : str, optional
+
+    Returns
+    -------
+    ax : the matplotlib Axes used.
+    """
+    import matplotlib.pyplot as plt
+
+    coefficients = np.asarray(coefficients, dtype=float)
+    n_show = len(specs) if top_n is None else min(top_n, len(specs))
+    order = np.argsort(-np.abs(coefficients))[:n_show]
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(7, 0.28 * n_show + 1))
+
+    y = np.arange(n_show)
+    bar_colors = [_KIND_COLORS.get(specs[i].kind, "0.5") for i in order]
+    ax.barh(y, coefficients[order], color=bar_colors)
+    ax.set_yticks(y)
+    ax.set_yticklabels([specs[i].get_label() for i in order], fontsize=fontsize)
+    ax.invert_yaxis()
+    ax.axvline(0, color="0.3", lw=0.8)
+    ax.set_xlabel("coefficient")
+    ax.set_title(title or f"Mode coefficients (top {n_show} of {len(specs)})")
+
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in _KIND_COLORS.values()]
+    ax.legend(handles, _KIND_COLORS.keys(), loc="lower right", fontsize=fontsize)
+    return ax
+
+
+def plot_mode_gs_quiver(system, specs, coefficients, ax=None, fontsize=9, title=None):
+    """
+    Sky-position quiver for the `("gs", name, "position_shift", 0/1)`
+    entries of one mode: one arrow per guide star, at its actual sky
+    position, in the (coefficient_x, coefficient_y) direction of this
+    mode - a geometric view of the guide-star-position part of a
+    degenerate/poorly-observed combination (see `plot_mode_bar` for the
+    other element kinds and for a complete, non-geometric accounting).
+
+    Guide stars with no `position_shift` entry in `specs` are skipped.
+
+    Parameters
+    ----------
+    system : registration.model.System
+    specs : list of reconstruction.ParameterSpec
+    coefficients : array-like, same length as `specs`
+    ax : matplotlib.axes.Axes, optional
+    title : str, optional
+
+    Returns
+    -------
+    ax : the matplotlib Axes used.
+    """
+    import matplotlib.pyplot as plt
+
+    coefficients = np.asarray(coefficients, dtype=float)
+    coeff_by_gs = {}
+    for spec, c in zip(specs, coefficients):
+        if spec.kind == "gs" and spec.field == "position_shift":
+            coeff_by_gs.setdefault(spec.name, [0.0, 0.0])[spec.component] = c
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6, 6))
+
+    xs, ys, us, vs, names = [], [], [], [], []
+    for wfs in system.wfss.values():
+        gs = wfs.guide_star
+        if gs.name not in coeff_by_gs:
+            continue
+        cx, cy = coeff_by_gs[gs.name]
+        xs.append(gs.position[0])
+        ys.append(gs.position[1])
+        us.append(cx)
+        vs.append(cy)
+        names.append(gs.name)
+
+    if not xs:
+        raise ValueError("None of `specs` is a ('gs', ..., 'position_shift', ...) entry.")
+
+    ax.scatter(xs, ys, color="0.3", zorder=3)
+    ax.quiver(xs, ys, us, vs, angles="xy", scale_units="xy", color="tab:green",
+              width=0.008, zorder=2)
+    for x, y, name in zip(xs, ys, names):
+        ax.annotate(name, (x, y), xytext=(4, 4), textcoords="offset points", fontsize=fontsize)
+    ax.set_xlabel('x ["]')
+    ax.set_ylabel('y ["]')
+    ax.set_aspect("equal")
+    ax.margins(0.3)
+    ax.set_title(title or "Guide star position_shift coefficients (this mode)")
+    return ax

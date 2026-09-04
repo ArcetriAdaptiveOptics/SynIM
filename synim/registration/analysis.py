@@ -26,8 +26,8 @@ import numpy as np
 from .reconstruction import get_alpha, apply_alpha, local_params_vector, LOCAL_DOF
 
 __all__ = [
-    "svd_of_jacobian", "condition_number", "describe_mode", "describe_modes",
-    "reconstruction_matrix", "covariance_from_noise",
+    "svd_of_jacobian", "normalize_jacobian", "condition_number", "describe_mode",
+    "describe_modes", "reconstruction_matrix", "covariance_from_noise",
     "monte_carlo_noise_propagation", "monte_carlo_gauss_newton", "analyze",
 ]
 
@@ -36,6 +36,51 @@ def svd_of_jacobian(Lambda):
     """SVD of the sensitivity matrix Lambda (n_dof x n_specs), singular
     values sorted descending (`numpy.linalg.svd` default)."""
     return np.linalg.svd(Lambda, full_matrices=False)
+
+
+def normalize_jacobian(Lambda, specs, scale):
+    """
+    Rescale each column (unknown) of `Lambda` by a characteristic/typical
+    physical size for that parameter, so its SVD's coefficients become
+    comparable across parameter TYPES with very different natural units -
+    a shift in `pixel_pitch` units, a rotation in degrees, a
+    magnification/anamorphosis expressed as a near-1 dimensionless ratio,
+    and so on. Without this, a fixed coefficient threshold (as used by
+    `describe_mode`) is unfair: it takes a much larger PHYSICAL change in
+    magnification/anamorphosis than in shift to move their raw
+    coefficient by the same amount, so a uniform threshold silently
+    over-weights shift-like parameters and under-weights the others.
+
+    Rescaling columns by positive factors never changes WHICH directions
+    are exactly degenerate (a rank-deficient matrix stays rank-deficient
+    under any nonzero column scaling - only the ORTHOGONAL BASIS chosen
+    within a many-dimensional null space, and hence how fairly its
+    coefficients can be compared, depends on this scaling). Compute the
+    SVD of the returned, rescaled matrix (not of the original `Lambda`)
+    for `describe_mode`'s labels to be meaningful across parameter types.
+
+    Parameters
+    ----------
+    Lambda : ndarray, shape (n_dof, n_specs)
+    specs : list of reconstruction.ParameterSpec
+    scale : dict or array-like
+        Either an array of length `len(specs)` (one characteristic size
+        per spec, in that spec's own unit), or a dict mapping
+        `spec.field` (e.g. `"shift"`, `"rotation"`, `"magnification"`,
+        `"position_shift"`, ...) to a characteristic size.
+
+    Returns
+    -------
+    Lambda_scaled : ndarray, same shape as `Lambda`
+    """
+    if isinstance(scale, dict):
+        try:
+            scale = np.array([scale[spec.field] for spec in specs], dtype=float)
+        except KeyError as exc:
+            raise KeyError(f"no characteristic scale given for field {exc}") from exc
+    else:
+        scale = np.asarray(scale, dtype=float)
+    return Lambda * scale[np.newaxis, :]
 
 
 def condition_number(Lambda):

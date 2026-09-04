@@ -6,9 +6,12 @@ matplotlib.use("Agg")  # headless: just check the schematic renders, no display
 
 from synim.utils import polar_to_xy
 from synim.registration.model import GuideStar, DM, WFS, System
+from synim.registration.reconstruction import ParameterSpec, jacobian
+from synim.registration.analysis import svd_of_jacobian
 from synim.registration.viz import (
     plot_altitude_schematic, plot_mis_registration_table,
     plot_dm_footprint, plot_dm_footprints, plot_system_overview,
+    plot_mode_bar, plot_mode_gs_quiver,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -120,6 +123,40 @@ class TestSystemOverview(unittest.TestCase):
         os.makedirs(OUT_DIR, exist_ok=True)
         fig.savefig(os.path.join(OUT_DIR, "_test_system_overview_mavis.png"),
                     bbox_inches="tight", dpi=150)
+
+
+class TestModeVisualization(unittest.TestCase):
+    def _system_and_mode(self):
+        system = _mavis_like_system()
+        pairs = system.pairs()
+        specs = ([ParameterSpec("wfs", w, "shift", axis) for w in ["wfs0", "wfs1", "wfs2"]
+                  for axis in (0, 1)]
+                 + [ParameterSpec("gs", f"gs{i}", "position_shift", axis)
+                    for i in range(3) for axis in (0, 1)])
+        Lambda = jacobian(system, specs, pairs, dof=("shift_x", "shift_y"))
+        _, _, Vt = svd_of_jacobian(Lambda)
+        return system, specs, Vt[-1]  # worst-determined mode
+
+    def test_plot_mode_bar_renders(self):
+        _, specs, coeffs = self._system_and_mode()
+        ax = plot_mode_bar(specs, coeffs)
+        self.assertIsNotNone(ax)
+
+    def test_plot_mode_bar_top_n_limits_bars(self):
+        _, specs, coeffs = self._system_and_mode()
+        ax = plot_mode_bar(specs, coeffs, top_n=3)
+        self.assertEqual(len(ax.get_yticks()), 3)
+
+    def test_plot_mode_gs_quiver_renders(self):
+        system, specs, coeffs = self._system_and_mode()
+        ax = plot_mode_gs_quiver(system, specs, coeffs)
+        self.assertIsNotNone(ax)
+
+    def test_plot_mode_gs_quiver_raises_without_gs_specs(self):
+        system, _, _ = self._system_and_mode()
+        specs = [ParameterSpec("wfs", "wfs0", "shift", 0)]
+        with self.assertRaises(ValueError):
+            plot_mode_gs_quiver(system, specs, [1.0])
 
 
 if __name__ == "__main__":
