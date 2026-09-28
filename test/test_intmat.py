@@ -499,8 +499,8 @@ class TestIntmat(unittest.TestCase):
         np.testing.assert_allclose(im_former, im_new, rtol=1e-6, atol=1e-8,
                                    err_msg="Former and new methods differ for LGS case")
 
-    def test_consistency_separated_vs_combined_workflow(self):
-        """Verify that separated and combined workflows
+    def test_consistency_single_vs_multi_wfs(self):
+        """Verify that interaction_matrix and interaction_matrices_multi_wfs
         produce identical results without transformations"""
         # Identical configuration for 2 WFS
         wfs_configs = []
@@ -517,8 +517,8 @@ class TestIntmat(unittest.TestCase):
                 'name': f'wfs_{i}'
             })
 
-        # Separate calculation
-        im_separated = []
+        # One WFS at a time
+        im_single = []
         for wfs_config in wfs_configs:
             wfs_magnification = wfs_config['magnification']
             wfs_mag_global = np.sqrt(wfs_magnification[0] * wfs_magnification[1])
@@ -545,9 +545,9 @@ class TestIntmat(unittest.TestCase):
                 display=False,
                 specula_convention=True
             )
-            im_separated.append(im)
+            im_single.append(im)
 
-        # Combined calculation
+        # All WFS together
         im_multi_dict, info = interaction_matrices_multi_wfs(
             self.pup_diam_m, self.pup_mask,
             self.dm_array, self.dm_mask,
@@ -558,9 +558,9 @@ class TestIntmat(unittest.TestCase):
 
         # Comparison
         for i, wfs_config in enumerate(wfs_configs):
-            im_sep = im_separated[i]
+            im_one = im_single[i]
             im_comb = im_multi_dict[wfs_config['name']]
             np.testing.assert_allclose(
-                im_sep, im_comb, rtol=1e-6, atol=1e-8,
-                err_msg=f"Separated and combined workflow differ for WFS {i}"
+                im_one, im_comb, rtol=1e-6, atol=1e-8,
+                err_msg=f"interaction_matrix and interaction_matrices_multi_wfs differ for WFS {i}"
             )

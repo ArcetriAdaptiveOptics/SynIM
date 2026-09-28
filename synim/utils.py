@@ -2,6 +2,8 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import synim as _synim
+_synim._require_init(__name__)
 from synim import (
     xp, cpuArray, to_xp, float_dtype, affine_transform, rotate, shift, zoom
 )
@@ -442,7 +444,13 @@ def dm3d_to_2d(dm_array, mask,
 
 def dm2d_to_3d(dm_array, mask, normalize=True,
                xp_local=xp, float_dtype_local=float_dtype):
-    """Convert a 2D DM influence function to a 3D array using a mask."""
+    """
+    Convert a 2D DM influence function (n_modes, n_valid_pixels) to a 3D
+    array (n, n, n_modes) using a mask. The input array is not modified.
+
+    If normalize is True, each mode is normalized to unit RMS and then its
+    mean (piston) is removed.
+    """
 
     # *** Convert inputs to xp with correct dtype ***
     dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
@@ -454,23 +462,29 @@ def dm2d_to_3d(dm_array, mask, normalize=True,
     # Check if the dm_array is 2D
     if dm_array.ndim != 2:
         raise ValueError("The dm_array must be a 2D array.")
-    npixels = mask.shape[0]
     nmodes = dm_array.shape[0]
-    # *** Use xp and float_dtype ***
-    dm_array_3d = xp_local.zeros((npixels, npixels, nmodes), dtype=float_dtype_local)
+    idx = xp_local.where(mask > 0)
+    dm_array_3d = xp_local.zeros((mask.shape[0], mask.shape[1], nmodes),
+                                 dtype=float_dtype_local)
     for i in range(nmodes):
-        idx = xp_local.where(mask > 0)
-        dm_i = dm_array[i]
-        # normalize by the RMS
+        # One mode at a time, on a copy: the caller's array is not modified
+        # and no temporary as large as dm_array is allocated
+        dm_i = dm_array[i].copy()
         if normalize:
+            # normalize by the RMS, then remove the mean (piston)
             dm_i /= xp_local.sqrt(xp_local.mean(dm_i**2))
             dm_i -= xp_local.mean(dm_i)
-        # *** Use xp and float_dtype ***
-        dm_i_3d = xp_local.zeros(mask.shape, dtype=float_dtype_local)
-        dm_i_3d[idx] = dm_i
-        dm_array_3d[:, :, i] = dm_i_3d
+        dm_array_3d[idx[0], idx[1], i] = dm_i
 
     return dm_array_3d
+
+
+def _to_xp_floating(array):
+    """Convert to xp; keep floating point dtypes, convert others to float_dtype."""
+    array = to_xp(xp, array)
+    if not xp.issubdtype(array.dtype, xp.floating):
+        array = array.astype(float_dtype)
+    return array
 
 
 def apply_mask(array, mask, norm=False, fill_value=None, in_place=False):
@@ -482,9 +496,12 @@ def apply_mask(array, mask, norm=False, fill_value=None, in_place=False):
         norm: If True, normalize by mask
         fill_value: Value to fill masked regions
         in_place: If True, modify array in-place (only works if no dtype conversion needed)
+
+    A floating point array keeps its dtype; other types (bool, int) are
+    converted to float_dtype.
     """
     # *** Convert inputs to xp ***
-    array = to_xp(xp, array, dtype=float_dtype)
+    array = _to_xp_floating(array)
     mask = to_xp(xp, mask, dtype=float_dtype)
 
     # Broadcast mask for 3D arrays
@@ -540,11 +557,17 @@ def has_transformations(rotation, translation, magnification):
 
 
 def rebin(array, new_shape, method='average'):
-    """Resize array to new dimensions."""
+    """
+    Resize array to new dimensions.
+
+    A floating point array keeps its dtype in both the expansion and the
+    compression case. For other types (bool, int) the expansion returns the
+    original dtype and the compression returns float_dtype.
+    """
 
     # *** MODIFIED: Convert input to xp ***
     orig_dtype = array.dtype
-    array = to_xp(xp, array, dtype=float_dtype)
+    array = _to_xp_floating(array)
 
     if array.ndim == 1:
         array = array.reshape(array.shape[0], 1)

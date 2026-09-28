@@ -1,3 +1,5 @@
+import synim as _synim
+_synim._require_init(__name__)
 from synim import xp, cpuArray, to_xp, float_dtype
 
 import matplotlib.pyplot as plt
@@ -20,6 +22,17 @@ def transpose_base_array_for_specula(base_inv_array, pup_mask_original, verbose=
     Handles both 2D and 3D base arrays:
     - 3D arrays: simple transpose (height, width, nmodes) → (width, height, nmodes)
     - 2D arrays: reconstructs 3D using ORIGINAL mask, transposes, then re-extracts
+
+    Normalization (2D arrays with valid pixels only): each mode of the
+    transposed inverse basis is normalized to unit RMS, its mean (piston) is
+    removed, and it is divided by the number of valid pixels. By convention
+    the SynIM modal bases are piston-free and RMS-normalized. For such a
+    basis with orthogonal modes (e.g. a KL basis) the rows of the inverse
+    are the modes divided by the number of valid pixels, so this
+    normalization returns exactly the transposed inverse. For a basis that
+    is RMS-normalized but not orthogonal, the result differs slightly from
+    a pure transposition of the inverse (about 0.5% in a test with
+    polynomial modes).
     
     Parameters:
     - base_inv_array: 2D or 3D numpy array
@@ -111,6 +124,8 @@ def transpose_base_array_for_specula(base_inv_array, pup_mask_original, verbose=
             pup_mask_transposed = xp.transpose(pup_mask_original)
 
             # *** USE dm3d_to_2d TO EXTRACT ***
+            # dm3d_to_2d normalizes each mode to unit RMS and removes the
+            # piston: see the docstring for when this equals a pure transposition
             base_2d_transposed = dm3d_to_2d(base_3d_transposed, pup_mask_transposed)
 
             # normalize by number of valid pixels

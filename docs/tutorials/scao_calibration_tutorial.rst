@@ -169,9 +169,7 @@ Now compute the same IM using SynIM's synthetic approach:
      Modes:  40   # Number of DM modes
 
 .. note::
-   SynIM automatically selects the optimal computation workflow (SEPARATED or COMBINED) based on your system geometry. For on-axis SCAO with no WFS transformations, the SEPARATED workflow is typically used.
-   
-   For details on workflow selection logic and when each is optimal, see :ref:`Computation Workflows <computation_workflows>` in the General Documentation.
+   SynIM applies all the DM and WFS transformations to the influence functions in a single interpolation step, then computes the slopes on the transformed grid. See :ref:`Computation Workflows <computation_workflows>` in the General Documentation.
 
    By default, slope extraction uses ``slope_method='derivatives'``.
    If needed, you can use the optional telescoping sum mode by passing ``slope_method='telsum'`` to low-level ``synim.interaction_matrix()`` or ``synim.interaction_matrices_multi_wfs()`` calls.

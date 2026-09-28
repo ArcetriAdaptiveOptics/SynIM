@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
 
+import synim as _synim
+_synim._require_init(__name__)
 # *** Import xp, cpuArray, to_xp, float_dtype ***
 from synim import (
     xp, cpuArray, to_xp, int_dtype, float_dtype, cpu_float_dtype,
@@ -27,7 +29,9 @@ except ImportError as exc:
         "or from: https://github.com/ArcetriAdaptiveOptics/SPECULA"
     ) from exc
 
-specula.init(device_idx=-1, precision=1)
+# Initialize SPECULA only if the caller has not done it already
+if specula.xp is None:
+    specula.init(device_idx=-1, precision=1)
 
 from specula.calib_manager import CalibManager
 from specula.data_objects.intmat import Intmat
@@ -658,6 +662,10 @@ class ParamsManager:
         # Convert to xp with float_dtype
         dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
         dm_mask = to_xp(xp_local, dm_mask, dtype=float_dtype_local)
+        # A slice of the mode axis is a view: stored in the cache as it is, it
+        # would keep the whole original array in memory. Store a compact copy.
+        if not dm_array.flags.c_contiguous:
+            dm_array = xp_local.ascontiguousarray(dm_array)
 
         self.dm_cache[cache_key] = {
             'dm_array': dm_array,
