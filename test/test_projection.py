@@ -12,6 +12,11 @@ rotshiftzoom_array = on_backend(synim_utils.rotshiftzoom_array)
 shiftzoom_from_source_dm_params = on_backend(synim_utils.shiftzoom_from_source_dm_params)
 apply_mask = on_backend(synim_utils.apply_mask)
 
+# Former and new methods: same operations in a different order. In single
+# precision on GPU the differences reach ~1e-6 on O(1) values (measured
+# max 1.0e-6), so near-zero elements need an absolute tolerance.
+ATOL_FORMER_VS_NEW = 5e-6
+
 import specula
 specula.init(device_idx=-1, precision=1)
 from specula.data_objects.ifunc import IFunc
@@ -293,7 +298,7 @@ class TestProjection(unittest.TestCase):
             plt.show()
 
         # Compare results
-        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=1e-8,
+        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=ATOL_FORMER_VS_NEW,
                                    err_msg="Former and new methods differ for on-axis case")
 
         # Verify shapes
@@ -332,7 +337,7 @@ class TestProjection(unittest.TestCase):
             specula_convention_inv=True
         )
 
-        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=1e-8,
+        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=ATOL_FORMER_VS_NEW,
                                    err_msg="Former and new methods differ for basis rotation only")
 
     def test_off_axis_guide_star(self):
@@ -365,7 +370,7 @@ class TestProjection(unittest.TestCase):
             specula_convention_inv=True
         )
 
-        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=1e-8,
+        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=ATOL_FORMER_VS_NEW,
                                    err_msg="Former and new methods differ for off-axis GS")
 
     def test_combined_transformations(self):
@@ -398,7 +403,7 @@ class TestProjection(unittest.TestCase):
             specula_convention_inv=True
         )
 
-        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=1e-8,
+        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=ATOL_FORMER_VS_NEW,
                                    err_msg="Former and new methods differ for combined transforms")
 
     def test_dm_at_ground_level(self):
@@ -433,7 +438,7 @@ class TestProjection(unittest.TestCase):
             specula_convention_inv=True
         )
 
-        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=1e-8,
+        np.testing.assert_allclose(pm_former, pm_new, rtol=1e-6, atol=ATOL_FORMER_VS_NEW,
                                    err_msg="Former and new methods differ for ground-level DM")
 
     def test_projection_identity(self):
