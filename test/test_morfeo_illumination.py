@@ -19,7 +19,7 @@ from test import on_backend
 
 
 # Hardcoded paths for the specific MORFEO test environment
-YAML_FILE = '/home/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml'
+YAML_FILE = '/raid1/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml'
 ROOT_DIR = '/raid1/guido/PASSATA/MAORYC'
 
 

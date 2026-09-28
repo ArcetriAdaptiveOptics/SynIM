@@ -35,7 +35,7 @@ import synim.synim as synim_core
 from synim.utils import rotshiftzoom_array
 
 YAML_FILE = os.environ.get('SYNIM_MORFEO_YAML',
-                           '/home/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml')
+                           '/raid1/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml')
 ROOT_DIR = os.environ.get('SYNIM_MORFEO_ROOT', '/raid1/guido/PASSATA/MAORYC')
 REPORT_FILE = os.environ.get('SYNIM_MORFEO_REPORT')
 
