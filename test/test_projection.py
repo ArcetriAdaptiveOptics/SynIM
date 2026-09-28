@@ -2,12 +2,15 @@ import unittest
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-from synim.synpm import projection_matrix
-from synim.utils import (
-    rotshiftzoom_array,
-    shiftzoom_from_source_dm_params,
-    apply_mask
-)
+import synim.synpm as synpm
+import synim.utils as synim_utils
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+projection_matrix = on_backend(synpm.projection_matrix)
+rotshiftzoom_array = on_backend(synim_utils.rotshiftzoom_array)
+shiftzoom_from_source_dm_params = on_backend(synim_utils.shiftzoom_from_source_dm_params)
+apply_mask = on_backend(synim_utils.apply_mask)
 
 import specula
 specula.init(device_idx=-1, precision=1)

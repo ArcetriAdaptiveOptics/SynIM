@@ -14,6 +14,8 @@ from specula.processing_objects.sh_slopec import ShSlopec
 
 from synim.params_manager import ParamsManager
 import synim.synim as synim
+from synim import cpuArray
+from test import on_backend
 
 
 # Hardcoded paths for the specific MORFEO test environment
@@ -51,7 +53,7 @@ class TestMorfeoIlluminationSpecula(unittest.TestCase):
         self.main_params = self.pm.params['main']
         
         # The pupil mask loaded by ParamsManager
-        self.pupil_mask = np.asarray(self.pm.pup_mask)
+        self.pupil_mask = cpuArray(self.pm.pup_mask)
         self.npix = self.pupil_mask.shape[0]
         self.pixel_pitch = self.main_params['pixel_pitch']
 
@@ -118,7 +120,7 @@ class TestMorfeoIlluminationSpecula(unittest.TestCase):
             slopec.post_trigger()
 
             # Extract SPECULA Flux
-            flux_specula = np.asarray(slopec.outputs['out_flux_per_subaperture'].value)
+            flux_specula = cpuArray(slopec.outputs['out_flux_per_subaperture'].value)
             max_flux = np.nanmax(flux_specula)
             flux_specula_norm = flux_specula / max_flux if max_flux > 0 else flux_specula
 
@@ -126,7 +128,7 @@ class TestMorfeoIlluminationSpecula(unittest.TestCase):
             wfs_params = self.pm.get_wfs_params('lgs', wfs_idx, xp_local=np)
             n_subaps = wfs_params['wfs_nsubaps']
 
-            illum_synim = synim.compute_subaperture_illumination(
+            illum_synim = on_backend(synim.compute_subaperture_illumination)(
                 pup_mask=self.pupil_mask,
                 wfs_nsubaps=n_subaps,
                 wfs_rotation=wfs_params['wfs_rotation'],
@@ -166,7 +168,7 @@ class TestMorfeoIlluminationSpecula(unittest.TestCase):
 
     def _plot_comparison(self, wfs_idx, rotation, specula_flux, synim_illum, diff, display_map, n_subaps, max_abs_err):
         """Generates a 2D map comparison and saves it to disk."""
-        display_map = np.asarray(display_map, dtype=np.int64)
+        display_map = cpuArray(display_map, dtype=np.int64)
 
         specula_2d = map_1d_to_2d(specula_flux, display_map, n_subaps)
         synim_2d = map_1d_to_2d(synim_illum, display_map, n_subaps)

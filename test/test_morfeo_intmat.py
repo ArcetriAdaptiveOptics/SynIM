@@ -1,10 +1,14 @@
 """
 MORFEO LGS interaction matrices: SynIM vs the SPECULA Shack-Hartmann.
 
-For each LGS WFS and a few modes of the ground DM (dm1), the SPECULA slopes
-are computed with the SH and ShSlopec processing objects (push-pull,
-noiseless intensity, plain centre of gravity) and compared with the
-SynIM interaction matrix computed with the same ParamsManager parameters.
+For each LGS WFS and a few modes of dm1, the SPECULA slopes are computed
+with the SH and ShSlopec processing objects (push-pull, noiseless
+intensity, plain centre of gravity) and compared with the SynIM
+interaction matrix computed with the same ParamsManager WFS parameters.
+The modes are used as a phase in the pupil plane: SynIM is called without
+DM height, DM rotation and guide star geometry (the SH receives the same
+phase), so the comparison covers the WFS part (WFS rotation, shift and
+magnification, subapertures and slopes), not the DM footprint.
 MORFEO has 480 pixels and 68 subapertures (7.06 pixels per subaperture).
 
 The SH slopes include optical effects that the geometric SynIM model does
@@ -25,6 +29,7 @@ import numpy as np
 
 import synim
 import synim.synim as synim_core
+from synim.utils import rotshiftzoom_array
 
 YAML_FILE = '/home/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml'
 ROOT_DIR = '/raid1/guido/PASSATA/MAORYC'
@@ -112,11 +117,18 @@ class TestMorfeoIntmatSpecula(unittest.TestCase):
 
     def _compare(self, wfs_idx):
         params = self.pm.prepare_interaction_matrix_params('lgs', wfs_idx, DM_INDEX, None)
-        if params['dm_height'] != 0:
-            self.skipTest(f'dm{DM_INDEX} is not at the ground')
         pup = synim.cpuArray(params['pup_mask']).astype(np.float32)
-        dm_all = synim.cpuArray(params['dm_array'])
-        modes = dm_all[:, :, MODES].astype(np.float32)
+        n = pup.shape[0]
+        modes = synim.xp.asarray(params['dm_array'][:, :, MODES], dtype=np.float32)
+        dm_mask = synim.xp.asarray(params['dm_mask'], dtype=np.float32)
+        if modes.shape[0] != n:
+            # DM larger than the pupil (meta-pupil): central part, as SynIM
+            # does for a DM at the ground and an on-axis source
+            modes = rotshiftzoom_array(modes, output_size=(n, n))
+            dm_mask = rotshiftzoom_array(dm_mask, output_size=(n, n))
+            dm_mask[dm_mask < 0.5] = 0
+        modes = synim.cpuArray(modes)
+        dm_mask = synim.cpuArray(dm_mask)
         rms = np.sqrt(np.mean(modes[pup > 0] ** 2, axis=0))
         modes = modes / rms
 
@@ -125,9 +137,9 @@ class TestMorfeoIntmatSpecula(unittest.TestCase):
         for slope_method in SLOPE_METHODS:
             im = synim.cpuArray(synim_core.interaction_matrix(
                 pup_diam_m=params['pup_diam_m'], pup_mask=pup, dm_array=modes,
-                dm_mask=synim.cpuArray(params['dm_mask']).astype(np.float32),
-                dm_height=params['dm_height'], dm_rotation=params['dm_rotation'],
-                gs_pol_coo=params['gs_pol_coo'], gs_height=params['gs_height'],
+                dm_mask=dm_mask,
+                # phase in the pupil plane, as for the SH (see the module docstring)
+                dm_height=0.0, dm_rotation=0.0, gs_pol_coo=(0.0, 0.0), gs_height=np.inf,
                 wfs_nsubaps=params['wfs_nsubaps'], wfs_rotation=params['wfs_rotation'],
                 wfs_translation=params['wfs_translation'],
                 wfs_mag_global=params['wfs_magnification'],

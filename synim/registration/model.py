@@ -238,6 +238,7 @@ class System:
             extract_wfs_list, extract_dm_list,
             extract_source_coordinates, extract_source_height,
         )
+        from .. import cpuArray
         from ..utils import polar_to_xy
 
         raw_config = getattr(config, "params", config)
@@ -257,7 +258,8 @@ class System:
             shift, magnification, anamorphosis_45, anamorphosis_90 = _read_shift_mag_anam(wfs_params)
 
             gs_r, gs_theta_deg = extract_source_coordinates(raw_config, wfs_key)
-            gs_position = tuple(polar_to_xy(gs_r, np.deg2rad(gs_theta_deg)))
+            # polar_to_xy uses the SynIM backend (cupy on GPU): the model is numpy only
+            gs_position = tuple(float(v) for v in cpuArray(polar_to_xy(gs_r, np.deg2rad(gs_theta_deg))))
             gs_height = extract_source_height(raw_config, wfs_key)
 
             guide_star = GuideStar(name=f"gs_{wfs_key}", position=gs_position, height=gs_height)

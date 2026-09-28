@@ -28,7 +28,12 @@ from specula.lib.make_mask import make_mask
 
 # SynIM imports
 from synim.params_utils import find_subapdata
-from synim.synim import compute_subaperture_illumination
+import synim.synim as synim_core
+from synim import cpuArray
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+compute_subaperture_illumination = on_backend(synim_core.compute_subaperture_illumination)
 
 
 def make_circular_pupil(npix, radius_fraction=0.4, off_axis_shift=(0, 0), obstruction_ratio=0.0):
@@ -349,7 +354,7 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         slopec.trigger()
         slopec.post_trigger()
 
-        flux_per_subap_specula = np.asarray(slopec.outputs['out_flux_per_subaperture'].value)
+        flux_per_subap_specula = cpuArray(slopec.outputs['out_flux_per_subaperture'].value)
         print(f"    ✓ Flux per subaperture shape: {flux_per_subap_specula.shape}")
         print(f"    ✓ Flux range: [{flux_per_subap_specula.min():.2e},"
               f" {flux_per_subap_specula.max():.2e}]")
@@ -364,7 +369,7 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
 
         # Extract idx_valid_sa from display_map EXACTLY AS DONE IN im_sh_synim_generator.py
         # This is the configuration that works in params_manager and IM computation.
-        display_map = np.asarray(restored_subapdata.display_map, dtype=np.int64)
+        display_map = cpuArray(restored_subapdata.display_map, dtype=np.int64)
         n = self.subap_on_diameter
         
         # Reconstruct 2D indices: display_map = col*n + row, so:
@@ -374,7 +379,7 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
 
         # pup_mask for SynIM must be the amplitude of the EF (same 80x80 pupil mask)
         # NOT a resampled version - compute_subaperture_illumination does rebin internally
-        ef_amplitude = np.asarray(ef.A)
+        ef_amplitude = cpuArray(ef.A)
         print(f"    ✓ EF amplitude (pup_mask) shape: {ef_amplitude.shape}")
 
         # Match SynIM rotation to SH geometry
@@ -518,7 +523,7 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         # Flux 2D map from explicit display_map to avoid row/col ambiguity.
         flux_map = np.full((n, n), np.nan)
         illum_map = np.full((n, n), np.nan)
-        display_map = np.asarray(display_map, dtype=np.int64)
+        display_map = cpuArray(display_map, dtype=np.int64)
         for k, dm in enumerate(display_map):
             # SPECULA display_map is col-major: dm = col * n + row
             row = dm % n
@@ -661,13 +666,13 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         restored = SubapData.restore(subapdata_path)
 
         # Method 1: from display_map
-        display_map = np.asarray(restored.display_map, dtype=np.int64)
+        display_map = cpuArray(restored.display_map, dtype=np.int64)
         rows = display_map % restored.nx
         cols = display_map // restored.nx
         idx_from_display = np.column_stack((rows, cols))
 
         # Method 2: from coordinates (legacy)
-        coords = np.transpose(np.asarray(np.where(restored.single_mask())))
+        coords = np.transpose(np.asarray(np.where(cpuArray(restored.single_mask()))))
         sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))
         idx_from_coords = coords[sort_idx]
 
@@ -728,10 +733,10 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         slopec.check_ready(1)
         slopec.trigger()
         slopec.post_trigger()
-        flux = np.asarray(slopec.outputs['out_flux_per_subaperture'].value)
+        flux = cpuArray(slopec.outputs['out_flux_per_subaperture'].value)
 
         restored = SubapData.restore(subapdata_path)
-        display_map = np.asarray(restored.display_map, dtype=np.int64)
+        display_map = cpuArray(restored.display_map, dtype=np.int64)
         
         # Reconstruct 2D indices EXACTLY AS IN PARAMS_MANAGER
         n = self.subap_on_diameter
@@ -740,7 +745,7 @@ class TestSubapOrderingSpeculaVsSynim(unittest.TestCase):
         idx_valid_sa_2d = np.column_stack((idx_i, idx_j))  # [[col, row], ...]
 
         illum = compute_subaperture_illumination(
-            pup_mask=np.asarray(ef.A),
+            pup_mask=cpuArray(ef.A),
             wfs_nsubaps=self.subap_on_diameter,
             wfs_rotation=synim_rotation_deg,
             wfs_translation=(0.0, 0.0),

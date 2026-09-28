@@ -1,6 +1,8 @@
 import math
 import warnings
 
+import numpy as np
+
 import synim as _synim
 _synim._require_init(__name__)
 from synim import xp, cpuArray, to_xp, float_dtype
@@ -25,11 +27,12 @@ def _without_nan(array):
 
 
 def _warn_if_nan(im, name='interaction matrix'):
-    """Warn if an interaction matrix contains NaN values."""
-    nan_values = xp.isnan(im)
-    n_nan = int(xp.count_nonzero(nan_values))
+    """Warn if an interaction matrix (numpy or backend array) contains NaN values."""
+    module = np if isinstance(im, np.ndarray) else xp
+    nan_values = module.isnan(im)
+    n_nan = int(module.count_nonzero(nan_values))
     if n_nan:
-        n_rows = int(xp.count_nonzero(nan_values.any(axis=1)))
+        n_rows = int(module.count_nonzero(nan_values.any(axis=1)))
         warnings.warn(f'The {name} contains {n_nan} NaN values in {n_rows} of'
                       f' {im.shape[0]} slopes: check the pupil and DM masks and the'
                       f' valid subapertures (idx_valid_sa).', RuntimeWarning, stacklevel=3)

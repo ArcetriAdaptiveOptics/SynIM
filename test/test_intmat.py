@@ -1,14 +1,19 @@
 import unittest
 import numpy as np
 
-from synim.synim import (
-    interaction_matrix,
-    interaction_matrices_multi_wfs,
-    rotshiftzoom_array,
-    shiftzoom_from_source_dm_params,
-    compute_derivatives_with_extrapolation
-)
-from synim.utils import apply_mask, rebin
+import synim.synim as synim_core
+import synim.utils as synim_utils
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+interaction_matrix = on_backend(synim_core.interaction_matrix)
+interaction_matrices_multi_wfs = on_backend(synim_core.interaction_matrices_multi_wfs)
+rotshiftzoom_array = on_backend(synim_utils.rotshiftzoom_array)
+shiftzoom_from_source_dm_params = on_backend(synim_utils.shiftzoom_from_source_dm_params)
+compute_derivatives_with_extrapolation = on_backend(
+    synim_core.compute_derivatives_with_extrapolation)
+apply_mask = on_backend(synim_utils.apply_mask)
+rebin = on_backend(synim_utils.rebin)
 
 import specula
 specula.init(device_idx=-1, precision=1)

@@ -1,6 +1,10 @@
 import unittest
 import numpy as np
-from synim.utils import rebin
+from synim.utils import rebin as _rebin
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+rebin = on_backend(_rebin)
 
 class TestRebin(unittest.TestCase):
 

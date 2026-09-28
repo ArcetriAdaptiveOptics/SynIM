@@ -1,11 +1,15 @@
 import unittest
 import numpy as np
-from synim.utils import rotshiftzoom_array
+from synim.utils import rotshiftzoom_array as _rotshiftzoom_array
+from test import on_backend
 import matplotlib.pyplot as plt
 
 import specula
 specula.init(device_idx=-1, precision=1)
 from specula.lib.make_mask import make_mask
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+rotshiftzoom_array = on_backend(_rotshiftzoom_array)
 
 class TestRotShiftZoomArray(unittest.TestCase):
     def setUp(self):

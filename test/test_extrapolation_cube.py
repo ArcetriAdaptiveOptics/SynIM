@@ -1,6 +1,11 @@
 import unittest
 import numpy as np
-from synim.utils import calculate_extrapolation_indices_coeffs, apply_extrapolation
+from synim.utils import calculate_extrapolation_indices_coeffs
+from synim.utils import apply_extrapolation as _apply_extrapolation
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+apply_extrapolation = on_backend(_apply_extrapolation)
 
 def apply_extrapolation_legacy(data, edge_pixels, reference_indices, coefficients):
     """

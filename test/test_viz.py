@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # headless: just check the schematic renders, no display
 
-from synim.utils import polar_to_xy
+from synim.utils import polar_to_xy as _polar_to_xy
 from synim.registration.model import GuideStar, DM, WFS, System
 from synim.registration.reconstruction import ParameterSpec, jacobian
 from synim.registration.analysis import svd_of_jacobian
@@ -13,6 +13,11 @@ from synim.registration.viz import (
     plot_dm_footprint, plot_dm_footprints, plot_system_overview,
     plot_mode_bar, plot_mode_gs_quiver,
 )
+
+from test import on_backend
+
+# numpy output also on GPU (the registration model is numpy only)
+polar_to_xy = on_backend(_polar_to_xy)
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
