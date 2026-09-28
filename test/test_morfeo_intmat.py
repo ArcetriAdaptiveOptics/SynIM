@@ -17,9 +17,12 @@ illuminated subapertures, and reports the relative rms difference on
     - fully illuminated subapertures (flux > 0.999)
     - partially illuminated subapertures with flux >= 0.5
     - partially illuminated subapertures with flux < 0.5
+The test is slow (minutes on CPU) and needs the MORFEO calibration files:
+it runs only with SYNIM_MORFEO_TESTS=1. The paths default to the values
+below and can be set with SYNIM_MORFEO_YAML and SYNIM_MORFEO_ROOT; with
+SYNIM_MORFEO_REPORT=<file> the results are also saved to that file.
 Run it on two SynIM branches to compare them, e.g.
-    SYNIM_TEST_DEVICE_IDX=0 python -m unittest test.test_morfeo_intmat
-The results are also saved to morfeo_intmat.txt (current directory).
+    SYNIM_MORFEO_TESTS=1 SYNIM_TEST_DEVICE_IDX=0 python -m unittest test.test_morfeo_intmat
 """
 import inspect
 import os
@@ -31,15 +34,18 @@ import synim
 import synim.synim as synim_core
 from synim.utils import rotshiftzoom_array
 
-YAML_FILE = '/home/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml'
-ROOT_DIR = '/raid1/guido/PASSATA/MAORYC'
+YAML_FILE = os.environ.get('SYNIM_MORFEO_YAML',
+                           '/raid1/guido/pythonLib/SPECULA_scripts/morfeo/params_morfeo_calib.yml')
+ROOT_DIR = os.environ.get('SYNIM_MORFEO_ROOT', '/raid1/guido/PASSATA/MAORYC')
+REPORT_FILE = os.environ.get('SYNIM_MORFEO_REPORT')
 
 DM_INDEX = 1
 MODES = [0, 1, 2, 3, 5, 10, 30, 100]
 AMPLITUDE_NM = 20.0          # push-pull amplitude of a mode with unit rms on the pupil
 SLOPE_METHODS = ('derivatives', 'telsum')
 
-AVAILABLE = os.path.exists(YAML_FILE) and os.path.exists(ROOT_DIR)
+ENABLED = os.environ.get('SYNIM_MORFEO_TESTS', '0') == '1'
+AVAILABLE = ENABLED and os.path.exists(YAML_FILE) and os.path.exists(ROOT_DIR)
 if AVAILABLE:
     import specula
     if specula.xp is None:
@@ -61,7 +67,8 @@ def _scalar_kwargs(cls, config):
             and k not in ('target_device_idx', 'precision', 'data_dir')}
 
 
-@unittest.skipUnless(AVAILABLE, f'MORFEO configuration not found at {YAML_FILE}')
+@unittest.skipUnless(AVAILABLE, 'set SYNIM_MORFEO_TESTS=1 to run it' if not ENABLED
+                     else f'MORFEO configuration not found at {YAML_FILE}')
 class TestMorfeoIntmatSpecula(unittest.TestCase):
 
     @classmethod
@@ -177,8 +184,9 @@ class TestMorfeoIntmatSpecula(unittest.TestCase):
                 self.results[(wfs_idx, slope_method)] = (n_nan, errors)
             print('\n'.join(lines[-2 * (len(MODES) + 1):]))
 
-        with open('morfeo_intmat.txt', 'w') as f:
-            f.write(f'SynIM {os.path.dirname(synim.__file__)}\n' + '\n'.join(lines) + '\n')
+        if REPORT_FILE:
+            with open(REPORT_FILE, 'w') as f:
+                f.write(f'SynIM {os.path.dirname(synim.__file__)}\n' + '\n'.join(lines) + '\n')
 
         for (wfs_idx, slope_method), (n_nan, errors) in self.results.items():
             with self.subTest(lgs=wfs_idx, slope_method=slope_method):
