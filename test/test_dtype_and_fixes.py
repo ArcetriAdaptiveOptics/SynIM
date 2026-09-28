@@ -28,24 +28,29 @@ class TestTelescopingSum(unittest.TestCase):
         self.mask = _circular_mask(self.n, self.n / 2)
         self.data = rng.standard_normal((self.n, self.n, 3))
 
+    # compute_telsum_with_extrapolation is a low-level function: its inputs
+    # must already be arrays of the active backend (numpy or cupy)
+
     def test_keeps_float32(self):
         tx, ty = synim_core.compute_telsum_with_extrapolation(
-            self.data.astype(np.float32), mask=self.mask, wfs_nsubaps=self.nsa)
+            synim.xp.asarray(self.data.astype(np.float32)), mask=synim.xp.asarray(self.mask),
+            wfs_nsubaps=self.nsa)
         self.assertEqual(tx.dtype, np.float32)
         self.assertEqual(ty.dtype, np.float32)
 
     def test_keeps_float64(self):
         tx, ty = synim_core.compute_telsum_with_extrapolation(
-            self.data, mask=self.mask.astype(np.float64), wfs_nsubaps=self.nsa)
+            synim.xp.asarray(self.data), mask=synim.xp.asarray(self.mask.astype(np.float64)),
+            wfs_nsubaps=self.nsa)
         self.assertEqual(tx.dtype, np.float64)
         self.assertEqual(ty.dtype, np.float64)
 
     def test_without_mask(self):
-        data = self.data.astype(np.float32)
+        data = synim.xp.asarray(self.data.astype(np.float32))
         tx, ty = synim_core.compute_telsum_with_extrapolation(
             data, mask=None, wfs_nsubaps=self.nsa)
         tx_ref, ty_ref = synim_core.compute_telsum_with_extrapolation(
-            data, mask=np.ones((self.n, self.n), dtype=np.float32), wfs_nsubaps=self.nsa)
+            data, mask=synim.xp.ones((self.n, self.n), dtype=np.float32), wfs_nsubaps=self.nsa)
         np.testing.assert_allclose(synim.cpuArray(tx), synim.cpuArray(tx_ref), rtol=0, atol=1e-6)
         np.testing.assert_allclose(synim.cpuArray(ty), synim.cpuArray(ty_ref), rtol=0, atol=1e-6)
 
