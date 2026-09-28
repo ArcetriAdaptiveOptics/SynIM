@@ -499,14 +499,23 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
 def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
                                        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa=None,
                                        slope_method='derivatives', specula_convention=True,
-                                       verbose=False):
+                                       verbose=False, in_place=False):
     """
     Compute slopes from pre-transformed derivatives (for combined workflow).
     No additional transformations needed.
+
+    in_place: with slope_method='derivatives', if True derivatives_x and
+        derivatives_y are modified (no copy of the arrays): calling the
+        function again on the same derivatives gives correct results only
+        with the same pupil mask (trans_pup_mask). If False (default) the
+        function works on copies and the inputs are not modified.
     """
 
     # Derivatives are already transformed - route to the appropriate formatter
     if slope_method == 'derivatives':
+        if not in_place:
+            derivatives_x = derivatives_x.copy()
+            derivatives_y = derivatives_y.copy()
         return _compute_slopes_from_derivatives(
             derivatives_x, derivatives_y, trans_pup_mask, dm_mask,
             wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa,
@@ -579,10 +588,12 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
         # Only needed for the display: release it before computing the slopes
         del trans_dm_array
 
+    # The derivatives are not used afterwards: no copy
     im = apply_wfs_transformations_combined(
         derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
         wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa=idx_valid_sa,
-        slope_method=slope_method, verbose=verbose, specula_convention=specula_convention
+        slope_method=slope_method, verbose=verbose, specula_convention=specula_convention,
+        in_place=True
     )
 
     if display:
@@ -774,8 +785,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             )
         del trans_dm_array
 
-        # The slope computation modifies the derivatives in place, but it is
-        # idempotent for a given pupil mask (the same for the whole group)
+        # The slope computation modifies the derivatives in place (no copy),
+        # which is correct here: all the WFS of a group have the same pupil mask
         for i in members:
             params = wfs_params[i]
             idx_valid_sa = params['idx_valid_sa']
@@ -785,7 +796,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
                 derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
                 params['nsubaps'], params['fov_arcsec'], pup_diam_m,
                 idx_valid_sa=idx_valid_sa, slope_method=slope_method, verbose=False,
-                specula_convention=specula_convention
+                specula_convention=specula_convention, in_place=True
             )
             im_list[i] = cpuArray(im) if im_on_cpu else im
             if verbose:
