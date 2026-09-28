@@ -836,7 +836,7 @@ class ParamsManager:
         gs_height = None
 
         # Check if there's a specific source for this WFS and try to get height
-        source_match = re.search(r'('+source_type+'\d+)', wfs_key)
+        source_match = re.search(r'(' + source_type + r'\d+)', wfs_key)
         if source_match:
             source_key = f'source_{source_match.group(1)}'
             if source_key in self.params:

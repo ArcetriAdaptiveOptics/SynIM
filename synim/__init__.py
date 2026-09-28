@@ -139,9 +139,9 @@ def init(device_idx=-1, precision=1):
             from cupyx.scipy.ndimage import binary_dilation as cupy_dilation
             affine_transform = cupy_affine
             binary_dilation = cupy_dilation
-            print('✓ Using cupyx.scipy.ndimage (GPU-accelerated transforms)')
+            print('Using cupyx.scipy.ndimage (GPU-accelerated transforms)')
         except ImportError:
-            print('⚠️  cupyx.scipy.ndimage not available, falling back to scipy (CPU)')
+            print('WARNING: cupyx.scipy.ndimage not available, falling back to scipy (CPU)')
             from scipy.ndimage import affine_transform as cpu_affine
             from scipy.ndimage import binary_dilation as cpu_dilation
             from scipy.ndimage import rotate as cpu_rotate
@@ -152,7 +152,7 @@ def init(device_idx=-1, precision=1):
             rotate = cpu_rotate
             shift = cpu_shift
             zoom = cpu_zoom
-            print('✓ Using scipy.ndimage (CPU)')
+            print('Using scipy.ndimage (CPU)')
 
     else:
         print('Default device is CPU')
@@ -166,7 +166,7 @@ def init(device_idx=-1, precision=1):
         from scipy.ndimage import binary_dilation as cpu_dilation
         affine_transform = cpu_affine
         binary_dilation = cpu_dilation
-        print('✓ Using scipy.ndimage (CPU)')
+        print('Using scipy.ndimage (CPU)')
 
     cpu_float_dtype = cpu_float_dtype_list[global_precision]
     float_dtype = float_dtype_list[global_precision]
