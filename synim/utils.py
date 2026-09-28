@@ -201,6 +201,12 @@ def apply_extrapolation(data, edge_pixels, reference_indices, coefficients, in_p
     flat_result = result_reshaped.reshape(-1, n_slices)
     flat_data = data.reshape(-1, n_slices) if data.ndim == 3 else data.reshape(-1, 1)
 
+    # The explicit pairwise sum below assumes 8 neighbours per edge pixel
+    if coefficients.shape[1] != 8 or reference_indices.shape[1] != 8:
+        raise ValueError(f"Expected 8 reference pixels per edge pixel, got"
+                         f" {coefficients.shape[1]} coefficients and"
+                         f" {reference_indices.shape[1]} indices")
+
     # Vectorized extrapolation for all slices at once
     valid_ref_mask = reference_indices >= 0
     safe_ref_indices = xp.where(valid_ref_mask, reference_indices, 0)
