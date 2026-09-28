@@ -230,7 +230,8 @@ def load_pupilstop(cm, pupilstop_params, pixel_pupil, pixel_pitch, verbose=False
         return pupilstop.A
 
 def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
-                             is_inverse_basis=False, full_config=None):
+                             is_inverse_basis=False, full_config=None,
+                             xp_local=np, float_dtype_local=cpu_float_dtype):
     """
     Load or generate DM influence functions.
     
@@ -241,6 +242,12 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
         verbose (bool): Whether to print details
         is_inverse_basis (bool): If True, don't convert to 3D (for projection matrices)        
         full_config (dict): Full configuration dictionary (optional)
+        xp_local: array module (numpy or cupy) on which the 3D array built
+            from influence functions read from file is created. With cupy,
+            the 2D influence functions are moved to the GPU (no copy if
+            SPECULA already restored them there) and the 3D array is built
+            on the GPU.
+        float_dtype_local: data type of that 3D array
 
     Returns:
         tuple: (dm_array, dm_mask) - For DM: 3D array, For inverse basis: 2D array
@@ -307,7 +314,7 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
 
             # Convert influence function from 2D to 3D
             dm_array = dm2d_to_3d(ifunc.influence_function, ifunc.mask_inf_func,
-                                  xp_local=np, float_dtype_local=cpu_float_dtype)
+                                  xp_local=xp_local, float_dtype_local=float_dtype_local)
             if verbose:
                 print(f"     DM array shape: {dm_array.shape}")
             dm_mask = ifunc.mask_inf_func.copy()
@@ -449,7 +456,7 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=
         # Preserve the original SubapData ordering used by SH Slopec.
         # This aligns idx_valid_sa ordering with flux_per_subaperture vectors.
         if hasattr(subap_data, 'display_map') and subap_data.display_map is not None:
-            display_map = np.asarray(subap_data.display_map, dtype=np.int64)
+            display_map = cpuArray(subap_data.display_map, dtype=np.int64)
             if display_map.ndim == 1 and display_map.size == subap_data.n_subaps:
                 coords = np.column_stack(
                     np.unravel_index(display_map, (subap_data.nx, subap_data.ny))
@@ -457,7 +464,7 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=
                 return coords.astype(np.int64)
 
         # Fallback: derive valid coordinates from the mask if display_map is not usable.
-        coords = np.transpose(np.asarray(np.where(subap_data.single_mask())))
+        coords = np.transpose(np.asarray(np.where(cpuArray(subap_data.single_mask()))))
         sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))
         return coords[sort_idx].astype(np.int64)
 
@@ -929,13 +936,13 @@ def validate_opt_sources(params, verbose=False):
                 print(f"{opt_name}: weight not specified, using 1.0")
 
     if verbose:
-        print(f"✓ Validated {len(opt_list)} optical sources")
+        print(f"Validated {len(opt_list)} optical sources")
         for opt in opt_list:
             pol_coo = opt['config'][pc_string]
             height = opt['config']['height']
             weight = opt['config']['weight']
-            h_str = f"{height:.0f}m" if not np.isinf(height) else "∞ (NGS)"
-            print(f"  {opt['name']}: [{pol_coo[0]:.1f}\", {pol_coo[1]:.0f}°] "
+            h_str = f"{height:.0f}m" if not np.isinf(height) else "inf (NGS)"
+            print(f"  {opt['name']}: [{pol_coo[0]:.1f}\", {pol_coo[1]:.0f} deg] "
                   f"h={h_str}, w={weight:.2f}")
 
     return True
@@ -1415,7 +1422,7 @@ def compute_layer_weights_from_turbulence(params,
         raise ValueError("'atmo.heights' and 'atmo.cn2' must be 1D arrays")
 
     if len(turb_heights) != len(turb_cn2):
-        raise ValueError(f"Mismatch: {len(turb_heights)} heights vs {len(turb_cn2)} CN² values")
+        raise ValueError(f"Mismatch: {len(turb_heights)} heights vs {len(turb_cn2)} CN^2 values")
 
     if not np.all(np.isfinite(turb_heights)) or not np.all(np.isfinite(turb_cn2)):
         raise ValueError("'atmo.heights' and 'atmo.cn2' must contain finite values")
@@ -1444,8 +1451,8 @@ def compute_layer_weights_from_turbulence(params,
         print(f"  Airmass: {airmass:.6f}")
         print(f"  Turbulence heights (original): {turb_heights}")
         print(f"  Turbulence heights (airmass-scaled): {turb_heights_eff}")
-        print(f"  CN² values: {turb_cn2}")
-        print(f"  Normalized CN²: {turb_cn2_norm}")
+        print(f"  CN^2 values: {turb_cn2}")
+        print(f"  Normalized CN^2: {turb_cn2_norm}")
 
     # Get layer heights
     layer_heights = []
@@ -1788,7 +1795,7 @@ def compute_influence_functions_and_modalbases(
         print(f"COMPUTING INFLUENCE FUNCTIONS AND MODAL BASES")
         print(f"{'='*70}")
         print(f"  Root directory: {root_dir}")
-        print(f"  Pupil: {pixel_pupil} px × {pixel_pitch:.4f} m = {telescope_diameter:.2f} m")
+        print(f"  Pupil: {pixel_pupil} px x {pixel_pitch:.4f} m = {telescope_diameter:.2f} m")
         print(f"  FOV: {fov_arcsec} arcsec")
         print(f"  Obstruction ratio: {obsratio}")
         print(f"  Spider petals: {n_petals}")
@@ -1857,7 +1864,7 @@ def compute_influence_functions_and_modalbases(
         pupilstop_obj.save(str(mask_path), overwrite=overwrite)
 
         if verbose:
-            print(f"  ✓ Saved pupil mask: {mask_name}")
+            print(f"  Saved pupil mask: {mask_name}")
             print(f"    Valid pixels: {np.sum(pupil_mask > 0.5)}")
 
     # ==================== COMPUTE INFLUENCE FUNCTIONS ====================
@@ -1893,7 +1900,7 @@ def compute_influence_functions_and_modalbases(
         if ifunc_path.exists() and not overwrite:
             if verbose:
                 print(f"\n  {comp_name} (altitude {alt} m, {nact} actuators):")
-                print(f"    ✓ {base_name} (already exists)")
+                print(f"    {base_name} (already exists)")
 
             # Look for M2C file first, then fallback to IFunc
             n_modes = None
@@ -1951,7 +1958,7 @@ def compute_influence_functions_and_modalbases(
                 if inv_path.exists():
                     ifunc_inv_tag = inv_name
                     if verbose:
-                        print(f"    ✓ Found inverse: {inv_name}")
+                        print(f"    Found inverse: {inv_name}")
 
             if verbose:
                 print(f"    ifunc: {base_name}")
@@ -2036,13 +2043,13 @@ def compute_influence_functions_and_modalbases(
             ifunc_inv_tag = inv_name
 
             if verbose:
-                print(f"    ✓ Saved: {base_name}")
-                print(f"    ✓ Saved: {m2c_name}")
-                print(f"    ✓ Saved inverse: {inv_name}")
+                print(f"    Saved: {base_name}")
+                print(f"    Saved: {m2c_name}")
+                print(f"    Saved inverse: {inv_name}")
         else:
             if verbose:
-                print(f"    ✓ Saved: {base_name}")
-                print(f"    ✓ Saved: {m2c_name}")
+                print(f"    Saved: {base_name}")
+                print(f"    Saved: {m2c_name}")
 
     # ==================== SUMMARY ====================
     if verbose:
@@ -2171,7 +2178,7 @@ def generate_filter_matrix_from_intmat(
 
     # Extract subset of reconstruction matrix (first n_modes_filtered rows)
     # Shape: [n_modes_filtered, n_slopes]
-    recmat_subset = recmat_obj.recmat[:n_modes_filtered, :].copy()
+    recmat_subset = cpuArray(recmat_obj.recmat[:n_modes_filtered, :], force_copy=True)
 
     if verbose:
         print(f"  Filter intmat shape: {intmat_subset.shape}")
@@ -2246,7 +2253,7 @@ def save_filter_matrix(
     hdu.writeto(output_filename, overwrite=overwrite)
 
     if verbose:
-        print(f"  ✓ Saved to {output_filename}")
+        print(f"  Saved to {output_filename}")
 
 
 def load_filter_matrix(filename, verbose=False):
@@ -2346,7 +2353,7 @@ def generate_filter_matrix_from_intmat_file(
     intmat_obj = Intmat.restore(str(intmat_filename))
 
     if verbose:
-        print(f"   ✓ Loaded intmat shape: {intmat_obj.intmat.shape}")
+        print(f"   Loaded intmat shape: {intmat_obj.intmat.shape}")
 
     # Generate filter matrix
     if verbose:
@@ -2374,7 +2381,7 @@ def generate_filter_matrix_from_intmat_file(
 
     if verbose:
         print(f"\n{'='*70}")
-        print(f"✓ FILTER MATRIX GENERATION COMPLETE")
+        print(f"FILTER MATRIX GENERATION COMPLETE")
         print(f"{'='*70}\n")
 
     return intmat_subset, recmat_subset

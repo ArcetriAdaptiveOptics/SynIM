@@ -56,7 +56,7 @@ def transpose_base_array_for_specula(base_inv_array, pup_mask_original, verbose=
         transposed = xp.transpose(base_inv_array, (1, 0, 2))
 
         if verbose:
-            print(f"  Transposed 3D base: {base_inv_array.shape} → {transposed.shape}")
+            print(f"  Transposed 3D base: {base_inv_array.shape} -> {transposed.shape}")
 
         return transposed
 
@@ -210,10 +210,10 @@ def projection_matrix(pup_diam_m, pup_mask,
         print(f"{'='*60}")
         print(f"DM transformations: {has_dm_transform}")
         print(f"  - Height: {dm_height} m")
-        print(f"  - Rotation: {dm_rotation}°")
+        print(f"  - Rotation: {dm_rotation} deg")
         print(f"  - GS position: {gs_pol_coo}")
         print(f"Base transformations: {has_base_transform}")
-        print(f"  - Rotation: {base_rotation}°")
+        print(f"  - Rotation: {base_rotation} deg")
         print(f"  - Translation: {base_translation}")
         print(f"  - Magnification: {base_magnification}")
         print(f"Using {'COMBINED' if use_combined else 'SEPARATED'} workflow")
@@ -278,10 +278,10 @@ def projection_matrix(pup_diam_m, pup_mask,
         if verbose:
             print(f'[COMBINED] Applying DM+Base transformations in one step:')
             print(f'  DM translation: {dm_translation} pixels')
-            print(f'  DM rotation: {dm_rotation}°')
+            print(f'  DM rotation: {dm_rotation} deg')
             print(f'  DM magnification: {dm_magnification}')
             print(f'  Base translation: {base_translation} pixels')
-            print(f'  Base rotation: {base_rotation}°')
+            print(f'  Base rotation: {base_rotation} deg')
             print(f'  Base magnification: {base_magnification}')
 
         # Transform DM array with BOTH DM and Base transformations
@@ -332,7 +332,7 @@ def projection_matrix(pup_diam_m, pup_mask,
             print(f'[SEPARATED] Applying transformations in two steps:')
             print(f'  Step 1 - DM transformations:')
             print(f'    Translation: {dm_translation} pixels')
-            print(f'    Rotation: {dm_rotation}°')
+            print(f'    Rotation: {dm_rotation} deg')
             print(f'    Magnification: {dm_magnification}')
 
         # Transform DM array (ONLY DM transformations)
@@ -376,7 +376,7 @@ def projection_matrix(pup_diam_m, pup_mask,
         if has_base_transform and verbose:
             print(f'  Step 2 - Base transformations:')
             print(f'    Translation: {base_translation} pixels')
-            print(f'    Rotation: {base_rotation}°')
+            print(f'    Rotation: {base_rotation} deg')
             print(f'    Magnification: {base_magnification}')
 
     # ================================================================
@@ -391,9 +391,9 @@ def projection_matrix(pup_diam_m, pup_mask,
     trans_dm_array = apply_mask(trans_dm_array, trans_dm_mask, in_place=True)
 
     if verbose:
-        print(f'  ✓ DM array transformed: {trans_dm_array.shape}')
-        print(f'  ✓ DM mask valid pixels: {xp.sum(trans_dm_mask > 0.5)}')
-        print(f'  ✓ Pupil mask valid pixels: {xp.sum(trans_pup_mask > 0.5)}')
+        print(f'  DM array transformed: {trans_dm_array.shape}')
+        print(f'  DM mask valid pixels: {xp.sum(trans_dm_mask > 0.5)}')
+        print(f'  Pupil mask valid pixels: {xp.sum(trans_pup_mask > 0.5)}')
 
     # ================================================================
     # STEP 6: Find valid pixels (intersection of DM and pupil)
@@ -403,7 +403,7 @@ def projection_matrix(pup_diam_m, pup_mask,
     n_valid_pixels = len(idx_valid[0])
 
     if verbose:
-        print(f'  ✓ Valid pixels (intersection): {n_valid_pixels}')
+        print(f'  Valid pixels (intersection): {n_valid_pixels}')
 
     # ================================================================
     # STEP 7: Extract valid pixel values from DM array
@@ -412,7 +412,7 @@ def projection_matrix(pup_diam_m, pup_mask,
     # Result shape: (n_valid_pixels, n_modes)
 
     if verbose:
-        print(f'  ✓ DM valid values extracted: {dm_valid_values.shape}')
+        print(f'  DM valid values extracted: {dm_valid_values.shape}')
 
     # ================================================================
     # STEP 8: Extract valid pixel values from base_inv_array
@@ -446,7 +446,7 @@ def projection_matrix(pup_diam_m, pup_mask,
 
         if verbose:
             print(f'  Base format detected: {base_format}')
-            print(f'  Base shape: {base_inv_array.shape} → {base_valid_values.shape}')
+            print(f'  Base shape: {base_inv_array.shape} -> {base_valid_values.shape}')
 
     elif base_inv_array.ndim == 3:
         # --------------------------------------------------------
@@ -457,7 +457,7 @@ def projection_matrix(pup_diam_m, pup_mask,
         # Result shape: (n_valid_pixels, n_modes_base)
 
         if verbose:
-            print(f'  Base 3D: {base_inv_array.shape} → {base_valid_values.shape}')
+            print(f'  Base 3D: {base_inv_array.shape} -> {base_valid_values.shape}')
 
     else:
         raise ValueError(f"base_inv_array must be 2D or 3D, got {base_inv_array.ndim}D")
@@ -476,7 +476,7 @@ def projection_matrix(pup_diam_m, pup_mask,
     projection = xp.dot(dm_valid_values.T, base_valid_values)
 
     if verbose:
-        print(f'\n  ✓ PROJECTION COMPUTED: {projection.shape}')
+        print(f'\n  PROJECTION COMPUTED: {projection.shape}')
         print(f'    DM modes: {projection.shape[0]}')
         print(f'    Base modes: {projection.shape[1]}')
         print(f'    Valid pixels used: {n_valid_pixels}')

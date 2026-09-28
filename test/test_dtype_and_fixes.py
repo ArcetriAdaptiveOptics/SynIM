@@ -60,6 +60,62 @@ class TestTelescopingSum(unittest.TestCase):
                 self.assertEqual(im.dtype, synim.float_dtype)
 
 
+class TestDoubleInputsSinglePrecision(unittest.TestCase):
+    """
+    With single precision (as in these tests), float64 inputs given by the
+    user must not make the pipeline run in float64 (memory and time).
+    """
+
+    def setUp(self):
+        n = 48
+        self.n = n
+        self.pup_mask = _circular_mask(n, n / 2).astype(np.float64)
+        self.dm_mask = np.ones((n, n))
+        self.dm_array = np.random.default_rng(3).standard_normal((n, n, 4))  # float64
+        self.assertEqual(synim.float_dtype, np.float32)
+
+    def test_interaction_matrix(self):
+        # record the dtype of every array transformed by rotshiftzoom_array
+        dtypes = []
+        original = synim_core.rotshiftzoom_array
+
+        def spy(array, *args, **kwargs):
+            dtypes.append(array.dtype)
+            return original(array, *args, **kwargs)
+
+        synim_core.rotshiftzoom_array = spy
+        try:
+            for slope_method in ('derivatives', 'telsum'):
+                im = synim_core.interaction_matrix(
+                    8.0, self.pup_mask, self.dm_array, self.dm_mask, 0.0, 0.0, 8, 4.0,
+                    (10.0, 0.0), 90e3, 5.0, (0.0, 0.0), 1.0, slope_method=slope_method)
+                self.assertEqual(im.dtype, np.float32)
+        finally:
+            synim_core.rotshiftzoom_array = original
+        self.assertTrue(dtypes)
+        self.assertTrue(all(d == np.float32 for d in dtypes), dtypes)
+
+    def test_interaction_matrices_multi_wfs(self):
+        configs = [dict(name='a', nsubaps=8, fov_arcsec=4.0, gs_pol_coo=(10.0, 0.0),
+                        gs_height=90e3, rotation=5.0)]
+        im_dict, _ = synim_core.interaction_matrices_multi_wfs(
+            8.0, self.pup_mask, self.dm_array, self.dm_mask, 0.0, 0.0, configs)
+        self.assertEqual(im_dict['a'].dtype, np.float32)
+
+    def test_projection_matrix(self):
+        import synim.synpm as synpm
+        idx = np.where(self.pup_mask > 0.5)
+        base_inv = np.linalg.pinv(self.dm_array[idx[0], idx[1], :3])   # float64
+        projection = synpm.projection_matrix(
+            8.0, self.pup_mask, self.dm_array, self.dm_mask, base_inv,
+            0.0, 0.0, 0.0, (0, 0), (1, 1), (0, 0), np.inf)
+        self.assertEqual(projection.dtype, np.float32)
+
+    def test_subaperture_illumination(self):
+        illumination = synim_core.compute_subaperture_illumination(self.pup_mask, 8)
+        self.assertEqual(illumination.dtype, np.float32)
+
+
 class TestDtypePreservation(unittest.TestCase):
 
     def test_apply_mask(self):
@@ -79,7 +135,7 @@ class TestDtypePreservation(unittest.TestCase):
                     self.assertEqual(out.dtype, dtype)
         out = rebin(np.ones((16, 16), dtype=bool), (4, 4), method='sum')
         self.assertEqual(out.dtype, synim.float_dtype)
-        np.testing.assert_array_equal(out, 16)
+        np.testing.assert_array_equal(synim.cpuArray(out), 16)
 
     def test_rebin_non_integer_factor(self):
         out = rebin(np.ones((15, 15), dtype=np.float64), (4, 4), method='average')

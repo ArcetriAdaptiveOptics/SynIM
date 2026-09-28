@@ -120,6 +120,11 @@ Computation Workflows
    anamorphosis scale them), which a resampling of the derivative maps does not
    account for.
 
+   With several WFS (``interaction_matrices_multi_wfs``), the WFS with the same
+   guide star, WFS transformations, number of subapertures and slope method
+   share the transformed influence functions and the derivatives, which are
+   computed once for the group (see ``derivatives_info['groups']``).
+
 **Projection matrices**
    Projection matrices transform scalar fields (DM modes and the projection
    basis), so the DM and basis transformations can be applied separately

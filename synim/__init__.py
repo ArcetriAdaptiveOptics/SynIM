@@ -81,7 +81,7 @@ def init(device_idx=-1, precision=1):
     global gpu_float_dtype_list, gpu_complex_dtype_list
     global cpu_float_dtype
     # *** Declare scipy globals ***
-    global affine_transform, binary_dilation
+    global affine_transform, binary_dilation, rotate, shift, zoom
 
     if precision not in (0, 1):
         raise ValueError(f"precision must be 0 (double) or 1 (single), got {precision}")
