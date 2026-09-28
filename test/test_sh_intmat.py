@@ -323,12 +323,10 @@ class TestShIntmatComparison(unittest.TestCase):
 
     def function_intmat_workflow_selection(self, base_yml):
         """
-        Test that SynIM correctly selects separated vs combined workflow.
-        
-        For SCAO with on-axis NGS:
+        Test the geometry parameters prepared by ParamsManager for a SCAO
+        configuration with on-axis NGS:
         - No DM transformations (height=0, rotation=0, on-axis)
         - No WFS transformations (rotation=0, translation=0, mag=1)
-        - Should use SEPARATED workflow
         """
 
         print("\n" + "="*60)
@@ -368,5 +366,5 @@ class TestShIntmatComparison(unittest.TestCase):
         self.assertEqual(params['gs_pol_coo'], [0.0, 0.0], "SCAO should be on-axis")
         self.assertEqual(params['wfs_rotation'], 0.0, "SCAO WFS should have no rotation")
 
-        print("\n✓ Configuration is standard SCAO (should use SEPARATED workflow)")
+        print("\n✓ Configuration is standard SCAO (no DM or WFS transformations)")
         print("="*60 + "\n")

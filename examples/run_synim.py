@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import synim
+synim.init(device_idx=-1, precision=1)  # CPU, single precision
 import synim.synim as synim
 
 import specula

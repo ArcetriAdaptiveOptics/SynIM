@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import synim
+synim.init(device_idx=-1, precision=1)  # CPU, single precision
 from synim.params_manager import ParamsManager
 import specula
 specula.init(device_idx=-1, precision=1)

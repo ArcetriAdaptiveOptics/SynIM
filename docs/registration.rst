@@ -109,6 +109,8 @@ parsed SPECULA/SynIM YAML configuration, reusing
 
 .. code-block:: python
 
+   import synim
+   synim.init(device_idx=-1, precision=1)
    from synim.params_utils import parse_params_file
    from synim.registration.model import System
 

@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
+import synim as _synim
+_synim._require_init(__name__)
 from synim import cpuArray, to_xp, cpu_float_dtype
 
 # Import all utility functions from utils
@@ -22,7 +24,10 @@ except ImportError as exc:
         "or from: https://github.com/ArcetriAdaptiveOptics/SPECULA"
     ) from exc
 
-specula.init(device_idx=-1, precision=1)
+# Initialize SPECULA with the SynIM configuration only if the caller has not done it already
+if specula.xp is None:
+    specula.init(device_idx=_synim.default_target_device_idx,
+                 precision=_synim.global_precision)
 
 from specula.calib_manager import CalibManager
 from specula.data_objects.ifunc import IFunc
@@ -1545,7 +1550,8 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
 
     # Handle noise covariance matrix
     if C_noise is None and noise_variance is not None:
-        n_slopes_total = A.shape[1]
+        # A has shape (n_slopes, n_modes)
+        n_slopes_total = A.shape[0]
         n_wfs = len(noise_variance)
         n_slopes_per_wfs = n_slopes_total // n_wfs
 
@@ -1561,7 +1567,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             C_noise[start_idx:end_idx, start_idx:end_idx] = \
                 noise_variance[i] * xp.eye(n_slopes_per_wfs, dtype=dtype)
     elif C_noise is None and noise_variance is None:
-        C_noise = xp.eye(A.shape[1], dtype=dtype)
+        C_noise = xp.eye(A.shape[0], dtype=dtype)
     else:
         C_noise = to_xp(xp, C_noise, dtype=dtype)
 

@@ -102,44 +102,29 @@ SynIM is organized into several main modules:
 Computation Workflows
 ~~~~~~~~~~~~~~~~~~~~~
 
-SynIM implements two main workflows for interaction matrix computation, automatically selected based on system geometry to optimize accuracy and performance.
+**Interaction matrices**
+   All the geometric transformations (DM shift, rotation and magnification from
+   the guide star direction and height, WFS shift, rotation, magnification and
+   anamorphosis) are combined into a single affine transformation, applied to
+   the influence functions in one interpolation step:
 
-**SEPARATED Workflow**
-   Used when transformations exist only in DM or WFS (not both):
-   
-   **Process:**
-   
-   1. Apply DM transformations to influence functions (rotation, magnification, source altitude projection)
-   2. Compute numerical derivatives or G-tilts with edge extrapolation
-   3. Apply WFS transformations to derivatives or G-tilts (rotation, translation, magnification)
-   4. Bin derivatives or G-tilts to subaperture resolution
-   5. Extract slopes for valid subapertures
-   
-   **Advantages:**
-   
-   - Single interpolation step per transformation type
-   - Maximum accuracy (no cumulative interpolation errors)
-   - Can reuse derivatives or G-tilts for multiple WFS with same geometry
+   1. Combine all DM and WFS transformations into a single composite operation
+   2. Apply it to the influence functions (the phase) in one interpolation step
+   3. Compute derivatives or G-tilts (telescoping sum) with edge repair on the
+      transformed grid
+   4. Bin to subaperture resolution and extract the slopes of the valid subapertures
 
-**COMBINED Workflow**
-   Used when both DM and WFS have transformations:
-   
-   **Process:**
-   
-   1. Combine all DM and WFS transformations into single composite operation
-   2. Apply combined transformation to influence functions in one interpolation step
-   3. Compute derivatives or G-tilts on final transformed grid
-   4. Bin and extract slopes
-   
-   **Advantages:**
-   
-   - Avoids double interpolation artifacts that occur when transformations are coupled
-   - Single interpolation step when both DM and WFS rotate/translate
-   - Consistent handling of complex geometric configurations
+   WFS transformations are never applied to derivative maps: the gradient of
+   the transformed phase includes the Jacobian of the transformation (rotation
+   and 45° anamorphosis mix the x and y components, magnification and 90°
+   anamorphosis scale them), which a resampling of the derivative maps does not
+   account for.
 
-**Automatic Workflow Selection**
-
-The workflow is automatically selected based on system geometry analyzing transformation parameters.
+**Projection matrices**
+   Projection matrices transform scalar fields (DM modes and the projection
+   basis), so the DM and basis transformations can be applied separately
+   (SEPARATED workflow) or combined in one interpolation step (COMBINED workflow,
+   used when both the DM and the basis are transformed).
 
 GPU Architecture
 ~~~~~~~~~~~~~~~~
@@ -156,6 +141,13 @@ GPU support is implemented through a flexible backend system:
       
       # GPU backend (cupy + cupyx.scipy)
       synim.init(device_idx=0, precision=1)
+
+   ``synim.init()`` must be called once, before importing the SynIM submodules
+   (``synim.synim``, ``synim.synpm``, ``synim.utils``, ``synim.params_utils``,
+   ``synim.params_manager``): they bind the array library and the data types
+   when they are imported. Importing them before ``synim.init()`` raises a
+   ``RuntimeError``, as does calling ``synim.init()`` again with a different
+   configuration after they have been imported.
 
 **Memory Management**
    - Automatic data transfer between CPU and GPU

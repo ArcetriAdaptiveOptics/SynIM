@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import sys
 
 # Global variables for array library configuration
 xp = None
@@ -26,14 +27,52 @@ cpu_complex_dtype_list = [np.complex128, np.complex64]
 gpu_float_dtype_list = cpu_float_dtype_list
 gpu_complex_dtype_list = cpu_complex_dtype_list
 
+# Submodules that bind the configuration (xp, dtypes, ...) with
+# "from synim import ..." when they are imported: synim.init() must be
+# called before importing any of them.
+_CONFIG_DEPENDENT_MODULES = (
+    'synim.synim', 'synim.synpm', 'synim.utils', 'synim.params_utils',
+    'synim.params_manager',
+)
+
+
+def _require_init(module_name):
+    """Raise an error if synim.init() has not been called yet."""
+    if xp is None:
+        raise RuntimeError(
+            f"SynIM is not initialized: call synim.init(device_idx=..., precision=...)"
+            f" before importing {module_name}.\n"
+            f"Example:\n"
+            f"    import synim\n"
+            f"    synim.init(device_idx=-1, precision=1)  # CPU, single precision\n"
+            f"    import {module_name}")
+
+
+def _effective_device_idx(device_idx):
+    """Device actually used by init(device_idx): -1 if the GPU is not available."""
+    if device_idx < 0 or os.environ.get('SYNIM_DISABLE_GPU', 'FALSE') != 'FALSE':
+        return -1
+    try:
+        import cupy  # noqa: F401
+    except ImportError:
+        return -1
+    return device_idx
+
+
 def init(device_idx=-1, precision=1):
     """
     Initialize SynIM with numpy or cupy backend.
-    
+
+    Must be called before importing the SynIM submodules (synim.synim,
+    synim.synpm, synim.utils, synim.params_utils, synim.params_manager):
+    they bind the array library and the data types when they are imported.
+    Calling it again after those imports with the same configuration has no
+    effect; with a different configuration it raises a RuntimeError.
+
     Args:
         device_idx (int): GPU device index (-1 for CPU, >=0 for GPU)
         precision (int): 0 for double precision, 1 for single precision
-    
+
     Returns:
         None
     """
@@ -43,6 +82,21 @@ def init(device_idx=-1, precision=1):
     global cpu_float_dtype
     # *** Declare scipy globals ***
     global affine_transform, binary_dilation
+
+    if precision not in (0, 1):
+        raise ValueError(f"precision must be 0 (double) or 1 (single), got {precision}")
+
+    loaded = [name for name in _CONFIG_DEPENDENT_MODULES if name in sys.modules]
+    if loaded and xp is not None:
+        requested = (_effective_device_idx(device_idx), precision)
+        current = (default_target_device_idx, global_precision)
+        if requested == current:
+            return
+        raise RuntimeError(
+            f"synim.init(device_idx={device_idx}, precision={precision}) called after"
+            f" importing {', '.join(loaded)}, which use device_idx={current[0]},"
+            f" precision={current[1]}. The SynIM submodules keep the configuration"
+            f" they were imported with: call synim.init() once, before importing them.")
 
     default_target_device_idx = device_idx
     global_precision = precision
@@ -85,9 +139,9 @@ def init(device_idx=-1, precision=1):
             from cupyx.scipy.ndimage import binary_dilation as cupy_dilation
             affine_transform = cupy_affine
             binary_dilation = cupy_dilation
-            print('✓ Using cupyx.scipy.ndimage (GPU-accelerated transforms)')
+            print('Using cupyx.scipy.ndimage (GPU-accelerated transforms)')
         except ImportError:
-            print('⚠️  cupyx.scipy.ndimage not available, falling back to scipy (CPU)')
+            print('WARNING: cupyx.scipy.ndimage not available, falling back to scipy (CPU)')
             from scipy.ndimage import affine_transform as cpu_affine
             from scipy.ndimage import binary_dilation as cpu_dilation
             from scipy.ndimage import rotate as cpu_rotate
@@ -98,7 +152,7 @@ def init(device_idx=-1, precision=1):
             rotate = cpu_rotate
             shift = cpu_shift
             zoom = cpu_zoom
-            print('✓ Using scipy.ndimage (CPU)')
+            print('Using scipy.ndimage (CPU)')
 
     else:
         print('Default device is CPU')
@@ -112,7 +166,7 @@ def init(device_idx=-1, precision=1):
         from scipy.ndimage import binary_dilation as cpu_dilation
         affine_transform = cpu_affine
         binary_dilation = cpu_dilation
-        print('✓ Using scipy.ndimage (CPU)')
+        print('Using scipy.ndimage (CPU)')
 
     cpu_float_dtype = cpu_float_dtype_list[global_precision]
     float_dtype = float_dtype_list[global_precision]
@@ -181,7 +235,3 @@ def cpuArray(v, dtype=None, force_copy=False):
         Numpy array
     """
     return to_xp(np, v, dtype=dtype, force_copy=force_copy)
-
-
-# Initialize with CPU by default, single precision
-init(device_idx=-1, precision=1)

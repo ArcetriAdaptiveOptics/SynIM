@@ -11,6 +11,10 @@ import sys
 import re
 sys.path.insert(0, os.path.abspath('..'))
 
+# autodoc imports the SynIM submodules, which require synim.init() first
+import synim  # noqa: E402
+synim.init(device_idx=-1, precision=1)
+
 project = 'SynIM'
 copyright = '2025, Guido Agapito'
 author = 'Guido Agapito'
