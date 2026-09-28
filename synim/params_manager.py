@@ -1122,6 +1122,9 @@ class ParamsManager:
                 float_dtype_local=float_dtype if on_gpu else cpu_float_dtype,
                 use_cache=not on_gpu
             )
+            # The temporary arrays of the loading (2D influence functions, M2C
+            # product) have other sizes than those of the IM computation
+            _release_gpu_memory()
 
             if verbose_flag:
                 print(f"  Component array shape: {component_params['dm_array'].shape}")
