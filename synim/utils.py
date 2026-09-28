@@ -201,16 +201,27 @@ def apply_extrapolation(data, edge_pixels, reference_indices, coefficients, in_p
     flat_result = result_reshaped.reshape(-1, n_slices)
     flat_data = data.reshape(-1, n_slices) if data.ndim == 3 else data.reshape(-1, 1)
 
-    # Vectorized extrapolation for all slices
-    valid_ref_mask = reference_indices >= 0
-    safe_ref_indices = np.where(valid_ref_mask, reference_indices, 0)
+    # The explicit pairwise sum below assumes 8 neighbours per edge pixel
+    if coefficients.shape[1] != 8 or reference_indices.shape[1] != 8:
+        raise ValueError(f"Expected 8 reference pixels per edge pixel, got"
+                         f" {coefficients.shape[1]} coefficients and"
+                         f" {reference_indices.shape[1]} indices")
 
-    for k in range(n_slices):
-        ref_data = flat_data[safe_ref_indices, k]  # (n_edge, 8)
-        masked_coeffs = np.where(valid_ref_mask, coefficients, 0.0)
-        contributions = masked_coeffs * ref_data
-        extrap_values = np.sum(contributions, axis=1)
-        flat_result[edge_pixels, k] = extrap_values
+    # Vectorized extrapolation for all slices at once
+    valid_ref_mask = reference_indices >= 0
+    safe_ref_indices = xp.where(valid_ref_mask, reference_indices, 0)
+    masked_coeffs = xp.where(valid_ref_mask, coefficients, 0.0)
+
+    def contribution(j):
+        # (n_edge, n_slices): coefficient j times reference pixel j
+        return masked_coeffs[:, j:j + 1] * flat_data[safe_ref_indices[:, j], :]
+
+    # Sum of the 8 contributions in the same order as numpy.sum over an axis
+    # of length 8 (pairwise summation), so that the result is bit-identical
+    # to the previous per-slice implementation on CPU
+    extrap_values = ((contribution(0) + contribution(1)) + (contribution(2) + contribution(3))) \
+        + ((contribution(4) + contribution(5)) + (contribution(6) + contribution(7)))
+    flat_result[edge_pixels, :] = extrap_values
 
     # If in_place, result already points to data, so no need to return differently
     # If 2D input, squeeze back
@@ -335,13 +346,6 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     # Note: Inverting the sign of rotation to match the first function's direction
     dm_rot_rad = xp.deg2rad(-dm_rotation)  # Negative sign to reverse direction
     wfs_rot_rad = xp.deg2rad(-wfs_rotation)  # Negative sign to reverse direction
-    # Initialize the output array
-    if is_3d:
-        output = xp.zeros((output_size[0], output_size[1], input_array.shape[2]),
-                          dtype=input_array.dtype)
-    else:
-        output = xp.zeros(output_size, dtype=input_array.dtype)
-
     # Create the transformation matrices
     # For DM transformation
     dm_scale_matrix = xp.array(
@@ -443,13 +447,16 @@ def dm3d_to_2d(dm_array, mask,
 
 
 def dm2d_to_3d(dm_array, mask, normalize=True,
-               xp_local=xp, float_dtype_local=float_dtype):
+               xp_local=xp, float_dtype_local=float_dtype, block_size=256):
     """
     Convert a 2D DM influence function (n_modes, n_valid_pixels) to a 3D
     array (n, n, n_modes) using a mask. The input array is not modified.
 
     If normalize is True, each mode is normalized to unit RMS and then its
     mean (piston) is removed.
+
+    The modes are processed in blocks of block_size: the temporary arrays
+    have the size of one block, not of the whole dm_array.
     """
 
     # *** Convert inputs to xp with correct dtype ***
@@ -466,15 +473,16 @@ def dm2d_to_3d(dm_array, mask, normalize=True,
     idx = xp_local.where(mask > 0)
     dm_array_3d = xp_local.zeros((mask.shape[0], mask.shape[1], nmodes),
                                  dtype=float_dtype_local)
-    for i in range(nmodes):
-        # One mode at a time, on a copy: the caller's array is not modified
-        # and no temporary as large as dm_array is allocated
-        dm_i = dm_array[i].copy()
+    block_size = max(1, int(block_size))
+    for start in range(0, nmodes, block_size):
+        stop = min(start + block_size, nmodes)
+        # Copy of a block of modes: the caller's array is not modified
+        block = dm_array[start:stop].copy()
         if normalize:
             # normalize by the RMS, then remove the mean (piston)
-            dm_i /= xp_local.sqrt(xp_local.mean(dm_i**2))
-            dm_i -= xp_local.mean(dm_i)
-        dm_array_3d[idx[0], idx[1], i] = dm_i
+            block /= xp_local.sqrt(xp_local.mean(block**2, axis=1, keepdims=True))
+            block -= xp_local.mean(block, axis=1, keepdims=True)
+        dm_array_3d[idx[0], idx[1], start:stop] = block.T
 
     return dm_array_3d
 
@@ -556,13 +564,36 @@ def has_transformations(rotation, translation, magnification):
     return has_rotation or has_translation or has_magnification
 
 
-def rebin(array, new_shape, method='average'):
+def _nanmean_blocks_inplace(blocks):
+    """
+    numpy.nanmean(blocks, axis=(1, 3)) with the same operations as numpy
+    (NaN replaced by 0, sum, count of the non-NaN values, division), but with
+    the NaN values replaced in place instead of in a copy of the array.
+    blocks is modified. Blocks without valid values give NaN, as in numpy.
+    """
+    nan_mask = np.isnan(blocks)
+    np.copyto(blocks, 0, where=nan_mask)
+    total = np.sum(blocks, axis=(1, 3))
+    count = np.sum(~nan_mask, axis=(1, 3), dtype=np.intp)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.divide(total, count, out=total, casting='unsafe')
+
+
+def rebin(array, new_shape, method='average', overwrite_input=False):
     """
     Resize array to new dimensions.
 
     A floating point array keeps its dtype in both the expansion and the
     compression case. For other types (bool, int) the expansion returns the
     original dtype and the compression returns float_dtype.
+
+    Parameters:
+        array: 2D or 3D array (the first two axes are resized)
+        new_shape: (M, N) output size of the first two axes
+        method: 'sum', 'average' or 'nanmean' (compression case)
+        overwrite_input: if True, the 'nanmean' compression may modify array
+            (the NaN values are set to 0) instead of working on a copy.
+            Same result, lower memory use.
     """
 
     # *** MODIFIED: Convert input to xp ***
@@ -587,98 +618,71 @@ def rebin(array, new_shape, method='average'):
             rebinned_array = xp.tile(array, (M//m, N//n))
         if orig_dtype != rebinned_array.dtype:
             rebinned_array = rebinned_array.astype(orig_dtype)
-    else:    
-        # Compression case
-        if M == 0 or N == 0:
-            raise ValueError("New shape dimensions must be greater than 0.")
+        return rebinned_array
 
-        # =====================================================================
-        # UNIVERSAL FIX FOR NON-INTEGER REBINNING
-        # Prevents asymmetric truncation by upscaling to an exact multiple first
-        # =====================================================================
-        if m % M != 0 or n % N != 0:
-            mult_m = max(int(xp.ceil(m / M)), 2)
-            mult_n = max(int(xp.ceil(n / N)), 2)
-            target_m = mult_m * M
-            target_n = mult_n * N
+    # Compression case
+    if M == 0 or N == 0:
+        raise ValueError("New shape dimensions must be greater than 0.")
+    if method not in ('sum', 'average', 'nanmean'):
+        raise ValueError(f"Unsupported method: {method}."
+                         f" Use 'sum', 'average', or 'nanmean'.")
 
-            zoom_x = target_m / m
-            zoom_y = target_n / n
+    # =====================================================================
+    # UNIVERSAL FIX FOR NON-INTEGER REBINNING
+    # Prevents asymmetric truncation by upscaling to an exact multiple first
+    # =====================================================================
+    if m % M != 0 or n % N != 0:
+        mult_m = max(int(xp.ceil(m / M)), 2)
+        mult_n = max(int(xp.ceil(n / N)), 2)
+        target_m = mult_m * M
+        target_n = mult_n * N
 
-            # Use affine_transform instead of zoom (which might be None in CuPy)
-            matrix = xp.array([[1.0/zoom_x, 0], [0, 1.0/zoom_y]], dtype=float_dtype)
+        zoom_x = target_m / m
+        zoom_y = target_n / n
 
-            # Align centers to prevent spatial shifts
-            center_in = xp.array([m, n], dtype=float_dtype) / 2.0
-            center_out = xp.array([target_m, target_n], dtype=float_dtype) / 2.0
-            offset_2d = center_in - xp.dot(matrix, center_out)
+        # Use affine_transform instead of zoom (which might be None in CuPy)
+        matrix = xp.array([[1.0/zoom_x, 0], [0, 1.0/zoom_y]], dtype=float_dtype)
 
-            if array.ndim == 3:
-                matrix_3d = xp.eye(3, dtype=float_dtype)
-                matrix_3d[:2, :2] = matrix
-                offset = xp.zeros(3, dtype=float_dtype)
-                offset[:2] = offset_2d
-                array = affine_transform(
-                    array, matrix_3d, offset=offset,
-                    output_shape=(target_m, target_n, array.shape[2]), order=1
-                )
-            else:
-                array = affine_transform(
-                    array, matrix, offset=offset_2d,
-                    output_shape=(target_m, target_n), order=1
-                )
-
-            m, n = target_m, target_n
-        # =====================================================================
+        # Align centers to prevent spatial shifts
+        center_in = xp.array([m, n], dtype=float_dtype) / 2.0
+        center_out = xp.array([target_m, target_n], dtype=float_dtype) / 2.0
+        offset_2d = center_in - xp.dot(matrix, center_out)
 
         if array.ndim == 3:
-            if method == 'sum':
-                rebinned_array = xp.sum(
-                    array[:M*(m//M), :N*(n//N), :].reshape((M, m//M, N, n//N, shape[2])),
-                    axis=(1, 3))
-            elif method == 'average':
-                rebinned_array = xp.mean(
-                    array[:M*(m//M), :N*(n//N), :].reshape((M, m//M, N, n//N, shape[2])),
-                    axis=(1, 3))
-            elif method == 'nanmean':
-                if xp.__name__ == 'cupy':
-                    # CuPy doesn't have errstate, but nanmean handles warnings differently
-                    rebinned_array = xp.nanmean(
-                        array[:M*(m//M), :N*(n//N), :].reshape((M, m//M, N, n//N, shape[2])),
-                        axis=(1, 3))
-                else:
-                    # NumPy: use errstate
-                    with xp.errstate(invalid='ignore'):
-                        rebinned_array = xp.nanmean(
-                            array[:M*(m//M), :N*(n//N), :].reshape((M, m//M, N, n//N, shape[2])),
-                            axis=(1, 3))
-            else:
-                raise ValueError(f"Unsupported method: {method}."
-                                 f" Use 'sum', 'average', or 'nanmean'.")
+            matrix_3d = xp.eye(3, dtype=float_dtype)
+            matrix_3d[:2, :2] = matrix
+            offset = xp.zeros(3, dtype=float_dtype)
+            offset[:2] = offset_2d
+            array = affine_transform(
+                array, matrix_3d, offset=offset,
+                output_shape=(target_m, target_n, array.shape[2]), order=1
+            )
         else:
-            if method == 'sum':
-                rebinned_array = xp.sum(
-                    array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N)),
-                    axis=(1, 3))
-            elif method == 'average':
-                rebinned_array = xp.mean(
-                    array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N)),
-                    axis=(1, 3))
-            elif method == 'nanmean':
-                    # CuPy doesn't have errstate, but nanmean handles warnings differently
-                if xp.__name__ == 'cupy':
-                    rebinned_array = xp.nanmean(
-                        array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N)),
-                        axis=(1, 3))
-                else:
-                    # NumPy: use errstate
-                    with xp.errstate(invalid='ignore'):
-                        rebinned_array = xp.nanmean(
-                            array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N)),
-                            axis=(1, 3))
-            else:
-                raise ValueError(f"Unsupported method: {method}."
-                                 f" Use 'sum', 'average', or 'nanmean'.")
+            array = affine_transform(
+                array, matrix, offset=offset_2d,
+                output_shape=(target_m, target_n), order=1
+            )
+
+        m, n = target_m, target_n
+        # The upscaled array is a new array: it can be modified
+        overwrite_input = True
+    # =====================================================================
+
+    # (M, m//M, N, n//N[, n_modes]) view: the blocks are reduced on axes 1, 3
+    blocks = array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N) + array.shape[2:])
+
+    if method == 'sum':
+        rebinned_array = xp.sum(blocks, axis=(1, 3))
+    elif method == 'average':
+        rebinned_array = xp.mean(blocks, axis=(1, 3))
+    elif xp.__name__ == 'cupy':
+        # cupy.nanmean does not copy the array
+        rebinned_array = xp.nanmean(blocks, axis=(1, 3))
+    elif overwrite_input:
+        rebinned_array = _nanmean_blocks_inplace(blocks)
+    else:
+        with xp.errstate(invalid='ignore'):
+            rebinned_array = xp.nanmean(blocks, axis=(1, 3))
 
     return rebinned_array
 

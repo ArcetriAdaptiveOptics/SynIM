@@ -116,6 +116,25 @@ class TestInit(unittest.TestCase):
         self.assert_ok(result)
         self.assertIn('raised', result.stdout)
 
+    def test_init_declares_the_module_globals_it_assigns(self):
+        # A module-level name assigned in init() without a "global"
+        # declaration would only create a local variable (e.g. rotate, shift
+        # and zoom in the fallback branch without cupyx)
+        import ast
+        import inspect
+        import synim
+        tree = ast.parse(inspect.getsource(synim))
+        module_names = {target.id for node in tree.body if isinstance(node, ast.Assign)
+                        for target in node.targets if isinstance(target, ast.Name)}
+        init_def = next(node for node in tree.body
+                        if isinstance(node, ast.FunctionDef) and node.name == 'init')
+        declared = {name for node in ast.walk(init_def) if isinstance(node, ast.Global)
+                    for name in node.names}
+        assigned = {target.id for node in ast.walk(init_def) if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)}
+        missing = (assigned & module_names) - declared
+        self.assertEqual(missing, set())
+
     def test_specula_configuration_is_respected(self):
         # Importing params_utils must not re-initialize an already initialized SPECULA
         result = run_python("""

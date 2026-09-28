@@ -40,6 +40,18 @@ from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
+def _release_gpu_memory():
+    """
+    Return to the GPU the blocks of the cupy memory pool that are not in use
+    (no effect on CPU). cupy keeps the freed blocks for reuse, but blocks
+    left by a component often do not fit the arrays of the next one (the
+    grids have different sizes), so without this the pool grows by
+    fragmentation well beyond the memory actually in use.
+    """
+    if xp is not np:
+        xp.get_default_memory_pool().free_all_blocks()
+
+
 class ParamsManager:
     """
     Class for managing parameters needed to compute interaction matrices
@@ -198,7 +210,7 @@ class ParamsManager:
             self.proj_reg_factor = float(self.projection_params['reg_factor'])
 
             if self.verbose:
-                print(f"\n✓ Found 'projection' section:")
+                print(f"\nFound 'projection' section:")
                 print(f"  Optical sources: {len(self.projection_params['opt_sources'])}")
                 print(f"  reg_factor: {self.proj_reg_factor}")
                 if 'ifunc_inverse_tag' in self.projection_params:
@@ -217,11 +229,11 @@ class ParamsManager:
                 self.proj_reg_factor = 1e-8
 
                 if self.verbose:
-                    print(f"\n⚠ No projection parameters found, using defaults:")
+                    print(f"\nWARNING: No projection parameters found, using defaults:")
                     print(f"  reg_factor: {self.proj_reg_factor}")
             else:
                 if self.verbose:
-                    print(f"\n✓ Using IDL-style projection parameters:")
+                    print(f"\nUsing IDL-style projection parameters:")
                     print(f"  reg_factor from modalrec1.proj_regFactor: {self.proj_reg_factor}")
 
         # ==================== RECONSTRUCTOR PARAMETERS ====================
@@ -583,7 +595,8 @@ class ParamsManager:
                              cut_start_mode=False,
                              n_modes_to_use=None,
                              xp_local=xp,
-                             float_dtype_local=float_dtype):
+                             float_dtype_local=float_dtype,
+                             use_cache=True):
         """
         Get DM or layer parameters, loading from cache if available.
 
@@ -593,8 +606,11 @@ class ParamsManager:
             cut_start_mode (bool): Whether to select modes from start_mode to start_mode+n_modes
             n_modes_to_use (int, optional): Number of modes to use starting from start_mode.
                                         If None, uses all available modes after start_mode.
-            xp_local: array module to use (numpy or cupy)
+            xp_local: array module to use (numpy or cupy). The 3D array read
+                from an influence function file is built directly with it.
             float_dtype_local: data type for arrays (e.g., float_dtype or cpu_float_dtype)
+            use_cache (bool): if False, the cache is neither read nor written
+                (e.g. for large arrays on GPU that are used only once)
 
         Returns:
             dict: DM or layer parameters
@@ -610,7 +626,7 @@ class ParamsManager:
         if n_modes_to_use is not None:
             cache_key += f"_{n_modes_to_use}"
 
-        if cache_key in self.dm_cache:
+        if use_cache and cache_key in self.dm_cache:
             return self.dm_cache[cache_key]
 
         # Try with index first (dm1, dm2, layer1, layer2...)
@@ -626,7 +642,7 @@ class ParamsManager:
 
         dm_array, dm_mask = load_influence_functions(
             self.cm, component_params, self.pixel_pupil, verbose=self.verbose,
-            full_config=self.params
+            full_config=self.params, xp_local=xp_local, float_dtype_local=float_dtype_local
         )
 
         # *** Select modes from start_mode to start_mode+n_modes ***
@@ -668,15 +684,17 @@ class ParamsManager:
         if not dm_array.flags.c_contiguous:
             dm_array = xp_local.ascontiguousarray(dm_array)
 
-        self.dm_cache[cache_key] = {
+        result = {
             'dm_array': dm_array,
             'dm_mask': dm_mask,
             'dm_height': component_params.get('height', 0.0),
             'dm_rotation': component_params.get('rotation', 0.0),
             'component_key': component_key
         }
+        if use_cache:
+            self.dm_cache[cache_key] = result
 
-        return self.dm_cache[cache_key]
+        return result
 
     def get_wfs_params(self, wfs_type=None, wfs_index=None,
                        xp_local=xp):
@@ -1089,14 +1107,24 @@ class ParamsManager:
                 print(f"Loading {comp_type.upper()} {comp_name} (index {comp_idx})")
                 print(f"{'='*60}")
 
-            # Load component parameters once
+            # Load component parameters once. On GPU the 3D array is built
+            # directly on the device (the 2D influence functions are already
+            # there when SPECULA uses the same GPU, otherwise only the compact
+            # 2D array is transferred) and it is not cached: each component
+            # is used only once here, and the GPU arrays of all the components
+            # would not fit in memory.
+            on_gpu = xp is not np
             component_params = self.get_component_params(
                 comp_idx,
                 is_layer=(comp_type == 'layer'),
                 cut_start_mode=False,
-                xp_local=np,
-                float_dtype_local=cpu_float_dtype
+                xp_local=xp if on_gpu else np,
+                float_dtype_local=float_dtype if on_gpu else cpu_float_dtype,
+                use_cache=not on_gpu
             )
+            # The temporary arrays of the loading (2D influence functions, M2C
+            # product) have other sizes than those of the IM computation
+            _release_gpu_memory()
 
             if verbose_flag:
                 print(f"  Component array shape: {component_params['dm_array'].shape}")
@@ -1226,6 +1254,10 @@ class ParamsManager:
                     intmat_obj.save(wfs_info['path'])
 
                     saved_matrices[f"{wfs_name}_{comp_name}"] = wfs_info['path']
+
+            # Release this component (on GPU it is not cached) before loading the next one
+            del component_params
+            _release_gpu_memory()
 
         if verbose_flag:
             print(f"\n{'='*60}")
@@ -1484,8 +1516,8 @@ class ParamsManager:
                 if self.verbose:
                     print(f"    IM shape: {intmat_obj.intmat.shape}")
 
-                # Use intmat_obj.intmat as base
-                im = intmat_obj.intmat
+                # Use intmat_obj.intmat as base (on CPU: SPECULA may restore it on GPU)
+                im = cpuArray(intmat_obj.intmat)
 
                 # *** APPLY FILTER HERE (after loading) ***
                 if apply_filter:
@@ -1764,7 +1796,7 @@ class ParamsManager:
         opt_sources = extract_opt_list(self.params)
 
         if verbose_flag:
-            print(f"Computing PMs for {len(opt_sources)} sources × {len(components)} components")
+            print(f"Computing PMs for {len(opt_sources)} sources x {len(components)} components")
 
         # ==================== CHECK WHICH FILES NEED COMPUTATION ====================
         # First pass: check which files exist to avoid loading base unnecessarily
@@ -1802,7 +1834,7 @@ class ParamsManager:
         # ==================== EARLY EXIT IF ALL FILES EXIST ====================
         if all_files_exist and not overwrite:
             if verbose_flag:
-                print(f"\n✓ All {len(saved_matrices)} projection matrices already exist")
+                print(f"\nAll {len(saved_matrices)} projection matrices already exist")
                 print(f"  Set overwrite=True to recompute")
             self._monitor.end_section()
             return saved_matrices
@@ -2008,7 +2040,7 @@ class ParamsManager:
                         print(f"  Loading opt{opt_index}: {pm_filename}")
 
                     intmat_obj = Intmat.restore(pm_path)
-                    dm_pms_list.append(intmat_obj.intmat)
+                    dm_pms_list.append(cpuArray(intmat_obj.intmat))
 
                 # Stack all optical sources for this DM
                 # dm_pms_list[i] has shape (n_dm_modes_i, n_pupil_modes)
@@ -2071,7 +2103,7 @@ class ParamsManager:
                         print(f"  Loading opt{opt_index}: {pm_filename}")
 
                     intmat_obj = Intmat.restore(pm_path)
-                    layer_pms_list.append(intmat_obj.intmat)
+                    layer_pms_list.append(cpuArray(intmat_obj.intmat))
 
                 # Stack all optical sources for this layer
                 layer_stack = np.stack(layer_pms_list, axis=0)
@@ -2198,7 +2230,7 @@ class ParamsManager:
         # Check if file exists
         if os.path.exists(output_path) and not overwrite:
             if verbose_flag:
-                print(f"✓ Assembled IM already exists: {output_filename}")
+                print(f"Assembled IM already exists: {output_filename}")
             return output_path
 
         if verbose_flag:
@@ -2244,7 +2276,7 @@ class ParamsManager:
         intmat_obj.save(output_path, overwrite=True)
 
         if verbose_flag:
-            print(f"\n  ✓ Saved to: {output_filename}")
+            print(f"\n  Saved to: {output_filename}")
             print(f"{'='*60}\n")
 
         return output_path
@@ -2351,7 +2383,7 @@ class ParamsManager:
         # Temp dir is automatically cleaned up here
 
         if verbose_flag:
-            print(f"  ✓ IM assembled: {im_full.shape}")
+            print(f"  IM assembled: {im_full.shape}")
             print(f"  Components: {component_indices}")
             print(f"  Modes: {[len(mi) for mi in mode_indices]}")
             print()
@@ -2393,7 +2425,7 @@ class ParamsManager:
             )
 
             if verbose_flag:
-                print(f"  ✓ Covariance assembled: {C_atm_full_inv.shape}")
+                print(f"  Covariance assembled: {C_atm_full_inv.shape}")
                 print()
 
             # Optional low-order mode cut for filtered slopes.
@@ -2492,7 +2524,7 @@ class ParamsManager:
                     inverse_cov_files['illumination_concat'] = illumination_path
 
                 if verbose_flag:
-                    print("  ✓ Inverse covariance matrices saved:")
+                    print("  Inverse covariance matrices saved:")
                     print(f"    - {c_atm_inv_filename}")
                     print(f"    - {c_noise_inv_filename}")
                     if noise_cov_diag is not None and noise_cov_diag.get('illumination_concat') is not None:
@@ -2563,7 +2595,7 @@ class ParamsManager:
             reconstructor = reconstructor_reduced
 
         if verbose_flag:
-            print(f"  ✓ Reconstructor computed: {reconstructor.shape}")
+            print(f"  Reconstructor computed: {reconstructor.shape}")
             print()
 
         # ==================== STEP 5: Save if requested ====================
@@ -2634,7 +2666,7 @@ class ParamsManager:
             recmat_obj.save(rec_path, overwrite=True)
 
             if verbose_flag:
-                print(f"  ✓ Saved: {rec_filename}")
+                print(f"  Saved: {rec_filename}")
                 print()
 
         # ==================== Summary ====================
@@ -2849,8 +2881,8 @@ class ParamsManager:
              raise ValueError("Mode truncation removed all valid modes from DMs or Layers.")
 
         if verbose_flag:
-            print(f"  ✓ Sliced DM PM shape: {pm_full_dm_sliced.shape}")
-            print(f"  ✓ Sliced Layer PM shape: {pm_full_layer_sliced.shape}")
+            print(f"  Sliced DM PM shape: {pm_full_dm_sliced.shape}")
+            print(f"  Sliced Layer PM shape: {pm_full_layer_sliced.shape}")
 
 
         # ==================== 5. EXTRACT OPTICAL SOURCE WEIGHTS ====================
@@ -2914,7 +2946,7 @@ class ParamsManager:
         tpdm_pdm_inv = np.linalg.pinv(tpdm_pdm_reg, rcond=rcond)
 
         if verbose_flag:
-            print(f"  ✓ Pseudoinverse computed successfully (rcond={rcond})")
+            print(f"  Pseudoinverse computed successfully (rcond={rcond})")
 
 
         # ==================== 8. ASSEMBLE FINAL PROJECTION MATRIX ====================
@@ -2922,7 +2954,7 @@ class ParamsManager:
             print(f"\n{'='*60}")
             print(f"Assembling Final Projection Matrix")
             print(f"{'='*60}")
-            print(f"  P_opt = (P_DM^T @ P_DM + λI)^(-1) @ P_DM^T @ P_Layer")
+            print(f"  P_opt = (P_DM^T @ P_DM + lambdaI)^(-1) @ P_DM^T @ P_Layer")
 
         # Compute the math on the compact/sliced arrays
         p_opt_reduced = tpdm_pdm_inv @ tpdm_pl
@@ -2941,7 +2973,7 @@ class ParamsManager:
             p_opt = p_opt_reduced
 
         if verbose_flag:
-            print(f"\n  ✓ Tomographic projection matrix successfully computed: {p_opt.shape}")
+            print(f"\n  Tomographic projection matrix successfully computed: {p_opt.shape}")
             print(f"    (n_dm_modes_target, n_layer_modes_target) = "
                   f"({n_dm_modes_target}, {n_layer_modes_target})")
 
@@ -2976,7 +3008,7 @@ class ParamsManager:
             recmat_obj.save(rec_path, overwrite=True)
 
             if verbose_flag:
-                print(f"  ✓ Saved tomographic projection matrix (SPECULA format):")
+                print(f"  Saved tomographic projection matrix (SPECULA format):")
                 print(f"    {rec_filename}")
                 print(f"    Shape: {p_opt.shape} (n_dm_modes, n_layer_modes)")
 
@@ -2986,7 +3018,7 @@ class ParamsManager:
             np.save(os.path.join(output_dir, "tpdm_pdm_reg.npy"), cpuArray(tpdm_pdm_reg))
 
             if verbose_flag:
-                print(f"\n  ✓ Also saved debug matrices (NumPy format):")
+                print(f"\n  Also saved debug matrices (NumPy format):")
                 print(f"    - tpdm_pdm.npy, tpdm_pl.npy, tpdm_pdm_reg.npy")
 
         # Compile final info dictionary with metadata
@@ -3171,7 +3203,7 @@ class ParamsManager:
             # ========== CHECK IF FILE EXISTS ==========
             if os.path.exists(cov_path) and not overwrite:
                 if verbose_flag:
-                    print(f"  ✓ Loading existing: {cov_filename}")
+                    print(f"  Loading existing: {cov_filename}")
 
                 # Load from FITS
                 with fits.open(cov_path) as hdul:
@@ -3196,7 +3228,7 @@ class ParamsManager:
             # ========== COMPUTE COVARIANCE MATRIX ==========
             if verbose_flag:
                 if os.path.exists(cov_path):
-                    print(f"  ⚠ File exists but overwrite=True, recomputing...")
+                    print(f"  WARNING: File exists but overwrite=True, recomputing...")
                 else:
                     print(f"  File not found, computing...")
 
@@ -3241,7 +3273,7 @@ class ParamsManager:
                 C_atm_rad2 = cpuArray(C_atm_rad2)
 
             if verbose_flag:
-                print(f"  ✓ Covariance computed: {C_atm_rad2.shape}")
+                print(f"  Covariance computed: {C_atm_rad2.shape}")
                 print(f"    RMS (nm):"
                       f" {np.sqrt(np.diag(C_atm_rad2*(500**2/2/np.pi**2))).mean():.2f}")
                 print(f"    RMS (rad): {np.sqrt(np.diag(C_atm_rad2)).mean():.4f}")
@@ -3263,7 +3295,7 @@ class ParamsManager:
             hdu.writeto(cov_path, overwrite=True)
 
             if verbose_flag:
-                print(f"  ✓ Saved to FITS: {cov_filename}")
+                print(f"  Saved to FITS: {cov_filename}")
 
             C_atm_blocks.append(C_atm_rad2)
 
@@ -3400,13 +3432,13 @@ class ParamsManager:
                 C_atm_full[idx_full, idx_full] = C_atm_sub * weight * conversion_factor
 
             if verbose_flag:
-                print(f"  Component {i+1}: modes {valid_modes[0]}-{valid_modes[-1]} → "
+                print(f"  Component {i+1}: modes {valid_modes[0]}-{valid_modes[-1]} -> "
                     f"full matrix [{current_idx}:{current_idx + len(valid_modes)}]")
 
             current_idx += len(valid_modes)
 
         if verbose_flag:
-            print(f"\n  ✓ Full covariance matrix assembled: {C_atm_full.shape}")
+            print(f"\n  Full covariance matrix assembled: {C_atm_full.shape}")
 
         self._monitor.end_section()
         return C_atm_full
@@ -3719,7 +3751,7 @@ class ParamsManager:
                         f"max={np.max(noise_variance):.2e}")
 
             if verbose_flag:
-                print(f"  ✓ C_noise built: {C_noise_inv.shape}")
+                print(f"  C_noise built: {C_noise_inv.shape}")
                 print(f"{'='*60}\n")
 
             if return_diagnostics:
@@ -3803,7 +3835,7 @@ class ParamsManager:
                 diag_vals = np.diag(C_noise_inv)
                 non_zero = diag_vals[diag_vals > 0]
                 if len(non_zero) > 0:
-                    print(f"\n  ✓ Noise covariance (inverse) built: {C_noise_inv.shape}")
+                    print(f"\n  Noise covariance (inverse) built: {C_noise_inv.shape}")
                     print(f"    Precision range: [{np.min(non_zero):.2e}, {np.max(non_zero):.2e}]")
                     print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
                 print(f"{'='*60}\n")
@@ -3868,7 +3900,7 @@ class ParamsManager:
             diag_vals = np.diag(C_noise_inv)
             non_zero = diag_vals[diag_vals > 0]
             if len(non_zero) > 0:
-                print(f"\n  ✓ Noise covariance (inverse) built: {C_noise_inv.shape}")
+                print(f"\n  Noise covariance (inverse) built: {C_noise_inv.shape}")
                 print(f"    Precision range: [{np.min(non_zero):.2e}, {np.max(non_zero):.2e}]")
                 print(f"    Variance range: [{1/np.max(non_zero):.2e}, {1/np.min(non_zero):.2e}]")
             print(f"{'='*60}\n")

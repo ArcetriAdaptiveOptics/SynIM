@@ -128,11 +128,11 @@ class ResourceMonitor:
         header = (f"{'Section':<{name_w}}  {'Time (s)':>9}  {'Peak RAM':>9}")
         if gpu_col:
             header += f"  {'Peak GPU':>9}"
-        sep = "─" * len(header)
+        sep = "-" * len(header)
 
-        print(f"\n{'═' * len(header)}")
+        print(f"\n{'=' * len(header)}")
         print("  Resource usage summary")
-        print(f"{'═' * len(header)}")
+        print(f"{'=' * len(header)}")
         print(header)
         print(sep)
         for s in sections:
@@ -142,7 +142,7 @@ class ResourceMonitor:
                 gpu_gb = s['peak_gpu'] / 1024 ** 3
                 line += f"  {gpu_gb:>8.2f}G"
             print(line)
-        print(f"{'═' * len(header)}\n")
+        print(f"{'=' * len(header)}\n")
 
     def reset(self):
         """Clear all recorded sections."""

@@ -25,7 +25,10 @@ import sys
 import numpy as np
 
 import synim
-synim.init(device_idx=-1, precision=1)
+# Initialize on CPU when run as a script; when imported by the tests SynIM is
+# already initialized (possibly on GPU, see test/__init__.py)
+if synim.xp is None:
+    synim.init(device_idx=-1, precision=1)
 import synim.synim as synim_core  # noqa: E402
 import synim.synpm as synpm  # noqa: E402
 import synim.utils as synim_utils  # noqa: E402
