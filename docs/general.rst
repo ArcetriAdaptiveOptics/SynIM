@@ -114,6 +114,14 @@ Computation Workflows
       transformed grid
    4. Bin to subaperture resolution and extract the slopes of the valid subapertures
 
+   The slope of a subaperture is the mean over its pupil pixels (derivatives)
+   or over its pairs of adjacent pupil pixels (telescoping sum), so partially
+   illuminated subapertures are averaged over their illuminated area. When the
+   number of pixels is not a multiple of the number of subapertures (e.g. 480
+   pixels and 68 subapertures), a pixel shared by two subapertures contributes
+   to each with the fraction of its area inside it (``utils.rebin_matrix``):
+   no interpolation of the phase or of the derivatives is needed.
+
    WFS transformations are never applied to derivative maps: the gradient of
    the transformed phase includes the Jacobian of the transformation (rotation
    and 45° anamorphosis mix the x and y components, magnification and 90°

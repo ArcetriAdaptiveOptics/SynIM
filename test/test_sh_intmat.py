@@ -152,7 +152,8 @@ class TestShIntmatComparison(unittest.TestCase):
 
         # Load SPECULA IM
         specula_im_obj = Intmat.restore(self.im_path)
-        specula_im = specula_im_obj.intmat
+        # numpy arrays (SPECULA and SynIM may run on GPU)
+        specula_im = specula.cpuArray(specula_im_obj.intmat)
 
         print(f"  ✓ SPECULA IM shape: {specula_im.shape}")
         print(f"  ✓ SPECULA IM range: [{specula_im.min():.3e}, {specula_im.max():.3e}]")
@@ -178,6 +179,7 @@ class TestShIntmatComparison(unittest.TestCase):
             verbose=True,
             display=False
         )
+        synim_im = np.asarray(specula.cpuArray(synim_im))
 
         print(f"  ✓ SynIM IM shape: {synim_im.shape}")
         print(f"  ✓ SynIM IM range: [{synim_im.min():.3e}, {synim_im.max():.3e}]")

@@ -1,4 +1,7 @@
 import math
+import warnings
+
+import numpy as np
 
 import synim as _synim
 _synim._require_init(__name__)
@@ -7,11 +10,32 @@ import matplotlib.pyplot as plt
 from synim.utils import (
     apply_mask,
     rebin,
+    rebin_matrix,
+    rebin_fractional_sum,
     rotshiftzoom_array,
     shiftzoom_from_source_dm_params,
     apply_extrapolation,
     calculate_extrapolation_indices_coeffs
 )
+
+
+def _without_nan(array):
+    """array with the NaN values set to 0 (a copy only if there are NaN values)."""
+    if xp.isnan(array).any():
+        return xp.nan_to_num(array, nan=0.0)
+    return array
+
+
+def _warn_if_nan(im, name='interaction matrix'):
+    """Warn if an interaction matrix (numpy or backend array) contains NaN values."""
+    module = np if isinstance(im, np.ndarray) else xp
+    nan_values = module.isnan(im)
+    n_nan = int(module.count_nonzero(nan_values))
+    if n_nan:
+        n_rows = int(module.count_nonzero(nan_values.any(axis=1)))
+        warnings.warn(f'The {name} contains {n_nan} NaN values in {n_rows} of'
+                      f' {im.shape[0]} slopes: check the pupil and DM masks and the'
+                      f' valid subapertures (idx_valid_sa).', RuntimeWarning, stacklevel=3)
 
 
 def _repair_interpolated_phase(data, mask, threshold=0.999999, in_place=False):
@@ -56,10 +80,18 @@ def _repair_interpolated_phase(data, mask, threshold=0.999999, in_place=False):
 
 
 def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose=False,
-                                      in_place=False):
+                                      in_place=False, pup_mask=None):
     """
     Computes the raw telescoping sum (average phase difference per pixel) for each subaperture.
     Acts as the telescoping sum equivalent of computing continuous derivatives.
+
+    The difference between two adjacent pixels is used when both are valid
+    for the phase (mask >= 0.999999, the DM mask), and is 0 otherwise.
+    The differences are averaged over the pixel pairs (baselines) inside
+    each subaperture with both pixels in the pupil (pup_mask > 0), as the
+    derivatives are averaged over the pupil pixels. Without pup_mask the
+    average is over the pairs valid for the phase. When the number of
+    pixels is not a multiple of wfs_nsubaps, see _telsum_fractional.
 
     If in_place is True, the edge repair may modify data instead of a copy.
     """
@@ -67,19 +99,15 @@ def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose
         raise ValueError("wfs_nsubaps must be provided to compute telescoping sum.")
 
     pup_diam_pix = data.shape[0]
-    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
-    W = N * wfs_nsubaps
-
-    # ON-THE-FLY INTERPOLATION (creates a new array, which can be repaired in place)
-    if pup_diam_pix != W:
-        in_place = True
+    if pup_diam_pix < 2 * wfs_nsubaps:
+        raise ValueError(f'The telescoping sum needs at least 2 pixels per subaperture:'
+                         f' {pup_diam_pix} pixels, {wfs_nsubaps} subapertures.')
+    if pup_diam_pix % wfs_nsubaps != 0 or data.shape[1] % wfs_nsubaps != 0:
         if verbose:
-            print(f"  * Telescoping Sum: Interpolating grid from {pup_diam_pix} to {W} (N={N})")
-        mag = W / pup_diam_pix
-        data = rotshiftzoom_array(data, dm_magnification=(mag, mag), output_size=(W, W))
-        if mask is not None:
-            mask = rotshiftzoom_array(mask, dm_magnification=(mag, mag), output_size=(W, W))
-            mask[mask < 0.5] = 0
+            print(f"  * Telescoping Sum: fractional subapertures"
+                  f" ({pup_diam_pix / wfs_nsubaps:.3f} pixels per subaperture)")
+        return _telsum_fractional(data, mask, wfs_nsubaps, pup_mask=pup_mask)
+    N = pup_diam_pix // wfs_nsubaps
 
     # Repair interpolated edges using strict logic
     if mask is not None:
@@ -88,16 +116,15 @@ def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose
         repaired_data = data
         strict_mask = xp.ones((data.shape[0], data.shape[1]), dtype=bool)
     valid_mask = strict_mask > 0
+    # Pixels over which the differences are averaged
+    weight_mask = valid_mask if pup_mask is None else pup_mask > 0
 
     # Setup 4D arrays for the Telescoping Sum
     is_3d = repaired_data.ndim == 3
-    if is_3d:
-        n_modes = repaired_data.shape[2]
-        p = repaired_data.reshape(wfs_nsubaps, N, wfs_nsubaps, N, n_modes)
-        m = valid_mask.reshape(wfs_nsubaps, N, wfs_nsubaps, N, 1)
-    else:
-        p = repaired_data.reshape(wfs_nsubaps, N, wfs_nsubaps, N)
-        m = valid_mask.reshape(wfs_nsubaps, N, wfs_nsubaps, N)
+    shape_4d = (wfs_nsubaps, N, wfs_nsubaps, N) + ((1,) if is_3d else ())
+    p = repaired_data.reshape((wfs_nsubaps, N, wfs_nsubaps, N) + repaired_data.shape[2:])
+    m = valid_mask.reshape(shape_4d)
+    w = weight_mask.reshape(shape_4d)
 
     # Fast 4D Telescoping Sum. The weights (number of valid baselines) are
     # converted to the data dtype, so that the result keeps the data precision.
@@ -105,17 +132,17 @@ def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose
     # xp.where(valid, d, 0.0)) and x and y are computed one after the other,
     # so that only one array of differences is allocated at a time.
     dx = p[:, :, :, 1:] - p[:, :, :, :-1]
-    valid_dx = m[:, :, :, 1:] & m[:, :, :, :-1]
-    xp.copyto(dx, 0.0, where=~valid_dx)
+    weight_dx = w[:, :, :, 1:] & w[:, :, :, :-1]
+    xp.copyto(dx, 0.0, where=~(m[:, :, :, 1:] & m[:, :, :, :-1] & weight_dx))
     sum_dx = xp.sum(dx, axis=(1, 3))
-    weight_dx = xp.sum(valid_dx, axis=(1, 3)).astype(sum_dx.dtype)
+    weight_dx = xp.sum(weight_dx, axis=(1, 3)).astype(sum_dx.dtype)
     del dx
 
     dy = p[:, 1:, :, :] - p[:, :-1, :, :]
-    valid_dy = m[:, 1:, :, :] & m[:, :-1, :, :]
-    xp.copyto(dy, 0.0, where=~valid_dy)
+    weight_dy = w[:, 1:, :, :] & w[:, :-1, :, :]
+    xp.copyto(dy, 0.0, where=~(m[:, 1:, :, :] & m[:, :-1, :, :] & weight_dy))
     sum_dy = xp.sum(dy, axis=(1, 3))
-    weight_dy = xp.sum(valid_dy, axis=(1, 3)).astype(sum_dy.dtype)
+    weight_dy = xp.sum(weight_dy, axis=(1, 3)).astype(sum_dy.dtype)
     del dy
 
     # Normalize to get Delta Phi per valid baseline
@@ -123,6 +150,62 @@ def compute_telsum_with_extrapolation(data, mask=None, wfs_nsubaps=None, verbose
     raw_telsum_y = xp.where(weight_dy > 0, (sum_dy / xp.where(weight_dy > 0, weight_dy, 1.0)), 0.0)
 
     return raw_telsum_x, raw_telsum_y
+
+
+def _telsum_fractional(data, mask, wfs_nsubaps, threshold=0.999999, pup_mask=None):
+    """
+    Telescoping sum when the number of pixels is not a multiple of
+    wfs_nsubaps. A baseline (pair of adjacent valid pixels j, j + 1) belongs
+    to a subaperture with weight min(f_j, f_j+1), where f is the fraction of
+    the pixel area inside the subaperture along the difference axis (the
+    pixel pairs split by a subaperture boundary contribute to both
+    subapertures with the fraction shared by the two pixels), and with
+    weight f along the other axis. With an integer ratio these weights
+    select the baselines inside each subaperture, as in the block
+    computation. No interpolation of the data is needed. The differences
+    and the pixels over which they are averaged are selected as in
+    compute_telsum_with_extrapolation (mask and pup_mask).
+    """
+    dtype = data.dtype
+    if mask is not None:
+        if mask.max() < threshold:
+            raise ValueError(f'Mask max value is {mask.max()},'
+                             f' expected binary mask with values 0 and 1.')
+        valid = (mask >= threshold).astype(dtype)
+    else:
+        valid = xp.ones(data.shape[:2], dtype=dtype)
+    weight_mask = valid if pup_mask is None else (pup_mask > 0).astype(dtype)
+    is_3d = data.ndim == 3
+
+    def weights(n):
+        fraction = rebin_matrix(n, wfs_nsubaps, dtype=dtype)
+        return fraction, xp.minimum(fraction[:, 1:], fraction[:, :-1])
+
+    rows, rows_baselines = weights(data.shape[0])
+    cols, cols_baselines = weights(data.shape[1])
+
+    def mean_difference(axis):
+        if axis == 1:
+            diff = data[:, 1:] - data[:, :-1]
+            used = weight_mask[:, 1:] * weight_mask[:, :-1]
+            zero = (valid[:, 1:] * valid[:, :-1] * used) == 0
+            row_matrix, col_matrix = rows, cols_baselines
+        else:
+            diff = data[1:] - data[:-1]
+            used = weight_mask[1:] * weight_mask[:-1]
+            zero = (valid[1:] * valid[:-1] * used) == 0
+            row_matrix, col_matrix = rows_baselines, cols
+        # differences zeroed where not valid (in place, NaN safe)
+        xp.copyto(diff, 0.0, where=zero[:, :, xp.newaxis] if is_3d else zero)
+        del zero
+        total = rebin_fractional_sum(diff, row_matrix, col_matrix)
+        del diff
+        weight = rebin_fractional_sum(used, row_matrix, col_matrix)
+        if is_3d:
+            weight = weight[:, :, xp.newaxis]
+        return xp.where(weight > 0, total / xp.where(weight > 0, weight, 1), 0.0)
+
+    return mean_difference(1), mean_difference(0)
 
 
 def _compute_slopes_from_telsum(raw_telsum_x, raw_telsum_y, pup_mask, dm_mask,
@@ -134,15 +217,13 @@ def _compute_slopes_from_telsum(raw_telsum_x, raw_telsum_y, pup_mask, dm_mask,
     """
     is_3d = raw_telsum_x.ndim == 3
 
-    # 1. Deduce N internally
+    # 1. Pixels per subaperture (the telescoping sum is a difference per pixel)
     pup_diam_pix = pup_mask.shape[0]
-    N = max(int(xp.ceil(pup_diam_pix / wfs_nsubaps)), 2)
+    N = pup_diam_pix / wfs_nsubaps
 
     # 2. Rebin masks to compute valid subapertures (identical to derivative method)
-    if xp.isnan(pup_mask).any():
-        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
-    if xp.isnan(dm_mask).any():
-        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
+    pup_mask = _without_nan(pup_mask)
+    dm_mask = _without_nan(dm_mask)
 
     pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
     dm_mask_sa = rebin(dm_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
@@ -266,18 +347,21 @@ def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_
     """
     Common function to compute slopes from derivatives.
 
-    derivatives_x and derivatives_y are modified in place (NaN values set to
-    0, then NaN outside the pupil, then 0 again inside the rebinning), to
-    avoid copies of the arrays. For a given pupil mask these operations are
-    idempotent: calling the function again on the same derivatives gives
-    the same slopes.
+    The slope of a subaperture is the mean of the derivatives over the pupil
+    pixels (pup_mask > 0) inside it. When the number of pixels is not a
+    multiple of wfs_nsubaps, a pixel shared by two subapertures contributes
+    to each with the fraction of its area inside it (see rebin).
+
+    derivatives_x and derivatives_y are modified in place (NaN values and
+    values outside the pupil set to 0), to avoid copies of the arrays. For a
+    given pupil mask these operations are idempotent: calling the function
+    again on the same derivatives gives the same slopes. pup_mask and
+    dm_mask are not modified.
     """
 
-    # Clean up masks
-    if xp.isnan(pup_mask).any():
-        xp.nan_to_num(pup_mask, copy=False, nan=0.0)
-    if xp.isnan(dm_mask).any():
-        xp.nan_to_num(dm_mask, copy=False, nan=0.0)
+    # Clean up masks (a copy only if they contain NaN)
+    pup_mask = _without_nan(pup_mask)
+    dm_mask = _without_nan(dm_mask)
 
     # Rebin masks to WFS resolution
     pup_mask_sa = rebin(pup_mask, (wfs_nsubaps, wfs_nsubaps), method='sum')
@@ -288,23 +372,27 @@ def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_
         raise ValueError('DM mask is empty after rebinning.')
     dm_mask_sa = dm_mask_sa / xp.max(dm_mask_sa)
 
-    # Clean derivatives (in place): NaN values (outside the DM mask) set to 0
-    xp.copyto(derivatives_x, 0.0, where=xp.isnan(derivatives_x))
-    xp.copyto(derivatives_y, 0.0, where=xp.isnan(derivatives_y))
-
-    # Apply pupil mask (in place): NaN outside the pupil, excluded by nanmean
+    # Clean derivatives (in place): NaN values (outside the DM mask) and
+    # values outside the pupil set to 0
     outside_pupil = pup_mask == 0
-    derivatives_x[outside_pupil] = xp.nan
-    derivatives_y[outside_pupil] = xp.nan
+    for derivatives in (derivatives_x, derivatives_y):
+        xp.copyto(derivatives, 0.0, where=xp.isnan(derivatives))
+        derivatives[outside_pupil] = 0.0
 
-    # Rebin derivatives
-    # Since we use 'nanmean', the average is already correctly normalized by the valid area.
+    # Mean over the pupil pixels: sum of the derivatives divided by the
+    # number (area) of pupil pixels of each subaperture. With an integer
+    # ratio this is the same as a nanmean with NaN outside the pupil.
+    weight = rebin((~outside_pupil).astype(derivatives_x.dtype),
+                   (wfs_nsubaps, wfs_nsubaps), method='sum')
+    weight = xp.where(weight > 0, weight, 1)
+    if derivatives_x.ndim == 3:
+        weight = weight[:, :, xp.newaxis]
     scale_factor = derivatives_x.shape[0] / wfs_nsubaps
 
-    wfs_signal_x = rebin(derivatives_x, (wfs_nsubaps, wfs_nsubaps), method='nanmean',
-                         overwrite_input=True) * scale_factor
-    wfs_signal_y = rebin(derivatives_y, (wfs_nsubaps, wfs_nsubaps), method='nanmean',
-                         overwrite_input=True) * scale_factor
+    wfs_signal_x = rebin(derivatives_x, (wfs_nsubaps, wfs_nsubaps), method='sum') / weight \
+        * scale_factor
+    wfs_signal_y = rebin(derivatives_y, (wfs_nsubaps, wfs_nsubaps), method='sum') / weight \
+        * scale_factor
 
     # Combined mask
     combined_mask_sa = (dm_mask_sa > 0.0) & (pup_mask_sa > 0.0)
@@ -484,7 +572,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
     elif slope_method == 'telsum':
         derivatives_x, derivatives_y = compute_telsum_with_extrapolation(
             trans_dm_array, mask=trans_dm_mask, wfs_nsubaps=wfs_nsubaps, verbose=verbose,
-            in_place=True
+            in_place=True, pup_mask=trans_pup_mask
         )
     else:
         raise ValueError(f"Unknown slope_method: {slope_method}")
@@ -610,6 +698,7 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
         fig.colorbar(im3, ax=axs.ravel().tolist(), fraction=0.02)
         plt.show()
 
+    _warn_if_nan(im)
     return im
 
 
@@ -806,6 +895,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
         del trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y
 
     im_dict = {params['name']: im for params, im in zip(wfs_params, im_list)}
+    for name, im in im_dict.items():
+        _warn_if_nan(im, name=f'interaction matrix of {name}')
 
     derivatives_info = {
         'workflow': 'combined',

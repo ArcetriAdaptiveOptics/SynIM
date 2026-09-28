@@ -1,6 +1,10 @@
 import unittest
 import numpy as np
-from synim.utils import rebin
+from synim.utils import rebin as _rebin
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+rebin = on_backend(_rebin)
 
 class TestRebin(unittest.TestCase):
 
@@ -92,21 +96,14 @@ class TestRebin(unittest.TestCase):
             rebin(array, (1, 1), method='median')
 
     def test_rebin_compression_non_divisible(self):
-        """Test compression when dimensions aren't perfectly divisible.
-        Checks the new anti-aliasing upscaling behavior that prevents spatial shifts."""
+        """Compression by a non-integer factor: exact area weighting.
+        A constant array stays constant (no loss at the edges, no shift)."""
         array = np.ones((5, 5))
         result = rebin(array, (2, 2), method='average')
-
-        # Shape should be correct
         self.assertEqual(result.shape, (2, 2))
-
-        # With the new affine_transform upscaling (mode='constant', cval=0.0),
-        # an array of ones will drop off at the edges.
-        # The center of mass should remain perfectly centered.
-        expected = np.array([[1.0, 0.6666667],
-                             [0.6666667, 0.44444445]], dtype=np.float32)
-        
-        np.testing.assert_array_almost_equal(result, expected, decimal=5)
+        np.testing.assert_allclose(result, 1.0, rtol=1e-12)
+        # 'sum': each bin holds 2.5 x 2.5 pixels
+        np.testing.assert_allclose(rebin(array, (2, 2), method='sum'), 6.25, rtol=1e-12)
 
     def test_rebin_preserve_dtype_float(self):
         """Test that float dtype is preserved"""

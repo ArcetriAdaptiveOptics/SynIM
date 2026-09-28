@@ -18,6 +18,12 @@ the script also reports the difference between the two workflows.
 
 Regenerating the file on a later commit uses the public interaction_matrix,
 which only has the combined workflow.
+
+The telescoping sum entries (im_telsum_*) were regenerated when the
+telescoping sum was changed to average over the pupil pixels, as the
+derivatives, instead of over the DM mask: they differ from 12ea3de in the
+subapertures where the pupil and the DM mask differ (edge and central
+obstruction). All the other entries are unchanged.
 """
 import os
 import sys

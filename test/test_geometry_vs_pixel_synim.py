@@ -1,8 +1,12 @@
 import unittest
 import numpy as np
 
-from synim.utils import rotshiftzoom_array
+from synim.utils import rotshiftzoom_array as _rotshiftzoom_array
 from synim.registration.geometry import build_affine, build_dm_affine
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+rotshiftzoom_array = on_backend(_rotshiftzoom_array)
 
 
 def _centroid(img, threshold_frac=0.1):

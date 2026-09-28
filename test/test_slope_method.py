@@ -5,12 +5,15 @@ import numpy as np
 import specula
 specula.init(device_idx=-1, precision=1)
 
-from synim.synim import (
-    compute_telsum_with_extrapolation,
-    compute_derivatives_with_extrapolation,
-    _compute_slopes_from_derivatives,
-    _compute_slopes_from_telsum
-)
+import synim.synim as synim_core
+from test import on_backend
+
+# numpy arrays in and out, with the SynIM backend (CPU or GPU)
+compute_telsum_with_extrapolation = on_backend(synim_core.compute_telsum_with_extrapolation)
+compute_derivatives_with_extrapolation = on_backend(
+    synim_core.compute_derivatives_with_extrapolation)
+_compute_slopes_from_derivatives = on_backend(synim_core._compute_slopes_from_derivatives)
+_compute_slopes_from_telsum = on_backend(synim_core._compute_slopes_from_telsum)
 
 class TestSlopesMethods(unittest.TestCase):
     def setUp(self):
