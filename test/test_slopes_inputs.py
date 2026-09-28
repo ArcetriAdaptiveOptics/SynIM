@@ -23,7 +23,7 @@ class TestDerivativesNotModified(unittest.TestCase):
     def setUp(self):
         xp = synim.xp
         rng = np.random.default_rng(0)
-        # 100 px and 12 subapertures: non-integer ratio (upscaled rebin)
+        # 100 px and 12 subapertures: non-integer ratio (fractional rebin)
         self.n, self.nsa = 100, 12
         self.dm_mask = xp.asarray(np.ones((self.n, self.n), dtype=np.float32))
         self.pup_a = xp.asarray(_circular(self.n, 40))

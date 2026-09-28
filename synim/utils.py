@@ -579,6 +579,65 @@ def _nanmean_blocks_inplace(blocks):
         return np.divide(total, count, out=total, casting='unsafe')
 
 
+def rebin_matrix(m, M, dtype=None):
+    """
+    (M, m) matrix of the overlap between m pixels and M bins along one axis.
+
+    Element [s, j] is the fraction of pixel j (interval [j, j + 1]) inside
+    bin s (interval [s * m / M, (s + 1) * m / M]): each column sums to 1,
+    each row to m / M. The boundaries are computed with integer arithmetic,
+    so the overlaps are exact (0 or 1 when M divides m).
+    """
+    s = np.arange(M)[:, np.newaxis]
+    j = np.arange(m)[np.newaxis, :]
+    low = np.maximum(s * m, j * M)
+    high = np.minimum((s + 1) * m, (j + 1) * M)
+    overlap = np.clip(high - low, 0, None) / M
+    return to_xp(xp, overlap, dtype=float_dtype if dtype is None else dtype)
+
+
+def rebin_fractional_sum(array, row_matrix, col_matrix):
+    """
+    Weighted sum on the first two axes of a 2D or 3D array:
+    row_matrix @ array @ col_matrix.T for each slice (the weights are
+    typically built with rebin_matrix). Returns a (M, N[, n_modes]) array.
+    """
+    # (M, n[, k]): the temporary array is M / m times the input
+    rows = xp.tensordot(row_matrix, array, axes=(1, 0))
+    # (N, M[, k]) -> (M, N[, k])
+    out = xp.tensordot(col_matrix, rows, axes=(1, 1))
+    return xp.ascontiguousarray(xp.swapaxes(out, 0, 1))
+
+
+def _rebin_fractional(array, M, N, method, overwrite_input):
+    """
+    Compression of a floating point array by a non-integer factor: each
+    pixel contributes to a bin with the fraction of its area inside the bin
+    (sum), divided by the bin area (average) or by the area of the non-NaN
+    pixels (nanmean, NaN where no valid pixel contributes).
+    """
+    m, n = array.shape[0:2]
+    row_matrix = rebin_matrix(m, M, dtype=array.dtype)
+    col_matrix = rebin_matrix(n, N, dtype=array.dtype)
+    if method == 'sum':
+        return rebin_fractional_sum(array, row_matrix, col_matrix)
+    if method == 'average':
+        out = rebin_fractional_sum(array, row_matrix, col_matrix)
+        out /= (m / M) * (n / N)
+        return out
+    # nanmean
+    invalid = xp.isnan(array)
+    if not overwrite_input:
+        array = array.copy()
+    xp.copyto(array, 0, where=invalid)
+    total = rebin_fractional_sum(array, row_matrix, col_matrix)
+    weight = rebin_fractional_sum((~invalid).astype(array.dtype), row_matrix, col_matrix)
+    del invalid
+    out = total / xp.where(weight > 0, weight, 1)
+    out[weight == 0] = xp.nan
+    return out
+
+
 def rebin(array, new_shape, method='average', overwrite_input=False):
     """
     Resize array to new dimensions.
@@ -594,6 +653,11 @@ def rebin(array, new_shape, method='average', overwrite_input=False):
         overwrite_input: if True, the 'nanmean' compression may modify array
             (the NaN values are set to 0) instead of working on a copy.
             Same result, lower memory use.
+
+    Compression by a non-integer factor (e.g. 480 pixels to 68 bins): each
+    pixel contributes to a bin with the fraction of its area inside the bin
+    (see rebin_matrix); 'average' divides by the bin area and 'nanmean' by
+    the area of the non-NaN pixels.
     """
 
     # *** MODIFIED: Convert input to xp ***
@@ -627,46 +691,9 @@ def rebin(array, new_shape, method='average', overwrite_input=False):
         raise ValueError(f"Unsupported method: {method}."
                          f" Use 'sum', 'average', or 'nanmean'.")
 
-    # =====================================================================
-    # UNIVERSAL FIX FOR NON-INTEGER REBINNING
-    # Prevents asymmetric truncation by upscaling to an exact multiple first
-    # =====================================================================
+    # Non-integer ratio: exact area weighting (see rebin_matrix)
     if m % M != 0 or n % N != 0:
-        mult_m = max(int(xp.ceil(m / M)), 2)
-        mult_n = max(int(xp.ceil(n / N)), 2)
-        target_m = mult_m * M
-        target_n = mult_n * N
-
-        zoom_x = target_m / m
-        zoom_y = target_n / n
-
-        # Use affine_transform instead of zoom (which might be None in CuPy)
-        matrix = xp.array([[1.0/zoom_x, 0], [0, 1.0/zoom_y]], dtype=float_dtype)
-
-        # Align centers to prevent spatial shifts
-        center_in = xp.array([m, n], dtype=float_dtype) / 2.0
-        center_out = xp.array([target_m, target_n], dtype=float_dtype) / 2.0
-        offset_2d = center_in - xp.dot(matrix, center_out)
-
-        if array.ndim == 3:
-            matrix_3d = xp.eye(3, dtype=float_dtype)
-            matrix_3d[:2, :2] = matrix
-            offset = xp.zeros(3, dtype=float_dtype)
-            offset[:2] = offset_2d
-            array = affine_transform(
-                array, matrix_3d, offset=offset,
-                output_shape=(target_m, target_n, array.shape[2]), order=1
-            )
-        else:
-            array = affine_transform(
-                array, matrix, offset=offset_2d,
-                output_shape=(target_m, target_n), order=1
-            )
-
-        m, n = target_m, target_n
-        # The upscaled array is a new array: it can be modified
-        overwrite_input = True
-    # =====================================================================
+        return _rebin_fractional(array, M, N, method, overwrite_input)
 
     # (M, m//M, N, n//N[, n_modes]) view: the blocks are reduced on axes 1, 3
     blocks = array[:M*(m//M), :N*(n//N)].reshape((M, m//M, N, n//N) + array.shape[2:])
@@ -721,6 +748,8 @@ __all__ = [
 
     # Array transformations
     'rebin',
+    'rebin_matrix',
+    'rebin_fractional_sum',
     'rotshiftzoom_array',
     'shiftzoom_from_source_dm_params',
     'has_transformations',
