@@ -120,5 +120,20 @@ class TestGetComponentParamsCache(unittest.TestCase):
         self.assertIs(self.loads[-1]['float_dtype_local'], np.float64)
 
 
+class TestReleaseGpuMemory(unittest.TestCase):
+
+    def test_release(self):
+        # No effect on CPU; on GPU the unused blocks of the cupy pool are freed
+        params_manager._release_gpu_memory()
+        if params_manager.xp is np:
+            return
+        pool = params_manager.xp.get_default_memory_pool()
+        array = params_manager.xp.ones(10_000_000, dtype=np.float32)
+        del array
+        self.assertGreater(pool.total_bytes(), pool.used_bytes())
+        params_manager._release_gpu_memory()
+        self.assertEqual(pool.total_bytes(), pool.used_bytes())
+
+
 if __name__ == '__main__':
     unittest.main()

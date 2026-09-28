@@ -40,6 +40,18 @@ from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
+def _release_gpu_memory():
+    """
+    Return to the GPU the blocks of the cupy memory pool that are not in use
+    (no effect on CPU). cupy keeps the freed blocks for reuse, but blocks
+    left by a component often do not fit the arrays of the next one (the
+    grids have different sizes), so without this the pool grows by
+    fragmentation well beyond the memory actually in use.
+    """
+    if xp is not np:
+        xp.get_default_memory_pool().free_all_blocks()
+
+
 class ParamsManager:
     """
     Class for managing parameters needed to compute interaction matrices
@@ -1242,6 +1254,7 @@ class ParamsManager:
 
             # Release this component (on GPU it is not cached) before loading the next one
             del component_params
+            _release_gpu_memory()
 
         if verbose_flag:
             print(f"\n{'='*60}")
