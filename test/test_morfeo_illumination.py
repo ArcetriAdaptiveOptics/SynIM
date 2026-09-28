@@ -111,7 +111,7 @@ class TestMorfeoIlluminationSpecula(unittest.TestCase):
             # 3. Setup SPECULA ShSlopec
             subap_tag = slopec_cfg['subapdata_object']
             subap_path = self.pm.cm.filename('subapdata', subap_tag)
-            subapdata = SubapData.restore(subap_path)
+            subapdata = SubapData.restore(subap_path, target_device_idx=-1)
 
             slopec = ShSlopec(subapdata, target_device_idx=-1)
             slopec.inputs['in_pixels'].set(pixels)

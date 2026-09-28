@@ -112,7 +112,7 @@ def projection_matrix_former(pup_diam_m, pup_mask,
     """
 
     # *** IMPORT NEEDED FUNCTION ***
-    from synim.synpm import transpose_base_array_for_specula
+    transpose_base_array_for_specula = on_backend(synpm.transpose_base_array_for_specula)
 
     # *** SPECULA CONVENTION: Save original mask FIRST ***
     if specula_convention:

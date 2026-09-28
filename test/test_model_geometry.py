@@ -1,11 +1,13 @@
 import unittest
 import numpy as np
 
-from synim.utils import shiftzoom_from_source_dm_params, polar_to_xy as _polar_to_xy
+from synim.utils import polar_to_xy as _polar_to_xy
+from synim.utils import shiftzoom_from_source_dm_params as _shiftzoom_from_source_dm_params
 from test import on_backend
 
 # numpy output also on GPU (the registration model is numpy only)
 polar_to_xy = on_backend(_polar_to_xy)
+shiftzoom_from_source_dm_params = on_backend(_shiftzoom_from_source_dm_params)
 from synim.registration.geometry import build_affine, decompose_affine
 from synim.registration.model import GuideStar, DM, WFS, System, gs_parallax_transform
 
