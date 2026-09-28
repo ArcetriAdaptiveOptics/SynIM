@@ -10,6 +10,38 @@ from scipy.ndimage import binary_dilation
 # Labels for the extrapolation directions
 directions_labels = ['Down (y+1)', 'Up (y-1)', 'Right (x+1)', 'Left (x-1)']
 
+# Interpolation method used by rotshiftzoom_array for 3D (multi-mode) arrays:
+#   'affine': affine_transform (scipy / cupyx), the original implementation
+#   'sparse': precomputed bilinear sparse operator, see build_bilinear_operator
+# Both give the same result (bilinear interpolation, mode='constant', cval=0).
+_INTERP_METHODS = ('affine', 'sparse')
+_interp_method = 'affine'
+
+
+def set_interp_method(method):
+    """
+    Set the default interpolation method used by rotshiftzoom_array for
+    3D arrays.
+
+    Parameters:
+        method (str): 'affine' (affine_transform, default) or 'sparse'
+            (precomputed bilinear sparse operator, see
+            build_bilinear_operator). Both methods implement the same
+            bilinear interpolation and give the same result up to
+            floating point rounding.
+    """
+    global _interp_method
+    if method not in _INTERP_METHODS:
+        raise ValueError(f"Unknown interpolation method '{method}'."
+                         f" Use one of {_INTERP_METHODS}.")
+    _interp_method = method
+
+
+def get_interp_method():
+    """Return the default interpolation method used by rotshiftzoom_array."""
+    return _interp_method
+
+
 def calculate_extrapolation_indices_coeffs(mask, debug=False, debug_pixels=None):
     """
     Calculates indices and coefficients for extrapolating edge pixels of a mask.
@@ -256,12 +288,134 @@ def shiftzoom_from_source_dm_params(source_pol_coo, source_height, dm_height, pi
     return shift, zoom
 
 
+def build_bilinear_operator(input_shape, output_shape, matrix, offset,
+                            dtype=np.float32, input_transposed=False):
+    """
+    Build the sparse operator equivalent to a 2D affine_transform with
+    bilinear interpolation (order=1, mode='constant', cval=0).
+
+    The interpolation weights depend only on the geometry, not on the data,
+    so they can be computed once and applied to all the 2D slices of a
+    3D array with a single sparse x dense product:
+
+        output_2d = P @ input_2d,   input_2d = input.reshape(ny_in * nx_in, -1)
+
+    P has one row per output pixel and at most 4 non-zero elements per row
+    (the 4 neighbours of the input position and their bilinear weights).
+
+    The input position of the output pixel (i, j) is
+        y = (offset[0] + i * matrix[0, 0]) + j * matrix[0, 1]
+        x = (offset[1] + i * matrix[1, 0]) + j * matrix[1, 1]
+    computed in float64 with the same operation order as scipy's
+    affine_transform, so that positions falling exactly on the grid border
+    are classified in the same way. As in scipy's 'constant' mode, output
+    pixels whose input position is outside [0, n - 1] along either axis
+    are set to 0 (empty row).
+
+    Parameters:
+        input_shape (tuple): (ny_in, nx_in) shape of the input 2D slices
+        output_shape (tuple): (ny_out, nx_out) shape of the output 2D slices
+        matrix (array): 2x2 inverse mapping matrix (output -> input coords)
+        offset (array): 2-element offset of the inverse mapping
+        dtype: data type of the operator weights (use the input data dtype)
+        input_transposed (bool): if True, the columns of P index the input
+            in transposed memory order (x * ny_in + y). This allows applying
+            P to a transposed view of a C-contiguous array without copying it.
+
+    Returns:
+        scipy.sparse.csr_matrix of shape (ny_out * nx_out, ny_in * nx_in)
+    """
+    import scipy.sparse
+
+    ny_in, nx_in = int(input_shape[0]), int(input_shape[1])
+    ny_out, nx_out = int(output_shape[0]), int(output_shape[1])
+    m = np.asarray(cpuArray(matrix), dtype=np.float64).reshape(2, 2)
+    o = np.asarray(cpuArray(offset), dtype=np.float64).reshape(2)
+
+    ii = np.arange(ny_out, dtype=np.float64)[:, np.newaxis]
+    jj = np.arange(nx_out, dtype=np.float64)[np.newaxis, :]
+    # Same operation order as scipy (ni_interpolation.c): offset + i*m0 + j*m1
+    y = (o[0] + ii * m[0, 0]) + jj * m[0, 1]
+    x = (o[1] + ii * m[1, 0]) + jj * m[1, 1]
+
+    # scipy 'constant' mode: no interpolation outside [0, n - 1]
+    valid = (y >= 0) & (y <= ny_in - 1) & (x >= 0) & (x <= nx_in - 1)
+    rows = np.flatnonzero(valid)
+    y = y.ravel()[rows]
+    x = x.ravel()[rows]
+    y0 = np.floor(y)
+    x0 = np.floor(x)
+    ty = y - y0
+    tx = x - x0
+    y0 = y0.astype(np.int64)
+    x0 = x0.astype(np.int64)
+
+    row_list, col_list, weight_list = [], [], []
+    for dy, wy in ((0, 1.0 - ty), (1, ty)):
+        for dx, wx in ((0, 1.0 - tx), (1, tx)):
+            yy = y0 + dy
+            xx = x0 + dx
+            w = wy * wx
+            # The neighbour beyond the last pixel only occurs with zero weight
+            keep = (yy < ny_in) & (xx < nx_in) & (w != 0)
+            if input_transposed:
+                cols = xx[keep] * ny_in + yy[keep]
+            else:
+                cols = yy[keep] * nx_in + xx[keep]
+            row_list.append(rows[keep])
+            col_list.append(cols)
+            weight_list.append(w[keep])
+
+    operator = scipy.sparse.csr_matrix(
+        (np.concatenate(weight_list).astype(dtype),
+         (np.concatenate(row_list), np.concatenate(col_list))),
+        shape=(ny_out * nx_out, ny_in * nx_in)
+    )
+    return operator
+
+
+def _apply_bilinear_operator_3d(input_array, matrix, offset, output_size):
+    """
+    Apply to every 2D slice of a 3D array the bilinear interpolation defined
+    by (matrix, offset), using the sparse operator of build_bilinear_operator.
+    Equivalent to affine_transform(order=1) with an identity on the 3rd axis.
+    """
+    ny_in, nx_in, n_slices = input_array.shape
+
+    # If the array is a transposed view (axes 0 and 1 swapped) of a
+    # C-contiguous array (e.g. the SPECULA convention transpose), fold the
+    # transposition into the operator instead of copying the array.
+    swapped = input_array.transpose(1, 0, 2)
+    input_transposed = (not input_array.flags.c_contiguous
+                        and swapped.flags.c_contiguous)
+    if input_transposed:
+        input_2d = swapped.reshape(ny_in * nx_in, n_slices)
+    else:
+        input_2d = input_array.reshape(ny_in * nx_in, n_slices)
+
+    operator = build_bilinear_operator(
+        (ny_in, nx_in), output_size, matrix, offset,
+        dtype=input_array.dtype, input_transposed=input_transposed
+    )
+
+    if xp is not np:
+        import cupyx.scipy.sparse
+        operator = cupyx.scipy.sparse.csr_matrix(
+            (xp.asarray(operator.data), xp.asarray(operator.indices, dtype=xp.int32),
+             xp.asarray(operator.indptr, dtype=xp.int32)),
+            shape=operator.shape
+        )
+
+    output_2d = operator @ input_2d
+    return output_2d.reshape(int(output_size[0]), int(output_size[1]), n_slices)
+
+
 def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
                        dm_rotation=0.0, dm_magnification=(1.0, 1.0),
                        wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
                        wfs_magnification=(1.0, 1.0),
                        wfs_anamorphosis_45=1.0,
-                       output_size=None):
+                       output_size=None, interp=None):
     """
     This function applies magnification, rotation, shift and resize of a
     2D or 3D numpy/cupy array using affine transformation.
@@ -279,10 +433,19 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
       Values > 1 stretch along +45° diagonal and compress along -45° diagonal.
       Implemented as a shear transformation.
     - output_size: tuple, desired output size (height, width)
+    - interp: str or None, interpolation method for 3D arrays: 'affine'
+      (affine_transform) or 'sparse' (precomputed bilinear sparse operator).
+      None uses the default set with set_interp_method ('affine' unless
+      changed). 2D arrays always use affine_transform.
 
     Returns:
     - output: numpy/cupy array, transformed data
     """
+    if interp is None:
+        interp = _interp_method
+    if interp not in _INTERP_METHODS:
+        raise ValueError(f"Unknown interpolation method '{interp}'."
+                         f" Use one of {_INTERP_METHODS}.")
 
     # Parameter handling: conversion of single values to tuples
     try:
@@ -401,6 +564,12 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     else:
         offset = center - xp.dot(combined_matrix, output_center) \
             - rotated_dm_translation - scaled_wfs_translation
+
+    if is_3d and interp == 'sparse':
+        # Same bilinear interpolation, with weights computed once for all slices
+        return _apply_bilinear_operator_3d(
+            input_array, spatial_combined, offset[:2], output_size
+        )
 
     # Apply transformation (scipy requires numpy)
     output = affine_transform(
@@ -695,6 +864,9 @@ __all__ = [
     # Array transformations
     'rebin',
     'rotshiftzoom_array',
+    'build_bilinear_operator',
+    'set_interp_method',
+    'get_interp_method',
     'shiftzoom_from_source_dm_params',
     'has_transformations',
 
