@@ -29,9 +29,10 @@ except ImportError as exc:
         "or from: https://github.com/ArcetriAdaptiveOptics/SPECULA"
     ) from exc
 
-# Initialize SPECULA only if the caller has not done it already
+# Initialize SPECULA with the SynIM configuration only if the caller has not done it already
 if specula.xp is None:
-    specula.init(device_idx=-1, precision=1)
+    specula.init(device_idx=_synim.default_target_device_idx,
+                 precision=_synim.global_precision)
 
 from specula.calib_manager import CalibManager
 from specula.data_objects.intmat import Intmat
