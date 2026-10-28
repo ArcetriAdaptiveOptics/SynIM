@@ -261,7 +261,7 @@ Compute separate interaction matrices for each control branch:
 
 * **LGS IMs:** over all virtual layers (tomographic sensing volume).
 * **NGS (LO) IMs:** directly on physical DMs (low-order control path).
-* **REF IMs:** typically on Layer 0 for low-order truth/focus handling.
+* **REF IMs:** on the physical DMs; the focus reconstructor uses those of DM1 (Step D).
 
 .. important::
    **Optimizing IM Computation with** ``component_type``
@@ -270,7 +270,7 @@ Compute separate interaction matrices for each control branch:
    
    * For LGS tomographic reconstruction: use ``component_type='layer'`` (reconstructs on virtual atmospheric layers)
    * For NGS low-order control: use ``component_type='dm'`` (reconstructs directly on physical DMs)
-   * For REF focus sensing: use ``component_type='layer'`` (typically Layer 0 only)
+   * For REF focus sensing: use ``component_type='dm'`` (the focus is commanded on DM1)
    
    If ``component_type`` is omitted (``None``), all IMs (both DM and layer) are computed, which may be wasteful.
    
@@ -313,10 +313,10 @@ Create a script ``step2_compute_ims.py``:
        overwrite=False, verbose=True, display=False)
    print(f"NGS: {len(ngs_ims)} IMs")
 
-   # REF IMs — Layer 0 only (focus / truth sensing)
+   # REF IMs — physical DMs (focus / truth sensing, focus commanded on DM1)
    ref_ims = params_mgr.compute_interaction_matrices(
        wfs_type='ref',
-       component_type='layer',  # Layer 0 for focus sensing
+       component_type='dm',  # DM1 for the focus reconstructor
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
        slope_method=slope_method,
@@ -397,8 +397,12 @@ Using IMs and ``reconstruction`` parameters, compute reconstructors:
 
 * **LGS Reconstructor:** filtered LGS slopes → virtual layers.
 * **NGS Reconstructor:** LO slopes → physical DMs.
-* **Focus Reconstructor:** built from REF Layer-0 IMs, stacking all REF channels and
-  applying pseudoinverse.
+* **Focus Reconstructor:** built from the REF-to-DM1 IMs, stacking all REF channels
+  and applying the pseudoinverse on the first DM1 modes. The focus estimate must be
+  in the DM1 modal basis, because SPECULA's ``LinearCombination`` writes it into
+  mode 2 of the command vector, which starts with the DM1 modes. A reconstructor
+  built on the Layer-0 (pupil) basis estimates a different mode: on MORFEO it
+  reconstructs only about 0.8-0.9 of a unit DM1 focus.
 
 Create a script ``step4_compute_reconstructors.py``:
 
@@ -443,12 +447,13 @@ Create a script ``step4_compute_reconstructors.py``:
    print(f"NGS reconstructor: {result_ngs['reconstructor'].shape}")
 
    # --- Focus reconstructor (REF slopes → focus modes, 3 WFSs stacked) ---
-   # Replace the filenames with the exact REF Layer-0 IMs produced by Step B,
-   # one per REF WFS (they differ by the guide star direction, e.g. pd55.0a0,
-   # pd55.0a120, pd55.0a240), in the order of the rec_focus slope inputs.
-   ref_im_names  = ['IM_syn_pd55.0a0_SH8x8_..._layH0.0_....fits',
-                    'IM_syn_pd55.0a120_SH8x8_..._layH0.0_....fits',
-                    'IM_syn_pd55.0a240_SH8x8_..._layH0.0_....fits']
+   # Replace the filenames with the exact REF-to-DM1 IMs produced by Step B,
+   # one per REF WFS, in the order of the rec_focus slope inputs. DM1 is not
+   # conjugated to the pupil (600 m), so the IMs differ with the guide star
+   # direction (e.g. pd55.0a0, pd55.0a120, pd55.0a240) and all are needed.
+   ref_im_names  = ['IM_syn_pd55.0a0_SH8x8_..._dmH600.0_....fits',
+                    'IM_syn_pd55.0a120_SH8x8_..._dmH600.0_....fits',
+                    'IM_syn_pd55.0a240_SH8x8_..._dmH600.0_....fits']
    n_focus_modes = 30
 
    stacked    = np.vstack([Intmat.restore(synim_dir + name).intmat
