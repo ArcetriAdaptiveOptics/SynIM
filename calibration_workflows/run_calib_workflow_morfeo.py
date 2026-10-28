@@ -10,15 +10,20 @@ This script orchestrates the complete calibration pipeline:
 5. Focus reconstruction matrix
 6. Tomographic reconstructor computation
 7. NGS reconstructor
-8. Projection matrices
+8. Projection matrices and LGS-to-DM interaction matrix for POLC
 9. Final YAML configuration update
 10. Workflow summary generation
 
 The workflow automatically updates YAML files with generated filenames
-and manages dependencies between calibration steps.
+and manages dependencies between calibration steps. The objects loaded by
+the final SPECULA simulation are saved where SPECULA's CalibManager looks
+for them through symbolic links: rec/synrec -> synrec/ (recmat),
+rec/synpm -> synpm/ (projmat), im/synim -> synim/ (intmat). Filter
+matrices are saved in data/.
 """
 import os
 import sys
+import copy
 import glob
 import yaml
 import shutil
@@ -32,17 +37,31 @@ import re
 import numpy as np
 
 import specula
-specula.init(device_idx=-1, precision=1)
-from specula.calib_manager import CalibManager
-from specula.data_objects.intmat import Intmat
-from specula.data_objects.recmat import Recmat
-
 import synim
-synim.init(device_idx=0, precision=1)
-from synim.params_manager import ParamsManager
-from synim.params_utils import compute_influence_functions_and_modalbases
-from synim.params_utils import generate_filter_matrix_from_intmat_file
-from synim.params_utils import update_component_calibration_metadata
+
+
+def init_backends(device_idx: int):
+    """
+    Initialize SPECULA (CPU) and SynIM (device_idx), then import the modules
+    that depend on them. These modules capture the backend at import time,
+    so the imports must follow the init calls.
+    """
+    global CalibManager, Intmat, Recmat, ParamsManager
+    global compute_influence_functions_and_modalbases
+    global generate_filter_matrix_from_intmat_file
+    global update_component_calibration_metadata
+
+    specula.init(device_idx=-1, precision=1)
+    synim.init(device_idx=device_idx, precision=1)
+
+    from specula.calib_manager import CalibManager
+    from specula.data_objects.intmat import Intmat
+    from specula.data_objects.recmat import Recmat
+    from synim.params_manager import ParamsManager
+    from synim.params_utils import compute_influence_functions_and_modalbases
+    from synim.params_utils import generate_filter_matrix_from_intmat_file
+    from synim.params_utils import update_component_calibration_metadata
+
 
 class MORFEOCalibrationWorkflow:
 
@@ -153,6 +172,10 @@ class MORFEOCalibrationWorkflow:
         self.device_idx = device_idx if device_idx is not None else exec_config['device_idx']
         self.overwrite = overwrite if overwrite is not None else exec_config['overwrite']
         self.verbose = verbose if verbose is not None else exec_config['verbose']
+        # Covariances on CPU: the GPU computation can run out of memory
+        self.skip_gpu_covariance = exec_config.get('skip_gpu_covariance', True)
+
+        init_backends(self.device_idx)
 
         # Create timestamped workflow directory
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -223,19 +246,14 @@ class MORFEOCalibrationWorkflow:
         self.lgs_filter_n_modes = wfs_config['lgs']['filter_n_modes']
         self.lgs_filter_n_modes_filtered = wfs_config['lgs']['filter_n_modes_filtered']
         self.ref_focus_n_modes = wfs_config['ref']['focus_n_modes']
-        self.ngs_n_modes_dm = wfs_config['ngs']['n_modes_dm']
-        self.ref_n_modes_dm = wfs_config['ref']['n_modes_dm']
 
-        # Reconstruction parameters
-        rec_config = wf['reconstruction']
-        self.sigma2_in_nm2 = rec_config['sigma2_in_nm2']
-        self.noise_elong_model = rec_config['noise_elong_model']
-        self.naThicknessInM = rec_config['na_thickness_in_m']
-        self.tGparameter = rec_config['tG_parameter']
-
-        # Projection parameters
-        proj_config = wf['projection']
-        self.proj_reg_factor = proj_config['reg_factor']
+        # Reconstruction and projection parameters are used by ParamsManager
+        # from the base simulation YAML: read them from there, for the log and
+        # the summary, so that they always show the values actually used.
+        rec_config = self.config.get('reconstruction', {})
+        self.ngs_n_modes_dm = rec_config.get('ngs_n_modes_dm')
+        self.ref_n_modes_dm = rec_config.get('ref_n_modes_dm')
+        self.proj_reg_factor = self.config.get('projection', {}).get('reg_factor')
 
         # Calibration files
         calib_files_config = wf.get('calibration_files', {})
@@ -281,6 +299,51 @@ class MORFEOCalibrationWorkflow:
 
         # Set the final value
         config[keys[-1]] = value
+
+    def _calib_link(self, specula_subdir: str, synim_subdir: str) -> Path:
+        """
+        Create the link root_dir/<specula_subdir>/<synim_subdir> -> root_dir/<synim_subdir>,
+        so that SPECULA finds a SynIM file as '<synim_subdir>/<name>'.
+        Returns the SynIM directory.
+        """
+        target = self.root_dir / synim_subdir
+        target.mkdir(parents=True, exist_ok=True)
+        link = self.root_dir / specula_subdir / synim_subdir
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.exists() and not link.is_symlink():
+            raise RuntimeError(f"{link} exists and is not a link to {target}: "
+                               f"SPECULA would not find the files saved in {target}")
+        if not link.is_symlink():
+            link.symlink_to(target)
+            self._log(f"  Created symbolic link: {link} -> {target}")
+        return target
+
+    def _check_lgs_filtmats(self):
+        """
+        Check that every LGS slope computer has its filter matrix in data/.
+        ParamsManager filters the LGS IMs with them, and silently skips the
+        filter when the file is missing (it reads filtmat/ instead of data/
+        when that directory exists).
+        """
+        if (self.root_dir / "filtmat").exists():
+            raise RuntimeError(f"{self.root_dir / 'filtmat'} exists: ParamsManager would read the "
+                               "filter matrices from there, SPECULA from data/")
+        for key, section in self.config.items():
+            if not (key.startswith('slopec_lgs') and isinstance(section, dict)):
+                continue
+            name = section.get('filtmat_data')
+            if name is None or not (self.root_dir / "data" / f"{name}.fits").exists():
+                raise RuntimeError(f"{key}.filtmat_data = {name}: filter matrix not found "
+                                   f"in {self.root_dir / 'data'}. Run step 3 first.")
+
+    def _find_placeholders(self, node, path=''):
+        """Return the dot paths of the 'PLACEHOLDER_*' values left in a config."""
+        if isinstance(node, dict):
+            return [p for key, value in node.items()
+                    for p in self._find_placeholders(value, f"{path}.{key}" if path else key)]
+        if isinstance(node, str) and node.startswith('PLACEHOLDER'):
+            return [path]
+        return []
 
     def _run_specula(self, *yml_files):
         """Run SPECULA simulation with given YAML files."""
@@ -479,9 +542,14 @@ class MORFEOCalibrationWorkflow:
             else:
                 self._log(f"\nMissing {len(missing_tags)} subaperture files, running SPECULA...")
 
-            # Run SPECULA calibration
+            # Run SPECULA calibration on the current config, which includes
+            # the pupil mask and influence functions from step 0
+            current_yml = self._save_yaml(
+                self.config,
+                f"params_morfeo_step1_{self.timestamp}.yml"
+            )
             self._log("Running subaperture calibration with SPECULA...")
-            self._run_specula(self.initial_yml_path, calib_yml)
+            self._run_specula(current_yml, calib_yml)
 
             # Verify all files were created
             for wfs_name, tag in expected_tags.items():
@@ -564,7 +632,7 @@ class MORFEOCalibrationWorkflow:
         self._log(f"✓ Generated {len(im_paths)} LGS interaction matrices")
 
         # Log details
-        layer0_count = sum(1 for p in im_paths if 'layH0.0' in str(p))
+        layer0_count = sum(1 for p in im_paths.values() if 'layH0.0' in str(p))
         self._log(f"  Layer 0 (ground): {layer0_count} matrices")
         self._log(f"  Other layers: {len(im_paths) - layer0_count} matrices")
 
@@ -592,16 +660,16 @@ class MORFEOCalibrationWorkflow:
         if not lgs_im_dict:
             raise RuntimeError("No LGS interaction matrices found. Run step2 first.")
 
-        # Extract Path objects from dictionary values
-        lgs_im_paths = [Path(p) for p in lgs_im_dict.values()]
-
-        # Filter only layer 0 IMs (ground level, where filtering is needed)
-        layer0_ims = [p for p in lgs_im_paths if 'layH0.0' in p.name]
+        # Keep only layer 0 IMs (ground level, where filtering is needed).
+        # Keys are "<wfs>_<component>" (e.g. "sh_lgs1_layer1"): the WFS name
+        # comes from the key, since the IM filename does not contain it.
+        layer0_ims = {key: Path(p) for key, p in lgs_im_dict.items()
+                      if 'layH0.0' in Path(p).name}
 
         if not layer0_ims:
             print("Available LGS IMs:")
-            for p in lgs_im_paths:
-                print(f"  {p.name}")
+            for p in lgs_im_dict.values():
+                print(f"  {Path(p).name}")
             raise RuntimeError("No layer 0 interaction matrices found")
 
         self._log(f"Found {len(layer0_ims)} layer 0 interaction matrices")
@@ -613,17 +681,12 @@ class MORFEOCalibrationWorkflow:
         # Group IMs by unique configuration (rotation/position)
         config_groups = defaultdict(list)
 
-        for im_path in layer0_ims:
+        for im_key, im_path in layer0_ims.items():
             filename = im_path.stem
 
-            # Extract WFS identifier and configuration from filename
-            # Expected patterns like: "IM_syn_..._lgs1_rot6.2_..." or "IM_syn_..._lgs1_..."
-
-            # Find WFS name
-            wfs_match = re.search(r'_(lgs\d+|ngs\d+|ref\d+)_', filename)
+            wfs_match = re.search(r'(lgs\d+|ngs\d+|ref\d+)', im_key)
             if not wfs_match:
-                self._log(f"  ⚠ Could not extract WFS name from: {im_path.name}")
-                continue
+                raise RuntimeError(f"Could not extract WFS name from IM key: {im_key}")
 
             wfs_name = wfs_match.group(1)
 
@@ -635,11 +698,13 @@ class MORFEOCalibrationWorkflow:
             pos_match = re.search(r'pos\[(-?\d+\.?\d*),(-?\d+\.?\d*)\]', filename)
             pos_str = f"pos[{pos_match.group(1)},{pos_match.group(2)}]" if pos_match else ""
 
+            # SH sampling (subapertures, FoV, pixels), so that different
+            # sensors with the same rotation get different filter matrices
+            sh_match = re.search(r'SH\d+x\d+_fv-?\d+\.?\d*_np\d+', filename)
+            sh_str = sh_match.group(0) if sh_match else ""
+
             # Create unique configuration identifier
-            if pos_str:
-                config_id = f"{rot_str}_{pos_str}"
-            else:
-                config_id = rot_str
+            config_id = "_".join(x for x in (sh_str, rot_str, pos_str) if x)
 
             config_groups[config_id].append((im_path, wfs_name))
 
@@ -657,26 +722,33 @@ class MORFEOCalibrationWorkflow:
             # Clean up config_id for filename (remove special characters)
             config_str = config_id.replace('[', '').replace(']', '').replace(',', '_')
 
-            output_name = (f"filtmat_IM_syn_{config_str}_"
+            # The modal basis of the layer 0 IM (ifunc and m2c tags, the part
+            # of the name after 'layH0.0_') ties the filter matrix to it, so
+            # that a filter matrix for another pupil/basis is not reused
+            basis_str = im_path.stem.split('layH0.0_', 1)[1]
+            output_name = (f"filtmat_IM_syn_{config_str}_{basis_str}_"
                         f"mn{self.lgs_filter_n_modes}_{self.lgs_filter_n_modes_filtered}")
             output_path = self.root_dir / "data" / f"{output_name}.fits"
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            self._log(f"\nGenerating filter matrix for {config_id}...")
-            self._log(f"  Using IM: {im_path.name}")
-            self._log(f"  Output: {output_name}")
+            if output_path.exists() and not self.overwrite:
+                self._log(f"\n✓ Filter matrix for {config_id} already exists: {output_name}")
+            else:
+                self._log(f"\nGenerating filter matrix for {config_id}...")
+                self._log(f"  Using IM: {im_path.name}")
+                self._log(f"  Output: {output_name}")
 
-            # Use library function
-            generate_filter_matrix_from_intmat_file(
-                intmat_filename=str(im_path),
-                n_modes=self.lgs_filter_n_modes,
-                n_modes_filtered=self.lgs_filter_n_modes_filtered,
-                output_filename=str(output_path),
-                cut_modes=0,
-                smooth_tt=True,
-                overwrite=self.overwrite,
-                verbose=False  # Don't clutter output
-            )
+                # Use library function
+                generate_filter_matrix_from_intmat_file(
+                    intmat_filename=str(im_path),
+                    n_modes=self.lgs_filter_n_modes,
+                    n_modes_filtered=self.lgs_filter_n_modes_filtered,
+                    output_filename=str(output_path),
+                    cut_modes=0,
+                    smooth_tt=True,
+                    overwrite=self.overwrite,
+                    verbose=False  # Don't clutter output
+                )
 
             filtmat_paths.append(output_path)
             filtmat_mapping[config_id] = {
@@ -718,7 +790,7 @@ class MORFEOCalibrationWorkflow:
         
         Uses SynIM to compute:
         - NGS interaction matrices for 3 DMs (tip-tilt control)
-        - REF interaction matrices for layer 0 (focus sensing)
+        - REF interaction matrices for the DMs (focus sensing on DM1)
         """
         self._log("\n" + "="*70)
         self._log("STEP 4: NGS AND REF INTERACTION MATRICES")
@@ -752,7 +824,7 @@ class MORFEOCalibrationWorkflow:
         self._log("Computing REF interaction matrices...")
         ref_paths = params_mgr.compute_interaction_matrices(
             wfs_type='ref',
-            component_type='layer',  # Layer 0 for focus sensing
+            component_type='dm',  # Focus is commanded on DM1 (step 5)
             output_im_dir=str(self.root_dir / "synim"),
             output_rec_dir=str(self.root_dir / "synrec"),
             overwrite=self.overwrite,
@@ -777,7 +849,13 @@ class MORFEOCalibrationWorkflow:
         Step 5: Generate focus reconstruction matrix.
         
         Creates a reconstruction matrix for focus sensing from the 3 REF WFS,
-        by stacking their interaction matrices and computing the pseudoinverse.
+        by stacking their DM1 interaction matrices and computing the
+        pseudoinverse on the first ref_focus_n_modes DM1 modes.
+
+        The focus estimate (mode 2) must be in the DM1 modal basis: the
+        modal_combination object writes it into mode 2 of the LGS command
+        vector, which starts with the DM1 modes. DM1 is conjugated at a
+        non-zero altitude, so the IMs of the REF WFSs differ and are all used.
         """
         self._log("\n" + "="*70)
         self._log("STEP 5: FOCUS RECONSTRUCTION MATRIX")
@@ -785,32 +863,32 @@ class MORFEOCalibrationWorkflow:
 
         ref_im_dict = self.generated_files.get('ref_im_paths', {})
         if not ref_im_dict:
-            raise RuntimeError("No REF interaction matrices found. Run step2 first.")
+            raise RuntimeError("No REF interaction matrices found. Run step4 first.")
 
-        # Extract Path objects from dictionary values
-        ref_im_paths = [Path(p) for p in ref_im_dict.values()]
+        # DM1 IMs of each REF WFS (keys "<wfs>_dm1"), stacked in the order of
+        # the rec_focus.in_slopes_list inputs (slopec_ref1, slopec_ref2, ...)
+        dm1_ref_ims = {}
+        for key, p in ref_im_dict.items():
+            if key.endswith('_dm1'):
+                dm1_ref_ims[re.search(r'ref\d+', key).group(0)] = Path(p)
 
-        # Filter only layer 0 IMs (ground level, where filtering is needed)
-        layer0_ref_im = [p for p in ref_im_paths if 'layH0.0' in p.name]
-
-        if not layer0_ref_im:
-            raise RuntimeError("No layer 0 REF interaction matrix found")
-
-        im_path = layer0_ref_im[0]
+        slopes_inputs = self.config['rec_focus']['inputs']['in_slopes_list']
+        ref_names = [re.search(r'ref\d+', s).group(0) for s in slopes_inputs]
+        missing = [name for name in ref_names if name not in dm1_ref_ims]
+        if missing:
+            raise RuntimeError(f"No DM1 REF interaction matrix found for {missing}")
 
         output_name = f"focus_recmat_{self.timestamp}_nmodes{self.ref_focus_n_modes}"
-        output_path = self.root_dir / "synrec" / f"{output_name}.fits"
+        output_path = self._calib_link('rec', 'synrec') / f"{output_name}.fits"
 
         self._log(f"Generating focus reconstruction matrix (n_modes={self.ref_focus_n_modes})...")
-        self._log(f"  From IM: {im_path.name}")
 
-        # Load IM and stack 3 copies (for 3 REF WFS)
-        intmat_obj = Intmat.restore(str(im_path))
-        intmat_obj.intmat = np.vstack([
-            intmat_obj.intmat,
-            intmat_obj.intmat,
-            intmat_obj.intmat
-        ])
+        intmats = []
+        for name in ref_names:
+            self._log(f"  {name}: {dm1_ref_ims[name].name}")
+            intmats.append(Intmat.restore(str(dm1_ref_ims[name])).intmat)
+        intmat_obj = Intmat.restore(str(dm1_ref_ims[ref_names[0]]))
+        intmat_obj.intmat = np.vstack(intmats)
 
         self._log(f"  Stacked IM shape: {intmat_obj.intmat.shape}")
 
@@ -834,7 +912,7 @@ class MORFEOCalibrationWorkflow:
         self.generated_files['focus_recmat_name'] = output_name
 
         # Update config
-        self._update_config_field('rec_focus.recmat_object', f"{self.timestamp}/{output_name}")
+        self._update_config_field('rec_focus.recmat_object', f"synrec/{output_name}")
 
         self._log(f"✓ Generated focus reconstruction matrix: {output_name}")
 
@@ -869,8 +947,9 @@ class MORFEOCalibrationWorkflow:
             verbose=self.verbose
         )
 
-        output_rec_dir = self.root_dir / "synrec"
+        output_rec_dir = self._calib_link('rec', 'synrec')
 
+        self._check_lgs_filtmats()
         self._log(f"Computing LGS tomographic reconstructor...")
         self._log(f"  r0 = {self.r0} m")
         self._log(f"  L0 = {self.L0} m")
@@ -884,6 +963,7 @@ class MORFEOCalibrationWorkflow:
             C_noise=None,
             output_dir=str(output_rec_dir),
             save=True,
+            skip_gpu_covariance=self.skip_gpu_covariance,
             verbose=self.verbose
         )
 
@@ -896,32 +976,10 @@ class MORFEOCalibrationWorkflow:
             self.generated_files['lgs_rec_name'] = rec_name
 
             # Update config
-            self._update_config_field('tomo_polc_lgs.recmat_object', f"{self.timestamp}/{rec_name}")
-
-        # Also save the assembled interaction matrix
-        self._log("Saving assembled LGS interaction matrix...")
-        im_path = params_mgr.save_assembled_interaction_matrix(
-            wfs_type='lgs',
-            component_type='layer',
-            output_dir=str(self.root_dir / "synim"),
-            overwrite=self.overwrite,
-            apply_filter=True,  # Apply tip/tilt/focus filtering
-            verbose=self.verbose
-        )
-
-        if im_path:
-            im_path = Path(im_path)
-            im_name = im_path.stem
-
-            self.generated_files['lgs_im_assembled_path'] = im_path
-            self.generated_files['lgs_im_assembled_name'] = im_name
-
-            # Update config
-            self._update_config_field('tomo_polc_lgs.intmat_object', f"{self.timestamp}/{im_name}")
+            self._update_config_field('tomo_polc_lgs.recmat_object', f"synrec/{rec_name}")
 
         self._log(f"✓ Generated LGS tomographic reconstructor")
         self._log(f"  Reconstructor: {rec_name if rec_filename else 'N/A'}")
-        self._log(f"  Interaction matrix: {im_name if im_path else 'N/A'}")
         self._log(f"  Reconstructor shape: {result['reconstructor'].shape}")
 
         return result
@@ -950,7 +1008,7 @@ class MORFEOCalibrationWorkflow:
             verbose=self.verbose
         )
 
-        output_rec_dir = self.root_dir / "synrec"
+        output_rec_dir = self._calib_link('rec', 'synrec')
 
         self._log(f"Computing NGS reconstructor...")
 
@@ -963,6 +1021,7 @@ class MORFEOCalibrationWorkflow:
             C_noise=None,
             output_dir=str(output_rec_dir),
             save=True,
+            skip_gpu_covariance=self.skip_gpu_covariance,
             verbose=self.verbose
         )
 
@@ -975,7 +1034,7 @@ class MORFEOCalibrationWorkflow:
             self.generated_files['ngs_rec_name'] = rec_name
 
             # Update config
-            self._update_config_field('tomo_ngs.recmat_object', f"{self.timestamp}/{rec_name}")
+            self._update_config_field('tomo_ngs.recmat_object', f"synrec/{rec_name}")
 
         self._log(f"✓ Generated NGS reconstructor")
         self._log(f"  Reconstructor: {rec_name if rec_filename else 'N/A'}")
@@ -1011,7 +1070,7 @@ class MORFEOCalibrationWorkflow:
             verbose=self.verbose
         )
 
-        output_pm_dir = self.root_dir / "synpm"
+        output_pm_dir = self._calib_link('rec', 'synpm')
 
         # Compute LGS-to-DM interaction matrices (needed for projection)
         # These were not computed in Step 2 (which only computed LGS-to-layer IMs)
@@ -1027,6 +1086,24 @@ class MORFEOCalibrationWorkflow:
         )
         self._log(f"✓ Generated {len(lgs_dm_paths)} LGS-to-DM interaction matrices")
 
+        # The POLC (ModalrecExplicitPolc) computes intmat @ commands, with the
+        # DM modal commands: it needs the LGS-to-DM IM, filtered like the slopes.
+        self._check_lgs_filtmats()
+        self._log("Saving assembled LGS-to-DM interaction matrix for POLC...")
+        im_path = params_mgr.save_assembled_interaction_matrix(
+            wfs_type='lgs',
+            component_type='dm',
+            output_dir=str(self._calib_link('im', 'synim')),
+            overwrite=self.overwrite,
+            apply_filter=True,  # Apply tip/tilt/focus filtering
+            verbose=self.verbose
+        )
+        im_path = Path(im_path)
+        self.generated_files['lgs_im_assembled_path'] = im_path
+        self.generated_files['lgs_im_assembled_name'] = im_path.stem
+        self._update_config_field('tomo_polc_lgs.intmat_object', f"synim/{im_path.stem}")
+        self._log(f"  Interaction matrix: {im_path.stem}")
+
         # Compute individual projection matrices
         self._log("Computing projection matrices...")
         pm_paths = params_mgr.compute_projection_matrices(
@@ -1041,13 +1118,14 @@ class MORFEOCalibrationWorkflow:
             save=True,
             verbose=self.verbose
         )
+        proj_path = Path(info['rec_path'])
 
         self.generated_files['pm_paths'] = pm_paths
         self.generated_files['p_opt_info'] = info
+        self.generated_files['projmat_path'] = proj_path
 
         # Update config with projection matrix
-        proj_name = f"p{self.timestamp}/projmatAll"
-        self._update_config_field('tomo_polc_lgs.projmat_object', proj_name)
+        self._update_config_field('tomo_polc_lgs.projmat_object', f"synpm/{proj_path.stem}")
 
         self._log(f"✓ Generated {len(pm_paths)} projection matrices")
         self._log(f"✓ Generated tomographic projection matrix")
@@ -1073,17 +1151,22 @@ class MORFEOCalibrationWorkflow:
         self._log("STEP 9: UPDATE YAML CONFIGURATION")
         self._log("="*70)
 
-        # Save final calibrated YAML
+        # Save final calibrated YAML. 'generated_metadata' (written in step 0
+        # into the DM and layer sections) is used only by ParamsManager, and
+        # SPECULA rejects it as an unknown DM parameter.
+        final_config = copy.deepcopy(self.config)
+        for section in final_config.values():
+            if isinstance(section, dict):
+                section.pop('generated_metadata', None)
         final_yml = self._save_yaml(
-            self.config,
+            final_config,
             f"params_morfeo_calibrated_{self.timestamp}.yml"
         )
 
         # Create "remove_calib" override to clean up calibration objects
+        layer_keys = [key for key in self.config if re.fullmatch(r'layer\d+', key)]
         remove_config = {
-            'remove': ['reconstruction', 'projection', 
-                      'layer1', 'layer2', 'layer3', 'layer4',
-                      'layer5', 'layer6', 'layer7']
+            'remove': ['reconstruction', 'projection'] + layer_keys
         }
         remove_yml = self._save_yaml(
             remove_config,
@@ -1140,6 +1223,9 @@ class MORFEOCalibrationWorkflow:
             f.write(f"  ├── pupilstop/  (pupil masks)\n")
             f.write(f"  ├── ifunc/      (influence functions)\n")
             f.write(f"  ├── m2c/        (modal-to-commands matrices)\n")
+            f.write(f"  ├── data/       (filter matrices)\n")
+            f.write(f"  ├── rec/        (links synrec/, synpm/ for SPECULA)\n")
+            f.write(f"  ├── im/         (link synim/ for SPECULA)\n")
             f.write(f"  ├── synim/      (interaction matrices)\n")
             f.write(f"  ├── synrec/     (reconstructors)\n")
             f.write(f"  ├── synpm/      (projection matrices)\n")
@@ -1185,7 +1271,7 @@ class MORFEOCalibrationWorkflow:
             if 'lgs_im_paths' in self.generated_files:
                 f.write("2. LGS Interaction Matrices:\n")
                 f.write(f"     Count: {len(self.generated_files['lgs_im_paths'])}\n")
-                layer0_count = sum(1 for p in self.generated_files['lgs_im_paths']
+                layer0_count = sum(1 for p in self.generated_files['lgs_im_paths'].values()
                                   if 'layH0.0' in str(p))
                 f.write(f"     Layer 0: {layer0_count}\n")
                 f.write(f"     Other layers:"
@@ -1194,8 +1280,8 @@ class MORFEOCalibrationWorkflow:
             # Filter matrices
             if 'filtmat_mapping' in self.generated_files:
                 f.write("3. Filter Matrices:\n")
-                for rot, fname in self.generated_files['filtmat_mapping'].items():
-                    f.write(f"     {rot}: {fname}\n")
+                for rot, info in self.generated_files['filtmat_mapping'].items():
+                    f.write(f"     {rot}: {info['filename']} ({', '.join(info['wfs_names'])})\n")
                 f.write("\n")
 
             if 'ngs_im_paths' in self.generated_files:
@@ -1228,6 +1314,8 @@ class MORFEOCalibrationWorkflow:
             if 'pm_paths' in self.generated_files:
                 f.write("9. Projection Matrices:\n")
                 f.write(f"     Individual: {len(self.generated_files['pm_paths'])}\n")
+                if 'projmat_path' in self.generated_files:
+                    f.write(f"     Tomographic: {self.generated_files['projmat_path'].stem}\n")
                 if 'p_opt_info' in self.generated_files:
                     info = self.generated_files['p_opt_info']
                     f.write(f"     Optical sources: {info['n_opt_sources']}\n")
@@ -1271,11 +1359,23 @@ class MORFEOCalibrationWorkflow:
 
             for key, desc in check_list:
                 checks_total += 1
-                if key in self.generated_files:
+                # An empty result (e.g. no filter matrix generated) is a failure
+                if self.generated_files.get(key):
                     f.write(f"  ✓ {desc}\n")
                     checks_passed += 1
                 else:
                     f.write(f"  ✗ {desc}\n")
+
+            # Every placeholder of the base YAML must have been replaced
+            placeholders = self._find_placeholders(self.config)
+            checks_total += 1
+            if placeholders:
+                f.write(f"  ✗ Placeholders left in the configuration:\n")
+                for path in placeholders:
+                    f.write(f"      {path}\n")
+            else:
+                f.write(f"  ✓ No placeholders left in the configuration\n")
+                checks_passed += 1
 
             f.write(f"\nPassed: {checks_passed}/{checks_total}\n\n")
 
@@ -1388,6 +1488,9 @@ Directory structure:
     ├── pupilstop/    # Pupil masks
     ├── ifunc/        # Influence functions
     ├── m2c/          # Modal-to-commands matrices
+    ├── data/         # Filter matrices
+    ├── rec/          # Links synrec/, synpm/ for SPECULA
+    ├── im/           # Link synim/ for SPECULA
     ├── synim/        # Interaction matrices
     ├── synrec/       # Reconstructors
     ├── synpm/        # Projection matrices
@@ -1453,9 +1556,11 @@ Examples:
         type=int,
         help="Steps to run (default: all). Example: --steps 0 1 2"
     )
+    # default=None: without the flag, the value comes from the workflow YAML
     parser.add_argument(
         "--overwrite",
         action="store_true",
+        default=None,
         help="Overwrite existing calibration files (overrides workflow config)"
     )
     parser.add_argument(
@@ -1466,6 +1571,7 @@ Examples:
     parser.add_argument(
         "--verbose",
         action="store_true",
+        default=None,
         help="Enable verbose output (overrides workflow config)"
     )
 
@@ -1483,4 +1589,6 @@ Examples:
         verbose=args.verbose
     )
 
-    workflow.run_full_workflow(steps=args.steps)
+    # null or [] in the YAML: all steps
+    steps = args.steps or workflow.workflow_config['execution'].get('steps') or None
+    workflow.run_full_workflow(steps=steps)

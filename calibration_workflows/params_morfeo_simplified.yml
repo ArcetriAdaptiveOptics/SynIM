@@ -399,13 +399,13 @@ modal_combination:
 
 slicer1: &SLICER
   class:          'BaseSlicer'
-  slice_args:     [0,1140]
+  slice_args:     [0,1260] # all DM1 modes
   inputs:
     in_value: 'modal_combination.out_vector'
   outputs:  ['out_value']
 
 slicer2: { <<: *SLICER, slice_args: [1260,2281]} # 1260 + 1026 - 5
-slicer3: { <<: *SLICER, slice_args: [2281,3307]} # 1260 + 1026 - 5 + 1026 - 2
+slicer3: { <<: *SLICER, slice_args: [2281,3305]} # 1260 + 1026 - 5 + 1026 - 2
 
 # ----------------
 
