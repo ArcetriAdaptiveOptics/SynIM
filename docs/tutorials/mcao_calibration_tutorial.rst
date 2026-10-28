@@ -122,6 +122,35 @@ With YAML prepared, the SynIM calibration follows a fixed chain of products.
 Each step is typically implemented as a short standalone script that you run once
 before starting SPECULA simulations.
 
+Where SPECULA Finds the Products
+--------------------------------
+SynIM saves interaction matrices in ``synim/``, reconstructors in ``synrec/`` and
+projection matrices in ``synpm/`` under ``root_dir``. SPECULA, instead, loads each
+calibration object from a fixed subdirectory of ``main.root_dir``:
+
+* ``recmat_object`` and ``projmat_object`` from ``rec/``,
+* ``intmat_object`` from ``im/``,
+* ``filtmat_data`` from ``data/``.
+
+Link the SynIM directories once, so that SPECULA can find their files:
+
+.. code-block:: python
+
+   import os
+
+   root_dir = '/raid1/guido/PASSATA/MORFEOtest/'
+   for specula_dir, synim_dir in [('rec', 'synrec'), ('rec', 'synpm'), ('im', 'synim')]:
+       os.makedirs(os.path.join(root_dir, synim_dir), exist_ok=True)
+       os.makedirs(os.path.join(root_dir, specula_dir), exist_ok=True)
+       link = os.path.join(root_dir, specula_dir, synim_dir)
+       if not os.path.exists(link):
+           os.symlink(os.path.join(root_dir, synim_dir), link)
+
+In the YAML, refer to a SynIM product through the link and without the ``.fits``
+extension, for example ``recmat_object: 'synrec/rec_..._lgs_layer_...'``,
+``projmat_object: 'synpm/rec_..._tomographic_lgs_r1e-04'`` and
+``intmat_object: 'synim/im_full_..._lgs_to_dm_..._filtered'``.
+
 Step 0: Influence Functions and Modal Bases
 -------------------------------------------
 Compute/assign influence functions and modal bases for:
@@ -159,7 +188,7 @@ Create a script ``step0_influence_functions.py``:
    overwrite = True
 
    # DMs then virtual layers: (altitude [m], n_actuators)
-   altitudes_m = [600, 7500, 17500,   0, 2000, 4500, 11000, 15000, 18000, 22000]
+   altitudes_m = [600, 6500, 17500,   0, 2000, 4500, 11000, 15000, 18000, 22000]
    nacts        = [ 41,   37,    37,  41,   41,   41,    37,    37,    37,    37]
 
    ARCSEC2RAD = np.pi / (180 * 3600)
@@ -314,7 +343,10 @@ On smaller telescopes, filtering may be limited to tip-tilt only.
 
 MORFEO has six LGS WFSs at three unique rotation angles (6.2°, −6.2°, 14.2°), so
 only three filter matrices are needed — one per unique configuration. Check the
-``synim/`` directory for the exact Layer-0 IM filenames produced by Step B.
+``synim/`` directory for the exact Layer-0 IM filenames produced by Step B: they
+contain the SH sampling and the rotation (e.g. ``SH40x40_fv6.9_np6_rot6.2``), not
+the WFS name. Keep the SH sampling in the filter matrix name, so that different
+sensors with the same rotation do not share a filter matrix.
 
 Create a script ``step3_generate_filtmat.py``:
 
@@ -332,9 +364,12 @@ Create a script ``step3_generate_filtmat.py``:
    # Map each unique rotation to its Layer-0 IM and desired output name.
    # Replace the IM filenames with the exact names produced by Step B.
    configs = [
-       ('IM_syn_..._rot6.2_layH0.0_....fits',  'filtmat_rot6.2_mn1000_3.fits'),
-       ('IM_syn_..._rot-6.2_layH0.0_....fits', 'filtmat_rot-6.2_mn1000_3.fits'),
-       ('IM_syn_..._rot14.2_layH0.0_....fits', 'filtmat_rot14.2_mn1000_3.fits'),
+       ('IM_syn_..._SH40x40_fv6.9_np6_rot6.2_layH0.0_....fits',
+        'filtmat_IM_syn_SH40x40_fv6.9_np6_rot6.2_mn1000_3.fits'),
+       ('IM_syn_..._SH40x40_fv6.9_np6_rot-6.2_layH0.0_....fits',
+        'filtmat_IM_syn_SH40x40_fv6.9_np6_rot-6.2_mn1000_3.fits'),
+       ('IM_syn_..._SH40x40_fv6.9_np6_rot14.2_layH0.0_....fits',
+        'filtmat_IM_syn_SH40x40_fv6.9_np6_rot14.2_mn1000_3.fits'),
    ]
 
    for im_name, filtmat_name in configs:
@@ -352,7 +387,9 @@ Create a script ``step3_generate_filtmat.py``:
    python step3_generate_filtmat.py
 
 After this step, update ``filtmat_data`` in every ``slopec_lgs*`` section of your YAML
-with the matching filtmat filename before computing reconstructors.
+with the matching filtmat filename (without ``.fits``; SPECULA reads it from
+``data/``) before computing reconstructors: SynIM uses it to filter the LGS
+interaction matrices in Steps D and E.
 
 Step D: Tomographic Reconstructors
 ------------------------------------
@@ -395,13 +432,6 @@ Create a script ``step4_compute_reconstructors.py``:
        save=True, verbose=True)
    print(f"LGS reconstructor: {result_lgs['reconstructor'].shape}")
 
-   # Save the assembled (tip-tilt-focus filtered) LGS IM for POLC reference
-   params_mgr.save_assembled_interaction_matrix(
-       wfs_type='lgs', component_type='dm',
-       output_dir=synim_dir, overwrite=True,
-       apply_filter=True, slope_method=slope_method,
-       verbose=True)
-
    # --- NGS reconstructor (LO slopes → DMs) ---
    result_ngs = params_mgr.compute_tomographic_reconstructor(
        r0=r0, L0=L0,
@@ -413,18 +443,21 @@ Create a script ``step4_compute_reconstructors.py``:
    print(f"NGS reconstructor: {result_ngs['reconstructor'].shape}")
 
    # --- Focus reconstructor (REF slopes → focus modes, 3 WFSs stacked) ---
-   # Replace the filename with the exact REF Layer-0 IM produced by Step B.
-   ref_im_path   = synim_dir + 'IM_syn_..._ref1_layH0.0_....fits'
+   # Replace the filenames with the exact REF Layer-0 IMs produced by Step B,
+   # one per REF WFS (they differ by the guide star direction, e.g. pd55.0a0,
+   # pd55.0a120, pd55.0a240), in the order of the rec_focus slope inputs.
+   ref_im_names  = ['IM_syn_pd55.0a0_SH8x8_..._layH0.0_....fits',
+                    'IM_syn_pd55.0a120_SH8x8_..._layH0.0_....fits',
+                    'IM_syn_pd55.0a240_SH8x8_..._layH0.0_....fits']
    n_focus_modes = 30
-   n_ref_wfs     = 3
 
-   intmat_obj = Intmat.restore(ref_im_path)
-   stacked    = np.vstack([intmat_obj.intmat] * n_ref_wfs)
+   stacked    = np.vstack([Intmat.restore(synim_dir + name).intmat
+                           for name in ref_im_names])
    recmat_obj = Intmat(intmat=stacked).generate_rec(
        nmodes=n_focus_modes, cut_modes=0, interactive=False)
    Recmat(recmat=recmat_obj.recmat,
           norm_factor=recmat_obj.norm_factor).save(
-       rec_dir + f'focus_recmat_nmodes{n_focus_modes}_nwfs{n_ref_wfs}',
+       rec_dir + f'focus_recmat_nmodes{n_focus_modes}_nwfs{len(ref_im_names)}',
        overwrite=True)
    print(f"Focus recmat: {recmat_obj.recmat.shape}")
 
@@ -432,8 +465,9 @@ Create a script ``step4_compute_reconstructors.py``:
 
    python step4_compute_reconstructors.py
 
-After this step, update ``recmat_object`` and ``intmat_object`` in your YAML
-(``tomo_polc_lgs``, ``tomo_ngs``, ``rec_focus``) with the filenames just produced.
+After this step, update ``recmat_object`` in your YAML (``tomo_polc_lgs``,
+``tomo_ngs``, ``rec_focus``) with the filenames just produced, as
+``'synrec/<name>'`` (see `Where SPECULA Finds the Products`_).
 
 Step E: Projection Matrices
 ----------------------------
@@ -453,6 +487,7 @@ Create a script ``step5_compute_projection.py``:
 
 .. code-block:: python
 
+   import os
    import specula
    specula.init(device_idx=0, precision=1)
    import synim
@@ -475,6 +510,15 @@ Create a script ``step5_compute_projection.py``:
        overwrite=False, verbose=True, display=False)
    print(f"LGS-to-DM: {len(lgs_dm_ims)} IMs")
 
+   # Assembled LGS-to-DM IM, tip-tilt-focus filtered like the LGS slopes, for
+   # the POLC: ModalrecExplicitPolc computes intmat @ commands with the DM
+   # modal commands. It is assembled from the LGS-to-DM IMs saved above.
+   im_path = params_mgr.save_assembled_interaction_matrix(
+       wfs_type='lgs', component_type='dm',
+       output_dir=root_dir + 'synim/', overwrite=True,
+       apply_filter=True, verbose=True)
+   print(f"POLC intmat: {os.path.basename(im_path)}")
+
    # Individual per DM-layer projection matrices
    pm_paths = params_mgr.compute_projection_matrices(
        output_dir=pm_dir, overwrite=False)
@@ -492,8 +536,9 @@ Create a script ``step5_compute_projection.py``:
 
    python step5_compute_projection.py
 
-After this step, update ``projmat_object`` in ``tomo_polc_lgs`` with the
-filename just produced.
+After this step, update ``tomo_polc_lgs`` in your YAML with the files just
+produced: ``projmat_object`` as ``'synpm/<name>'`` and ``intmat_object`` as
+``'synim/<name>'``.
 
 Summary of Outputs
 ==================
