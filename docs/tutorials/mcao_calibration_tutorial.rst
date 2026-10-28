@@ -502,6 +502,7 @@ Create a script ``step5_compute_projection.py``:
    yaml_file = 'params_morfeo_simplified.yml'
    root_dir  = '/raid1/guido/PASSATA/MORFEOtest/'
    pm_dir    = root_dir + 'synpm/'
+   slope_method = 'derivatives'  # same method as in Steps B and D
 
    params_mgr = ParamsManager(yaml_file, root_dir=root_dir, verbose=True)
 
@@ -512,6 +513,7 @@ Create a script ``step5_compute_projection.py``:
        component_type='dm',  # DMs for projection matrices
        output_im_dir=root_dir + 'synim/',
        output_rec_dir=root_dir + 'synrec/',
+       slope_method=slope_method,
        overwrite=False, verbose=True, display=False)
    print(f"LGS-to-DM: {len(lgs_dm_ims)} IMs")
 
@@ -521,7 +523,7 @@ Create a script ``step5_compute_projection.py``:
    im_path = params_mgr.save_assembled_interaction_matrix(
        wfs_type='lgs', component_type='dm',
        output_dir=root_dir + 'synim/', overwrite=True,
-       apply_filter=True, verbose=True)
+       apply_filter=True, slope_method=slope_method, verbose=True)
    print(f"POLC intmat: {os.path.basename(im_path)}")
 
    # Individual per DM-layer projection matrices
