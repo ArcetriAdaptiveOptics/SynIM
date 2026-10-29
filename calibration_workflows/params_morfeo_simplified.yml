@@ -399,13 +399,13 @@ modal_combination:
 
 slicer1: &SLICER
   class:          'BaseSlicer'
-  slice_args:     [0,1140]
+  slice_args:     [0,1260] # all DM1 modes
   inputs:
     in_value: 'modal_combination.out_vector'
   outputs:  ['out_value']
 
 slicer2: { <<: *SLICER, slice_args: [1260,2281]} # 1260 + 1026 - 5
-slicer3: { <<: *SLICER, slice_args: [2281,3307]} # 1260 + 1026 - 5 + 1026 - 2
+slicer3: { <<: *SLICER, slice_args: [2281,3305]} # 1260 + 1026 - 5 + 1026 - 2
 
 # ----------------
 
@@ -551,6 +551,30 @@ layer7:
   nmodes:            Null                # Will be updated in step X
   #start_mode:        3                         # Offset into influence function matrix
   height:            22000                     # DM height [m]
+
+# ----------------------------------------------------------------------------
+# SynIM calibration sections (not SPECULA objects: removed for the simulation)
+# ----------------------------------------------------------------------------
+
+calibration:
+  pupil:                 # pupil mask built in step 0
+    n_petals:  6
+    obsratio:  0.283
+  n_actuators:           # actuators across the diameter, one entry per dmN/layerN
+    dm1:    41
+    dm2:    37
+    dm3:    37
+    layer1: 41
+    layer2: 41
+    layer3: 41
+    layer4: 37
+    layer5: 37
+    layer6: 37
+    layer7: 37
+  lgs_filter:            # LGS slope filter matrices (step 3)
+    n_modes:          1000   # modes of the layer 0 IM used by the filter
+    n_modes_filtered: 3      # tip, tilt, focus
+  focus_n_modes: 30      # DM1 modes inverted for the focus reconstructor (step 5)
 
 reconstruction:
   lgs:
