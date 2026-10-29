@@ -210,47 +210,62 @@ class MORFEOCalibrationWorkflow:
         self._log(f"  Timestamp: {self.timestamp}")
 
     def _extract_workflow_parameters(self):
-        """Extract calibration parameters from workflow YAML configuration."""
+        """
+        Extract the calibration parameters from the base simulation YAML,
+        the single source of truth: SPECULA sections (main, seeing, atmo,
+        dmN, layerN) and the SynIM-only sections 'calibration',
+        'reconstruction' and 'projection' (removed for the simulation).
+        """
         wf = self.workflow_config
+        cfg = self.config
+        calib = cfg['calibration']
 
-        # System parameters
-        sys_config = wf['system']
-        self.pixel_pupil = sys_config['pixel_pupil']
-        self.pixel_pitch = sys_config['pixel_pitch']
+        # Pupil sampling
+        self.pixel_pupil = cfg['main']['pixel_pupil']
+        self.pixel_pitch = cfg['main']['pixel_pitch']
         self.telescope_diameter = self.pixel_pupil * self.pixel_pitch
-        self.n_petals = sys_config['n_petals']
-        self.obsratio = sys_config['obsratio']
-        self.r0 = sys_config['r0']
-        self.L0 = sys_config['L0']
+        self.n_petals = calib['pupil']['n_petals']
+        self.obsratio = calib['pupil']['obsratio']
 
-        # Extract DM parameters
-        dms_config = wf['dms']
-        self.dm_altitudes = []
-        self.dm_nacts = []
-        for dm_key in sorted(dms_config.keys()):  # dm1, dm2, dm3
-            dm = dms_config[dm_key]
-            self.dm_altitudes.append(dm['altitude'])
-            self.dm_nacts.append(dm['n_actuators'])
+        # Turbulence: r0 at zenith, from the seeing at 500 nm of the simulation.
+        # Absolute values matter little: the KL bases do not depend on r0 (the
+        # covariance scales as r0^(-5/3), the eigenvectors do not change), and
+        # the MMSE reconstructors depend on the ratio between the noise and the
+        # turbulence covariances. Zenith or line-of-sight r0 only changes this
+        # ratio by a constant factor, equivalent to a scaling of the noise.
+        # L0 instead matters: it changes the shape of the von Karman spectrum
+        # (r0^(-5/3) (f^2 + 1/L0^2)^(-11/6)), hence the relative weight of the
+        # low-order modes, the KL bases and the MMSE prior.
+        seeing_arcsec = cfg['seeing']['constant']
+        self.r0 = 0.9759 * 500e-9 / (seeing_arcsec * np.pi / 180 / 3600)
+        self.L0 = cfg['atmo']['L0']
 
-        # Extract layer parameters
-        layers_config = wf['layers']
-        self.layer_altitudes = []
-        self.layer_nacts = []
-        for layer_key in sorted(layers_config.keys()):  # layer1, layer2, ...
-            layer = layers_config[layer_key]
-            self.layer_altitudes.append(layer['altitude'])
-            self.layer_nacts.append(layer['n_actuators'])
+        # DMs and layers: heights from the simulation sections, number of
+        # actuators from calibration.n_actuators (one entry per section)
+        n_actuators = calib['n_actuators']
+        self.dm_altitudes, self.dm_nacts = [], []
+        self.layer_altitudes, self.layer_nacts = [], []
+        for prefix, altitudes, nacts in [('dm', self.dm_altitudes, self.dm_nacts),
+                                         ('layer', self.layer_altitudes, self.layer_nacts)]:
+            keys = sorted((k for k in cfg if re.fullmatch(rf'{prefix}\d+', k)),
+                          key=lambda k: int(k[len(prefix):]))
+            for key in keys:
+                if key not in n_actuators:
+                    raise ValueError(f"calibration.n_actuators has no entry for '{key}'")
+                altitudes.append(cfg[key]['height'])
+                nacts.append(n_actuators[key])
+        extra = set(n_actuators) - {k for k in cfg if re.fullmatch(r'(dm|layer)\d+', k)}
+        if extra:
+            raise ValueError(f"calibration.n_actuators has entries without a section: {sorted(extra)}")
 
-        # WFS parameters
-        wfs_config = wf['wfs']
-        self.lgs_filter_n_modes = wfs_config['lgs']['filter_n_modes']
-        self.lgs_filter_n_modes_filtered = wfs_config['lgs']['filter_n_modes_filtered']
-        self.ref_focus_n_modes = wfs_config['ref']['focus_n_modes']
+        # Filter matrices (step 3) and focus reconstructor (step 5)
+        self.lgs_filter_n_modes = calib['lgs_filter']['n_modes']
+        self.lgs_filter_n_modes_filtered = calib['lgs_filter']['n_modes_filtered']
+        self.ref_focus_n_modes = calib['focus_n_modes']
 
-        # Reconstruction and projection parameters are used by ParamsManager
-        # from the base simulation YAML: read them from there, for the log and
-        # the summary, so that they always show the values actually used.
-        rec_config = self.config.get('reconstruction', {})
+        # Reconstruction and projection parameters are read by ParamsManager
+        # itself; they are copied here only for the log and the summary.
+        rec_config = cfg.get('reconstruction', {})
         self.ngs_n_modes_dm = rec_config.get('ngs_n_modes_dm')
         self.ref_n_modes_dm = rec_config.get('ref_n_modes_dm')
         self.proj_reg_factor = self.config.get('projection', {}).get('reg_factor')
@@ -263,6 +278,7 @@ class MORFEOCalibrationWorkflow:
         if self.verbose:
             self._log("\nWorkflow parameters loaded:")
             self._log(f"  Pupil: {self.pixel_pupil} px × {self.pixel_pitch} m")
+            self._log(f"  r0 (zenith, 500 nm): {self.r0:.4f} m, L0: {self.L0} m")
             self._log(f"  DMs: {len(self.dm_altitudes)} at altitudes {self.dm_altitudes}")
             self._log(f"  Layers: {len(self.layer_altitudes)} at altitudes {self.layer_altitudes}")
             self._log(f"  LGS filter: {self.lgs_filter_n_modes} modes "
@@ -1166,7 +1182,7 @@ class MORFEOCalibrationWorkflow:
         # Create "remove_calib" override to clean up calibration objects
         layer_keys = [key for key in self.config if re.fullmatch(r'layer\d+', key)]
         remove_config = {
-            'remove': ['reconstruction', 'projection'] + layer_keys
+            'remove': ['calibration', 'reconstruction', 'projection'] + layer_keys
         }
         remove_yml = self._save_yaml(
             remove_config,

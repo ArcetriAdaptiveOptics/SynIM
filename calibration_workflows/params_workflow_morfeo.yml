@@ -1,7 +1,8 @@
 # MORFEO Calibration Workflow Parameters
 # 
-# This file contains all parameters needed for the automated calibration workflow.
-# It complements the main MORFEO simulation YAML by providing workflow-specific settings.
+# Input files and execution settings of the automated calibration workflow.
+# The parameters of the system and of the calibration are in the base
+# simulation YAML.
 
 workflow:
   # Workflow metadata
@@ -29,102 +30,17 @@ input_files:
 # =============================================================================
 calibration_files:
   # Subaperture calibration YAML
-  # Path relative to the directory containing the base simulation YAML
+  # Path relative to params_dir
   # Set to null to auto-detect (looks for calib_morfeo_*_subaps.yml)
   subap_calib_yml: "calib_morfeo_simplified_subaps.yml"
 
-# =============================================================================
-# SYSTEM CONFIGURATION
-# =============================================================================
-system:
-  # Pupil parameters
-  pixel_pupil: 160
-  pixel_pitch: 0.2406  # meters
-  n_petals: 6
-  obsratio: 0.283
-  
-  # Atmospheric parameters
-  r0: 0.15  # Fried parameter in meters (will be updated at runtime)
-  L0: 25.0  # Outer scale in meters
-
-# =============================================================================
-# DEFORMABLE MIRRORS
-# =============================================================================
-dms:
-  # List of DM configurations
-  # Each DM has: index, altitude (m), number of actuators
-  dm1:
-    index: 1
-    altitude: 600  # meters
-    n_actuators: 41
-    
-  dm2:
-    index: 2
-    altitude: 6500
-    n_actuators: 37
-    
-  dm3:
-    index: 3
-    altitude: 17500
-    n_actuators: 37
-
-# =============================================================================
-# ATMOSPHERIC LAYERS
-# =============================================================================
-layers:
-  # List of atmospheric layer configurations
-  # Each layer has: index, altitude (m), number of actuators
-  layer1:
-    index: 1
-    altitude: 0  # Ground layer
-    n_actuators: 41
-    
-  layer2:
-    index: 2
-    altitude: 2000
-    n_actuators: 41
-    
-  layer3:
-    index: 3
-    altitude: 4500
-    n_actuators: 41
-    
-  layer4:
-    index: 4
-    altitude: 11000
-    n_actuators: 37
-    
-  layer5:
-    index: 5
-    altitude: 15000
-    n_actuators: 37
-    
-  layer6:
-    index: 6
-    altitude: 18000
-    n_actuators: 37
-    
-  layer7:
-    index: 7
-    altitude: 22000
-    n_actuators: 37
-
-# =============================================================================
-# WAVEFRONT SENSORS
-# =============================================================================
-wfs:
-  # LGS slope filter matrices (step 3)
-  lgs:
-    filter_n_modes: 1000  # Total modes for reconstruction
-    filter_n_modes_filtered: 3  # Modes to filter (tip, tilt, focus)
-
-  # Focus reconstruction matrix (step 5)
-  ref:
-    focus_n_modes: 30  # Modes for focus reconstruction
-
-# Reconstruction (noise, modes per DM) and projection (reg_factor, optical
-# sources, weights) parameters are read from the 'reconstruction' and
-# 'projection' sections of the base simulation YAML.
+# All the physical and calibration parameters are read from the base
+# simulation YAML, the single source of truth:
+# - SPECULA sections: main (pupil sampling), seeing (r0 at zenith), atmo (L0,
+#   FoV), dmN and layerN (heights);
+# - SynIM-only sections, removed for the simulation: calibration (pupil mask,
+#   actuators, filter matrices, focus reconstructor), reconstruction (noise,
+#   modes per DM) and projection (regularization, optical sources, weights).
 
 # =============================================================================
 # WORKFLOW EXECUTION
