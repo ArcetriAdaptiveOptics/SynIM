@@ -120,27 +120,41 @@ Or install from source:
 Verification
 ------------
 
-Test your installation:
+Test your installation by computing the interaction matrix of a tilt, whose
+slopes are known analytically: a tilt of 1 nm at the edge of a pupil of
+diameter :math:`D` gives an x slope of :math:`10^{-9}/(D/2)` rad on every
+illuminated subaperture (expressed in units of half the subaperture field of
+view) and a zero y slope.
 
 .. code-block:: python
 
-   import synim
    import numpy as np
-   
-   # Test CPU installation
-   synim.init(device_idx=-1, precision=1)
-   print("✓ CPU backend initialized")
-   
-   # Test GPU installation (if available)
-   try:
-       synim.init(device_idx=0, precision=1)
-       print("✓ GPU backend initialized")
-   except Exception:
-       print("⚠ GPU not available (CPU only)")
-   
-   # Test basic functionality
-   pup_mask = np.ones((128, 128))
+   import synim
+   synim.init(device_idx=-1, precision=1)   # device_idx=0 to test the GPU
+   from synim.synim import interaction_matrix
+
+   # Circular pupil (64 px, D = 8 m) and one mode: x tilt of 1 nm at the pupil edge
+   n, D = 64, 8.0
+   y, x = (np.mgrid[0:n, 0:n] - (n - 1) / 2) / (n / 2)
+   pup = (x**2 + y**2 <= 1).astype(np.float32)
+   tilt = (x * pup)[..., None].astype(np.float32)
+
+   im = synim.cpuArray(interaction_matrix(
+       pup_diam_m=D, pup_mask=pup, dm_array=tilt, dm_mask=pup,
+       dm_height=0.0, dm_rotation=0.0, wfs_nsubaps=8, wfs_fov_arcsec=4.0,
+       gs_pol_coo=(0.0, 0.0), gs_height=np.inf, wfs_rotation=0.0,
+       wfs_translation=(0.0, 0.0), wfs_mag_global=1.0))
+
+   # Expected x slope: (1 nm / (D/2)) rad, in units of half the subaperture FoV (2 arcsec)
+   expected = 1e-9 / (D / 2) / np.deg2rad(1 / 3600) / 2.0
+   sx, sy = np.split(im[:, 0], 2)
+   lit = sx != 0
+   assert lit.sum() > 0 and np.allclose(sx[lit], expected, rtol=1e-3) and np.allclose(sy, 0)
    print("✓ SynIM installation successful!")
+
+Once a SynIM submodule has been imported, ``synim.init`` cannot switch to a
+different device or precision: run the snippet in a new Python session to test
+another device.
 
 
 **Environment Variables:**
