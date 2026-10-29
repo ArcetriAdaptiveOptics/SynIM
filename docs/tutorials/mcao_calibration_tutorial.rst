@@ -15,6 +15,13 @@ This tutorial explains the calibration logic and the sequence of mathematical pr
 .. note::
    This is a **methodology tutorial**, not a usage guide for ``run_calib_workflow_morfeo.py``.
    That script can be used as a reference implementation of the same sequence, but the goal here is to let you implement your own calibration files/scripts for complex MCAO systems.
+
+   The scripts below are kept self-contained, so they differ from the workflow in a few points:
+
+   * they set the system parameters (pupil sampling, DM and layer altitudes, actuators, r0, L0) directly in the code, while the workflow reads all of them from the simulation YAML, using a SynIM-only ``calibration`` section for those that are not SPECULA parameters;
+   * they leave some file names and YAML updates to you, while the workflow names the products, creates the ``rec/`` and ``im/`` links and writes the calibrated YAML.
+
+   The calibration products and the order of the steps are the same.
    
    The slope computation method used in the examples and highly recommended for all ELT-scale systems is **'derivatives'**. 
    
