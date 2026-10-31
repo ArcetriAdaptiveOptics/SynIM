@@ -212,6 +212,31 @@ def _telsum_fractional(data, mask, wfs_nsubaps, threshold=0.999999, pup_mask=Non
     return mean_difference(1), mean_difference(0)
 
 
+def _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention):
+    """
+    Indices (numpy int32) of the valid subapertures in the row-major list of
+    all the subapertures, or None to select all of them. idx_valid_sa holds
+    either (row, column) pairs (transposed in the SPECULA convention) or
+    linear indices.
+    """
+    if idx_valid_sa is None:
+        return None
+    idx_valid_sa = cpuArray(idx_valid_sa)
+    if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
+        sa_2d = np.zeros((wfs_nsubaps, wfs_nsubaps))
+        sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
+        idx_temp = np.where(np.transpose(sa_2d) > 0)
+        idx_valid_sa_new = np.zeros_like(idx_valid_sa)
+        idx_valid_sa_new[:, 0] = idx_temp[0]
+        idx_valid_sa_new[:, 1] = idx_temp[1]
+    else:
+        idx_valid_sa_new = idx_valid_sa
+
+    if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
+        return (idx_valid_sa_new[:, 0] * wfs_nsubaps + idx_valid_sa_new[:, 1]).astype(np.int32)
+    return idx_valid_sa_new.astype(np.int32)
+
+
 def _compute_slopes_from_telsum(raw_telsum_x, raw_telsum_y, pup_mask, dm_mask,
                                wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
                                idx_valid_sa, verbose, specula_convention):
@@ -244,26 +269,10 @@ def _compute_slopes_from_telsum(raw_telsum_x, raw_telsum_y, pup_mask, dm_mask,
     wfs_signal_y_2d = telsum_y.reshape((-1, telsum_y.shape[2] if is_3d else 1))
 
     # 5. Select valid subapertures using provided indices
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
-        else:
-            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+    if idx is not None:
+        wfs_signal_x_2d = wfs_signal_x_2d[to_xp(xp, idx), :]
+        wfs_signal_y_2d = wfs_signal_y_2d[to_xp(xp, idx), :]
 
     # 6. Concatenate X and Y arrays
     if specula_convention:
@@ -413,30 +422,10 @@ def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_
     wfs_signal_y_2d = wfs_signal_y.reshape((-1, wfs_signal_y.shape[2] if is_3d else 1))
 
     # Select valid subapertures
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # *** sa_2d should use float_dtype (it's a mask with 0/1 values) ***
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            # *** But idx_valid_sa_new should keep integer type (indices!) ***
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)  # Keep original dtype (int)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[linear_indices.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[linear_indices.astype(xp.int32), :]
-        else:
-            # *** Ensure indices are integers ***
-            wfs_signal_x_2d = wfs_signal_x_2d[idx_valid_sa_new.astype(xp.int32), :]
-            wfs_signal_y_2d = wfs_signal_y_2d[idx_valid_sa_new.astype(xp.int32), :]
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+    if idx is not None:
+        wfs_signal_x_2d = wfs_signal_x_2d[to_xp(xp, idx), :]
+        wfs_signal_y_2d = wfs_signal_y_2d[to_xp(xp, idx), :]
 
     # Concatenate
     if specula_convention:
@@ -647,23 +636,10 @@ def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_m
 
 def _gradient_operator(n):
     """(n, n) sparse matrix of _gradient along an axis of length n."""
-    rows = np.arange(n)
-    plus = np.minimum(rows + 1, n - 1)
-    minus = np.maximum(rows - 1, 0)
-    # central differences inside, one-sided differences at the edges
-    weight = np.where((rows > 0) & (rows < n - 1), 0.5, 1.0)
-    return scipy.sparse.csr_matrix(
-        (np.concatenate((weight, -weight)), (np.tile(rows, 2), np.concatenate((plus, minus)))),
-        shape=(n, n))
-
-
-def _difference_operator(n):
-    """(n - 1, n) sparse matrix of the differences of adjacent pixels."""
-    rows = np.arange(n - 1)
-    return scipy.sparse.csr_matrix(
-        (np.concatenate((np.ones(n - 1), -np.ones(n - 1))),
-         (np.tile(rows, 2), np.concatenate((rows + 1, rows)))),
-        shape=(n - 1, n))
+    gradient = scipy.sparse.diags([-0.5, 0.5], [-1, 1], shape=(n, n), format='lil')
+    gradient[0, :2] = [-1, 1]
+    gradient[n - 1, n - 2:] = [-1, 1]
+    return gradient.tocsr()
 
 
 def _repair_operator(strict_mask):
@@ -688,17 +664,11 @@ def _repair_operator(strict_mask):
 def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
                      threshold=0.999999):
     """
-    Sparse operators from the transformed DM array (before masking, raveled
-    on the first two axes) to the x and y slopes of all the subapertures
-    ((wfs_nsubaps**2, n_pixels) matrices, subapertures in row-major order),
-    without the conversion to slope units of _wfs_operator.
-
-    They give the same slopes as apply_dm_transformations_combined followed
-    by apply_wfs_transformations_combined: masking with the DM mask, edge
-    repair, derivatives (or telescoping sum) and mean over each subaperture
-    are all linear in the DM array, for given masks.
-
-    Returns float64 scipy.sparse.csr_matrix operators (computed on CPU).
+    Sparse (wfs_nsubaps**2, n_pixels) operators from the transformed DM array
+    to the x and y slopes of all the subapertures (row-major), before the
+    conversion to slope units: masking, edge repair, derivatives (or
+    telescoping sum) and mean over each subaperture, as in
+    apply_dm_transformations_combined + apply_wfs_transformations_combined.
     """
     mask = np.nan_to_num(cpuArray(trans_dm_mask).astype(np.float64), nan=0.0)
     pup_mask = np.nan_to_num(cpuArray(trans_pup_mask).astype(np.float64), nan=0.0)
@@ -722,13 +692,14 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
         return scipy.sparse.kron(scipy.sparse.csr_matrix(a), scipy.sparse.csr_matrix(b),
                                  format='csr')
 
+    def adjacent_differences(n):
+        return scipy.sparse.diags([-1.0, 1.0], [0, 1], shape=(n - 1, n))
+
     masking = diag(mask)
     if slope_method == 'derivatives':
         if dm_mask_sa.max() <= 0:
             raise ValueError('DM mask is empty after rebinning.')
-        # Derivatives of the repaired phase, averaged over the pupil pixels
-        # (pup_mask > 0) of each subaperture where the phase is valid (strict
-        # mask), 0 elsewhere (see _compute_slopes_from_derivatives)
+        # see _compute_slopes_from_derivatives
         repair = _repair_operator(strict_mask) @ masking
         weight = rows @ in_pupil @ cols.T
         weight = np.where(weight > 0, weight, 1)
@@ -742,21 +713,18 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
         if n0 < 2 * wfs_nsubaps:
             raise ValueError(f'The telescoping sum needs at least 2 pixels per subaperture:'
                              f' {n0} pixels, {wfs_nsubaps} subapertures.')
-        # Differences of adjacent pixels (baselines) valid for the phase,
-        # averaged over the baselines with both pixels in the pupil (see
-        # _telsum_fractional), times the pixels per subaperture
-        # (see _compute_slopes_from_telsum)
+        # see _telsum_fractional and _compute_slopes_from_telsum
         def operator(axis):
             if axis == 1:
                 used = in_pupil[:, 1:] * in_pupil[:, :-1]
                 valid = strict_mask[:, 1:] & strict_mask[:, :-1]
                 row_matrix, col_matrix = rows, np.minimum(cols[:, 1:], cols[:, :-1])
-                difference = kron(scipy.sparse.identity(n0), _difference_operator(n1))
+                difference = kron(scipy.sparse.identity(n0), adjacent_differences(n1))
             else:
                 used = in_pupil[1:] * in_pupil[:-1]
                 valid = strict_mask[1:] & strict_mask[:-1]
                 row_matrix, col_matrix = np.minimum(rows[:, 1:], rows[:, :-1]), cols
-                difference = kron(_difference_operator(n0), scipy.sparse.identity(n1))
+                difference = kron(adjacent_differences(n0), scipy.sparse.identity(n1))
             weight = row_matrix @ used @ col_matrix.T
             scale = np.where(combined_mask_sa & (weight > 0),
                              (n0 / wfs_nsubaps) / np.where(weight > 0, weight, 1), 0)
@@ -768,37 +736,9 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
     raise ValueError(f"Unknown slope_method: {slope_method}")
 
 
-def _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention):
-    """
-    Indices of the valid subapertures in the row-major list of all the
-    subapertures, as selected in _compute_slopes_from_derivatives (numpy
-    int32 array), or None to select all the subapertures.
-    """
-    if idx_valid_sa is None:
-        return None
-    idx_valid_sa = cpuArray(idx_valid_sa)
-    if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-        sa_2d = np.zeros((wfs_nsubaps, wfs_nsubaps))
-        sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-        idx_temp = np.where(np.transpose(sa_2d) > 0)
-        idx_valid_sa_new = np.zeros_like(idx_valid_sa)
-        idx_valid_sa_new[:, 0] = idx_temp[0]
-        idx_valid_sa_new[:, 1] = idx_temp[1]
-    else:
-        idx_valid_sa_new = idx_valid_sa
-
-    if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-        return (idx_valid_sa_new[:, 0] * wfs_nsubaps + idx_valid_sa_new[:, 1]).astype(np.int32)
-    return idx_valid_sa_new.astype(np.int32)
-
-
 def _wfs_operator(slopes_x, slopes_y, wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
                   idx_valid_sa, specula_convention):
-    """
-    Rows of the interaction matrix operator of a WFS from the slope
-    operators of _slope_operators: valid subapertures, x and y slopes in
-    the order of the convention, conversion to slope units.
-    """
+    """Interaction matrix operator of a WFS: valid subapertures, x/y order, slope units."""
     idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
     if idx is not None:
         slopes_x = slopes_x[idx]
@@ -810,11 +750,8 @@ def _wfs_operator(slopes_x, slopes_y, wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
 
 
 def _transformation_operator(transform, dm_shape, specula_convention):
-    """
-    Sparse interpolation matrix of the combined transformation (see
-    _combined_transformation) from the DM array (dm_shape, not transposed,
-    raveled on the first two axes) to the transformed array.
-    """
+    """Sparse interpolation matrix of the combined transformation, applied to the
+    DM array as given (not transposed)."""
     transform = dict(transform)
     output_size = transform.pop('output_size')
     input_shape = (dm_shape[1], dm_shape[0]) if specula_convention else tuple(dm_shape[:2])
@@ -823,11 +760,9 @@ def _transformation_operator(transform, dm_shape, specula_convention):
                                        transposed=specula_convention)
 
 
-# CSR matrix times C-contiguous dense matrix on GPU: one thread per output
-# element, sum over the row in the order of the CSR indices (deterministic,
-# same order as scipy on CPU). Adjacent threads read adjacent modes of the
-# same pixel (coalesced). cuSPARSE SpMM is not used: its results are not
-# bit-wise reproducible, and it needs an F-contiguous copy of the DM array.
+# CSR matrix times C-contiguous dense matrix on GPU, one thread per output
+# element: deterministic (cuSPARSE SpMM is not) and without the F-contiguous
+# copy of the DM array that cuSPARSE needs
 _CSR_DENSE_KERNEL_CODE = """
     const long long row = i / n_cols;
     const long long col = i % n_cols;
@@ -840,25 +775,11 @@ _CSR_DENSE_KERNEL_CODE = """
 _csr_dense_kernel = None
 
 
-def _csr_dense_product_gpu(data, indptr, indices, dense):
-    """(n_rows, n_cols) product of a CSR matrix (cupy arrays) and a C-contiguous
-    (n, n_cols) cupy array."""
-    global _csr_dense_kernel
-    if _csr_dense_kernel is None:
-        _csr_dense_kernel = xp.ElementwiseKernel(
-            'raw T data, raw I indptr, raw I indices, raw T dense, int64 n_cols',
-            'T out', _CSR_DENSE_KERNEL_CODE, 'synim_csr_dense_product')
-    out = xp.empty((len(indptr) - 1, dense.shape[1]), dtype=dense.dtype)
-    _csr_dense_kernel(data, indptr, indices, dense, dense.shape[1], out)
-    return out
-
-
 def _apply_operator(operator, dm_array):
     """
-    operator @ dm_array, with dm_array (n, m[, n_modes]) seen as a
-    (n * m, n_modes) matrix. Returns a (n_rows, n_modes) array on the
-    target device. dm_array is not copied (unless it contains NaN values,
-    which are set to 0 as in rotshiftzoom_array, or is not contiguous).
+    operator @ dm_array seen as a (n_pixels, n_modes) matrix, on the target
+    device, without copies of dm_array (NaN values are set to 0 as in
+    rotshiftzoom_array).
     """
     n_modes = dm_array.shape[2] if dm_array.ndim == 3 else 1
     dm_2d = xp.ascontiguousarray(dm_array).reshape(-1, n_modes)
@@ -866,15 +787,19 @@ def _apply_operator(operator, dm_array):
     if xp.isnan(xp.sum(dm_2d)) and xp.isnan(dm_2d).any():
         dm_2d = xp.nan_to_num(dm_2d, copy=True, nan=0.0, posinf=None, neginf=None)
     operator = scipy.sparse.csr_matrix(operator, dtype=float_dtype)
-    # Sorted indices without duplicates: same summation order on CPU and GPU
-    operator.sum_duplicates()
-
+    operator.sum_duplicates()  # same summation order on CPU and GPU
     if xp is np:
         return np.ascontiguousarray(operator @ dm_2d)
 
-    return _csr_dense_product_gpu(
-        xp.asarray(operator.data), xp.asarray(operator.indptr),
-        xp.asarray(operator.indices), dm_2d)
+    global _csr_dense_kernel
+    if _csr_dense_kernel is None:
+        _csr_dense_kernel = xp.ElementwiseKernel(
+            'raw T data, raw I indptr, raw I indices, raw T dense, int64 n_cols',
+            'T out', _CSR_DENSE_KERNEL_CODE, 'synim_csr_dense_product')
+    out = xp.empty((operator.shape[0], n_modes), dtype=dm_2d.dtype)
+    _csr_dense_kernel(xp.asarray(operator.data), xp.asarray(operator.indptr),
+                      xp.asarray(operator.indices), dm_2d, n_modes, out)
+    return out
 
 
 def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
@@ -894,12 +819,10 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
     interpolation step. The slopes (derivatives or telescoping sum) are then
     computed on the transformed phase.
 
-    For given masks, all these steps are linear in the DM array: they are
-    composed into a single sparse matrix (built on CPU from the masks), which
-    is multiplied by the DM array seen as a (n_pixels, n_modes) matrix. No
-    transformed copy of the DM array (or of its derivatives) is allocated.
-    The results are the same as apply_dm_transformations_combined followed
-    by apply_wfs_transformations_combined, up to rounding errors.
+    For given masks all these steps are linear in the DM array: they are
+    composed into one sparse matrix applied to the DM array, without
+    transformed copies of it. Same results, up to rounding, as
+    apply_dm_transformations_combined + apply_wfs_transformations_combined.
 
     Note: WFS transformations must not be applied to derivative maps. The
     gradient of the transformed phase includes the Jacobian of the
@@ -1183,8 +1106,6 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
 
     # *** Convert to target device ***
     pup_mask = to_xp(xp, pup_mask, dtype=float_dtype)
-    if idx_valid_sa is not None:
-        idx_valid_sa = to_xp(xp, idx_valid_sa)
 
     if specula_convention:
         pup_mask = xp.transpose(pup_mask)
@@ -1221,29 +1142,8 @@ def compute_subaperture_illumination(pup_mask, wfs_nsubaps, wfs_rotation=0.0,
     illumination_2d = pup_mask_sa.flatten()
 
     # Select only valid subapertures
-    if idx_valid_sa is not None:
-        if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
-            # Convert SPECULA format 2D indices back from transposed logic
-            sa_2d = xp.zeros((wfs_nsubaps, wfs_nsubaps), dtype=float_dtype)
-            sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
-            sa_2d = xp.transpose(sa_2d)
-            idx_temp = xp.where(sa_2d > 0)
-            idx_valid_sa_new = xp.zeros_like(idx_valid_sa)
-            idx_valid_sa_new[:, 0] = idx_temp[0]
-            idx_valid_sa_new[:, 1] = idx_temp[1]
-        else:
-            idx_valid_sa_new = idx_valid_sa
-
-        if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
-            width = wfs_nsubaps
-            linear_indices = idx_valid_sa_new[:, 0] * width + idx_valid_sa_new[:, 1]
-            illumination = illumination_2d[linear_indices.astype(xp.int32)]
-        else:
-            # Use all subapertures (fallback for 1D indices)
-            illumination = illumination_2d[idx_valid_sa_new.astype(xp.int32)]
-    else:
-        # Use all subapertures
-        illumination = illumination_2d
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+    illumination = illumination_2d if idx is None else illumination_2d[to_xp(xp, idx)]
 
     # Convert to CPU for return
     illumination = cpuArray(illumination)
