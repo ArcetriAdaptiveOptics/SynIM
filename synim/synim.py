@@ -2,6 +2,7 @@ import math
 import warnings
 
 import numpy as np
+import scipy.sparse
 
 import synim as _synim
 _synim._require_init(__name__)
@@ -12,7 +13,10 @@ from synim.utils import (
     rebin,
     rebin_matrix,
     rebin_fractional_sum,
+    _rebin_matrix_np,
+    affine_interpolation_matrix,
     rotshiftzoom_array,
+    rotshiftzoom_matrix,
     shiftzoom_from_source_dm_params,
     apply_extrapolation,
     calculate_extrapolation_indices_coeffs
@@ -453,35 +457,37 @@ def _compute_slopes_from_derivatives(derivatives_x, derivatives_y, pup_mask, dm_
     return im
 
 
-def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
-                                      dm_height, dm_rotation,
-                                      gs_pol_coo, gs_height,
-                                      wfs_rotation, wfs_translation,
-                                      wfs_nsubaps=None,
-                                      wfs_mag_global=1.0,
-                                      wfs_anamorphosis_90=1.0,
-                                      wfs_anamorphosis_45=1.0,
-                                      slope_method='derivatives',
-                                      specula_convention=True,
-                                      verbose=False):
-    """
-    Apply DM and WFS transformations COMBINED (single interpolation step).
-    This avoids cumulative interpolation errors when both DM and WFS have rotations.
+def _check_dm_mask_shape(dm_array, dm_mask, specula_convention):
+    """Check that the DM array and mask have the same size along the first axis
+    of the transformed arrays (the second one in the SPECULA convention)."""
+    axis = 1 if specula_convention else 0
+    if dm_mask.shape[axis] != dm_array.shape[axis]:
+        raise ValueError('DM and mask arrays must have the same dimensions.')
 
-    The returned trans_dm_array is the transformed DM array after masking and
-    edge repair (the repair is done in place to avoid a copy of the cube).
-    """
 
+def _combined_transformation(pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation,
+                             gs_pol_coo, gs_height, wfs_rotation, wfs_translation,
+                             wfs_mag_global, wfs_anamorphosis_90, wfs_anamorphosis_45,
+                             specula_convention, verbose=False):
+    """
+    Parameters of the combined DM + WFS transformation and transformed masks.
+
+    Returns:
+    - transform: dict of rotshiftzoom_array keyword arguments that apply the
+      combined transformation to the DM array (transposed in the SPECULA
+      convention)
+    - trans_dm_mask: transformed DM mask (values below 0.5 set to 0)
+    - trans_pup_mask: pupil mask with the WFS transformations only (values
+      below 0.5 set to 0)
+    """
     # *** Compute WFS magnification including anamorphosis at 90° ***
     wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
 
     # *** Convert inputs to target device with correct dtype ***
-    dm_array = to_xp(xp, dm_array, dtype=float_dtype)
     dm_mask = to_xp(xp, dm_mask, dtype=float_dtype)
     pup_mask = to_xp(xp, pup_mask, dtype=float_dtype)
 
     if specula_convention:
-        dm_array = xp.transpose(dm_array, (1, 0, 2))
         dm_mask = xp.transpose(dm_mask)
         pup_mask = xp.transpose(pup_mask)
         wfs_translation_local = (-1*wfs_translation[1], -1*wfs_translation[0])
@@ -490,9 +496,6 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
 
     pup_diam_pix = pup_mask.shape[0]
     pixel_pitch = pup_diam_m / pup_diam_pix
-
-    if dm_mask.shape[0] != dm_array.shape[0]:
-        raise ValueError('DM and mask arrays must have the same dimensions.')
 
     dm_translation, dm_magnification = shiftzoom_from_source_dm_params(
         source_pol_coo=gs_pol_coo,
@@ -511,9 +514,7 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         print(f'  WFS rotation: {wfs_rotation} deg')
         print(f'  WFS magnification: {wfs_magnification}')
 
-    # Apply ALL transformations in one step
-    trans_dm_array = rotshiftzoom_array(
-        dm_array,
+    transform = dict(
         dm_translation=dm_translation,
         dm_rotation=dm_rotation,
         dm_magnification=dm_magnification,
@@ -524,18 +525,8 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         output_size=output_size
     )
 
-    # DM mask (only DM transformations)
-    trans_dm_mask = rotshiftzoom_array(
-        dm_mask,
-        dm_translation=dm_translation,
-        dm_rotation=dm_rotation,
-        dm_magnification=dm_magnification,
-        wfs_translation=wfs_translation_local,
-        wfs_rotation=wfs_rotation,
-        wfs_magnification=wfs_magnification,
-        wfs_anamorphosis_45=wfs_anamorphosis_45,
-        output_size=output_size
-    )
+    # DM mask (same transformation as the DM array)
+    trans_dm_mask = rotshiftzoom_array(dm_mask, **transform)
     trans_dm_mask[trans_dm_mask < 0.5] = 0
 
     # Pupil mask (only WFS transformations)
@@ -556,6 +547,41 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         raise ValueError('Transformed DM mask is empty.')
     if xp.max(trans_pup_mask) <= 0:
         raise ValueError('Transformed pupil mask is empty.')
+
+    return transform, trans_dm_mask, trans_pup_mask
+
+
+def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
+                                      dm_height, dm_rotation,
+                                      gs_pol_coo, gs_height,
+                                      wfs_rotation, wfs_translation,
+                                      wfs_nsubaps=None,
+                                      wfs_mag_global=1.0,
+                                      wfs_anamorphosis_90=1.0,
+                                      wfs_anamorphosis_45=1.0,
+                                      slope_method='derivatives',
+                                      specula_convention=True,
+                                      verbose=False):
+    """
+    Apply DM and WFS transformations COMBINED (single interpolation step).
+    This avoids cumulative interpolation errors when both DM and WFS have rotations.
+
+    The returned trans_dm_array is the transformed DM array after masking and
+    edge repair (the repair is done in place to avoid a copy of the cube).
+    """
+
+    dm_array = to_xp(xp, dm_array, dtype=float_dtype)
+    _check_dm_mask_shape(dm_array, dm_mask, specula_convention)
+    if specula_convention:
+        dm_array = xp.transpose(dm_array, (1, 0, 2))
+
+    transform, trans_dm_mask, trans_pup_mask = _combined_transformation(
+        pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation, gs_pol_coo, gs_height,
+        wfs_rotation, wfs_translation, wfs_mag_global, wfs_anamorphosis_90,
+        wfs_anamorphosis_45, specula_convention, verbose=verbose)
+
+    # Apply ALL transformations in one step
+    trans_dm_array = rotshiftzoom_array(dm_array, **transform)
 
     # trans_dm_array is a new array: mask it and repair its edges in place
     # (same values as apply_mask, without a copy of the cube)
@@ -619,6 +645,238 @@ def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_m
         raise ValueError(f"Unknown slope_method: {slope_method}")
 
 
+def _gradient_operator(n):
+    """(n, n) sparse matrix of _gradient along an axis of length n."""
+    rows = np.arange(n)
+    plus = np.minimum(rows + 1, n - 1)
+    minus = np.maximum(rows - 1, 0)
+    # central differences inside, one-sided differences at the edges
+    weight = np.where((rows > 0) & (rows < n - 1), 0.5, 1.0)
+    return scipy.sparse.csr_matrix(
+        (np.concatenate((weight, -weight)), (np.tile(rows, 2), np.concatenate((plus, minus)))),
+        shape=(n, n))
+
+
+def _difference_operator(n):
+    """(n - 1, n) sparse matrix of the differences of adjacent pixels."""
+    rows = np.arange(n - 1)
+    return scipy.sparse.csr_matrix(
+        (np.concatenate((np.ones(n - 1), -np.ones(n - 1))),
+         (np.tile(rows, 2), np.concatenate((rows + 1, rows)))),
+        shape=(n - 1, n))
+
+
+def _repair_operator(strict_mask):
+    """
+    Sparse (n_pixels, n_pixels) matrix of the edge repair of
+    _repair_interpolated_phase: the pixels of strict_mask are kept, the edge
+    pixels around it are extrapolated from them, all the others are 0.
+    """
+    strict_pixels = np.flatnonzero(strict_mask)
+    edge_pixels, reference_indices, coefficients = calculate_extrapolation_indices_coeffs(
+        strict_mask.astype(np.int64), debug=False, debug_pixels=None)
+    used = (reference_indices >= 0) & (coefficients != 0)
+    edge_rows = np.broadcast_to(np.asarray(edge_pixels)[:, np.newaxis], used.shape)
+    rows = np.concatenate((strict_pixels, edge_rows[used]))
+    cols = np.concatenate((strict_pixels, reference_indices[used]))
+    values = np.concatenate((np.ones(len(strict_pixels)),
+                             coefficients[used].astype(np.float64)))
+    n = strict_mask.size
+    return scipy.sparse.csr_matrix((values, (rows, cols)), shape=(n, n))
+
+
+def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
+                     threshold=0.999999):
+    """
+    Sparse operators from the transformed DM array (before masking, raveled
+    on the first two axes) to the x and y slopes of all the subapertures
+    ((wfs_nsubaps**2, n_pixels) matrices, subapertures in row-major order),
+    without the conversion to slope units of _wfs_operator.
+
+    They give the same slopes as apply_dm_transformations_combined followed
+    by apply_wfs_transformations_combined: masking with the DM mask, edge
+    repair, derivatives (or telescoping sum) and mean over each subaperture
+    are all linear in the DM array, for given masks.
+
+    Returns float64 scipy.sparse.csr_matrix operators (computed on CPU).
+    """
+    mask = np.nan_to_num(cpuArray(trans_dm_mask).astype(np.float64), nan=0.0)
+    pup_mask = np.nan_to_num(cpuArray(trans_pup_mask).astype(np.float64), nan=0.0)
+    if mask.max() < threshold:
+        raise ValueError(f'Mask max value is {mask.max()},'
+                         f' expected binary mask with values 0 and 1.')
+    n0, n1 = mask.shape
+    strict_mask = mask >= threshold
+    in_pupil = (pup_mask > 0).astype(np.float64)
+
+    # Pixel fraction inside each subaperture along each axis (see rebin)
+    rows = _rebin_matrix_np(n0, wfs_nsubaps)
+    cols = _rebin_matrix_np(n1, wfs_nsubaps)
+    dm_mask_sa = rows @ mask @ cols.T
+    combined_mask_sa = (dm_mask_sa > 0) & (rows @ pup_mask @ cols.T > 0)
+
+    def diag(values):
+        return scipy.sparse.diags(values.ravel().astype(np.float64), format='csr')
+
+    def kron(a, b):
+        return scipy.sparse.kron(scipy.sparse.csr_matrix(a), scipy.sparse.csr_matrix(b),
+                                 format='csr')
+
+    masking = diag(mask)
+    if slope_method == 'derivatives':
+        if dm_mask_sa.max() <= 0:
+            raise ValueError('DM mask is empty after rebinning.')
+        # Derivatives of the repaired phase, averaged over the pupil pixels
+        # (pup_mask > 0) of each subaperture where the phase is valid (strict
+        # mask), 0 elsewhere (see _compute_slopes_from_derivatives)
+        repair = _repair_operator(strict_mask) @ masking
+        weight = rows @ in_pupil @ cols.T
+        weight = np.where(weight > 0, weight, 1)
+        scale = np.where(combined_mask_sa, (n0 / wfs_nsubaps) / weight, 0)
+        mean = diag(scale) @ kron(rows, cols) @ diag(strict_mask & (in_pupil > 0))
+        gradient_x = kron(scipy.sparse.identity(n0), _gradient_operator(n1))
+        gradient_y = kron(_gradient_operator(n0), scipy.sparse.identity(n1))
+        return mean @ gradient_x @ repair, mean @ gradient_y @ repair
+
+    if slope_method == 'telsum':
+        if n0 < 2 * wfs_nsubaps:
+            raise ValueError(f'The telescoping sum needs at least 2 pixels per subaperture:'
+                             f' {n0} pixels, {wfs_nsubaps} subapertures.')
+        # Differences of adjacent pixels (baselines) valid for the phase,
+        # averaged over the baselines with both pixels in the pupil (see
+        # _telsum_fractional), times the pixels per subaperture
+        # (see _compute_slopes_from_telsum)
+        def operator(axis):
+            if axis == 1:
+                used = in_pupil[:, 1:] * in_pupil[:, :-1]
+                valid = strict_mask[:, 1:] & strict_mask[:, :-1]
+                row_matrix, col_matrix = rows, np.minimum(cols[:, 1:], cols[:, :-1])
+                difference = kron(scipy.sparse.identity(n0), _difference_operator(n1))
+            else:
+                used = in_pupil[1:] * in_pupil[:-1]
+                valid = strict_mask[1:] & strict_mask[:-1]
+                row_matrix, col_matrix = np.minimum(rows[:, 1:], rows[:, :-1]), cols
+                difference = kron(_difference_operator(n0), scipy.sparse.identity(n1))
+            weight = row_matrix @ used @ col_matrix.T
+            scale = np.where(combined_mask_sa & (weight > 0),
+                             (n0 / wfs_nsubaps) / np.where(weight > 0, weight, 1), 0)
+            mean = diag(scale) @ kron(row_matrix, col_matrix) @ diag(valid * used)
+            return mean @ difference @ masking
+
+        return operator(1), operator(0)
+
+    raise ValueError(f"Unknown slope_method: {slope_method}")
+
+
+def _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention):
+    """
+    Indices of the valid subapertures in the row-major list of all the
+    subapertures, as selected in _compute_slopes_from_derivatives (numpy
+    int32 array), or None to select all the subapertures.
+    """
+    if idx_valid_sa is None:
+        return None
+    idx_valid_sa = cpuArray(idx_valid_sa)
+    if specula_convention and len(idx_valid_sa.shape) > 1 and idx_valid_sa.shape[1] == 2:
+        sa_2d = np.zeros((wfs_nsubaps, wfs_nsubaps))
+        sa_2d[idx_valid_sa[:, 0], idx_valid_sa[:, 1]] = 1
+        idx_temp = np.where(np.transpose(sa_2d) > 0)
+        idx_valid_sa_new = np.zeros_like(idx_valid_sa)
+        idx_valid_sa_new[:, 0] = idx_temp[0]
+        idx_valid_sa_new[:, 1] = idx_temp[1]
+    else:
+        idx_valid_sa_new = idx_valid_sa
+
+    if len(idx_valid_sa_new.shape) > 1 and idx_valid_sa_new.shape[1] == 2:
+        return (idx_valid_sa_new[:, 0] * wfs_nsubaps + idx_valid_sa_new[:, 1]).astype(np.int32)
+    return idx_valid_sa_new.astype(np.int32)
+
+
+def _wfs_operator(slopes_x, slopes_y, wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
+                  idx_valid_sa, specula_convention):
+    """
+    Rows of the interaction matrix operator of a WFS from the slope
+    operators of _slope_operators: valid subapertures, x and y slopes in
+    the order of the convention, conversion to slope units.
+    """
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+    if idx is not None:
+        slopes_x = slopes_x[idx]
+        slopes_y = slopes_y[idx]
+    pair = (slopes_y, slopes_x) if specula_convention else (slopes_x, slopes_y)
+    coeff = 1e-9 / (pup_diam_m / wfs_nsubaps) * 206265
+    coeff *= 1 / (0.5 * wfs_fov_arcsec)
+    return scipy.sparse.vstack(pair, format='csr') * coeff
+
+
+def _transformation_operator(transform, dm_shape, specula_convention):
+    """
+    Sparse interpolation matrix of the combined transformation (see
+    _combined_transformation) from the DM array (dm_shape, not transposed,
+    raveled on the first two axes) to the transformed array.
+    """
+    transform = dict(transform)
+    output_size = transform.pop('output_size')
+    input_shape = (dm_shape[1], dm_shape[0]) if specula_convention else tuple(dm_shape[:2])
+    matrix, offset = rotshiftzoom_matrix(input_shape, output_size, **transform)
+    return affine_interpolation_matrix(input_shape, output_size, matrix, offset,
+                                       transposed=specula_convention)
+
+
+# CSR matrix times C-contiguous dense matrix on GPU: one thread per output
+# element, sum over the row in the order of the CSR indices (deterministic,
+# same order as scipy on CPU). Adjacent threads read adjacent modes of the
+# same pixel (coalesced). cuSPARSE SpMM is not used: its results are not
+# bit-wise reproducible, and it needs an F-contiguous copy of the DM array.
+_CSR_DENSE_KERNEL_CODE = """
+    const long long row = i / n_cols;
+    const long long col = i % n_cols;
+    T acc = 0;
+    for (I k = indptr[row]; k < indptr[row + 1]; k++) {
+        acc += data[k] * dense[(long long)indices[k] * n_cols + col];
+    }
+    out = acc;
+"""
+_csr_dense_kernel = None
+
+
+def _csr_dense_product_gpu(data, indptr, indices, dense):
+    """(n_rows, n_cols) product of a CSR matrix (cupy arrays) and a C-contiguous
+    (n, n_cols) cupy array."""
+    global _csr_dense_kernel
+    if _csr_dense_kernel is None:
+        _csr_dense_kernel = xp.ElementwiseKernel(
+            'raw T data, raw I indptr, raw I indices, raw T dense, int64 n_cols',
+            'T out', _CSR_DENSE_KERNEL_CODE, 'synim_csr_dense_product')
+    out = xp.empty((len(indptr) - 1, dense.shape[1]), dtype=dense.dtype)
+    _csr_dense_kernel(data, indptr, indices, dense, dense.shape[1], out)
+    return out
+
+
+def _apply_operator(operator, dm_array):
+    """
+    operator @ dm_array, with dm_array (n, m[, n_modes]) seen as a
+    (n * m, n_modes) matrix. Returns a (n_rows, n_modes) array on the
+    target device. dm_array is not copied (unless it contains NaN values,
+    which are set to 0 as in rotshiftzoom_array, or is not contiguous).
+    """
+    n_modes = dm_array.shape[2] if dm_array.ndim == 3 else 1
+    dm_2d = xp.ascontiguousarray(dm_array).reshape(-1, n_modes)
+    # Full NaN check only if the sum is NaN
+    if xp.isnan(xp.sum(dm_2d)) and xp.isnan(dm_2d).any():
+        dm_2d = xp.nan_to_num(dm_2d, copy=True, nan=0.0, posinf=None, neginf=None)
+    operator = scipy.sparse.csr_matrix(operator, dtype=float_dtype)
+    # Sorted indices without duplicates: same summation order on CPU and GPU
+    operator.sum_duplicates()
+
+    if xp is np:
+        return np.ascontiguousarray(operator @ dm_2d)
+
+    return _csr_dense_product_gpu(
+        xp.asarray(operator.data), xp.asarray(operator.indptr),
+        xp.asarray(operator.indices), dm_2d)
+
+
 def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_rotation,
                        wfs_nsubaps, wfs_fov_arcsec, gs_pol_coo, gs_height,
                        wfs_rotation, wfs_translation, wfs_mag_global,
@@ -636,6 +894,13 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
     interpolation step. The slopes (derivatives or telescoping sum) are then
     computed on the transformed phase.
 
+    For given masks, all these steps are linear in the DM array: they are
+    composed into a single sparse matrix (built on CPU from the masks), which
+    is multiplied by the DM array seen as a (n_pixels, n_modes) matrix. No
+    transformed copy of the DM array (or of its derivatives) is allocated.
+    The results are the same as apply_dm_transformations_combined followed
+    by apply_wfs_transformations_combined, up to rounding errors.
+
     Note: WFS transformations must not be applied to derivative maps. The
     gradient of the transformed phase includes the Jacobian of the
     transformation (it mixes the x and y components for rotations and 45 deg
@@ -643,57 +908,45 @@ def interaction_matrix(pup_diam_m, pup_mask, dm_array, dm_mask, dm_height, dm_ro
     which a spatial resampling of the derivative maps does not account for.
     """
 
-    # *** Convert idx_valid_sa if provided ***
-    if idx_valid_sa is not None:
-        idx_valid_sa = to_xp(xp, idx_valid_sa)
-
     if verbose:
         print(f"\n{'='*60}")
         print(f"Interaction Matrix Computation")
         print(f"{'='*60}\n")
 
-    trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
-        apply_dm_transformations_combined(
-            pup_diam_m=pup_diam_m,
-            pup_mask=pup_mask,
-            dm_array=dm_array,
-            dm_mask=dm_mask,
-            gs_pol_coo=gs_pol_coo,
-            gs_height=gs_height,
-            dm_height=dm_height,
-            dm_rotation=dm_rotation,
-            wfs_rotation=wfs_rotation,
-            wfs_translation=wfs_translation,
-            wfs_nsubaps=wfs_nsubaps,
-            slope_method=slope_method,
-            wfs_mag_global=wfs_mag_global,
-            wfs_anamorphosis_90=wfs_anamorphosis_90,
-            wfs_anamorphosis_45=wfs_anamorphosis_45,
-            verbose=verbose,
-            specula_convention=specula_convention
-        )
-    if not display:
-        # Only needed for the display: release it before computing the slopes
-        del trans_dm_array
+    dm_array = to_xp(xp, dm_array, dtype=float_dtype)
+    _check_dm_mask_shape(dm_array, dm_mask, specula_convention)
 
-    # The derivatives are not used afterwards: no copy
-    im = apply_wfs_transformations_combined(
-        derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
-        wfs_nsubaps, wfs_fov_arcsec, pup_diam_m, idx_valid_sa=idx_valid_sa,
-        slope_method=slope_method, verbose=verbose, specula_convention=specula_convention,
-        in_place=True
-    )
+    transform, trans_dm_mask, trans_pup_mask = _combined_transformation(
+        pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation, gs_pol_coo, gs_height,
+        wfs_rotation, wfs_translation, wfs_mag_global, wfs_anamorphosis_90,
+        wfs_anamorphosis_45, specula_convention, verbose=verbose)
+
+    # The whole computation (transformation, masking, edge repair, slopes)
+    # is a sparse linear operator applied to the DM array
+    slopes_x, slopes_y = _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps,
+                                          slope_method)
+    transformation = _transformation_operator(transform, dm_array.shape, specula_convention)
+    operator = _wfs_operator(slopes_x, slopes_y, wfs_nsubaps, wfs_fov_arcsec, pup_diam_m,
+                             idx_valid_sa, specula_convention) @ transformation
+    im = _apply_operator(operator, dm_array)
+
+    if verbose:
+        print(f'  Interaction matrix computed with a sparse operator'
+              f' ({operator.nnz} non-zero elements), shape: {im.shape}')
 
     if display:
         idx_plot = [2, 5]
         pup_mask_cpu = cpuArray(trans_pup_mask)
         trans_dm_mask_cpu = cpuArray(trans_dm_mask)
-        trans_dm_array_cpu = cpuArray(trans_dm_array)
+        # Transformed and masked DM shapes of the two modes
+        dm_modes = cpuArray(dm_array.reshape(transformation.shape[1], -1)[:, idx_plot])
+        trans_dm_array_cpu = (transformation @ dm_modes).reshape(
+            trans_dm_mask_cpu.shape + (len(idx_plot),)) * trans_dm_mask_cpu[:, :, np.newaxis]
         fig, axs = plt.subplots(2, 2)
         im3 = axs[0, 0].imshow(pup_mask_cpu, cmap='seismic')
         axs[0, 1].imshow(trans_dm_mask_cpu, cmap='seismic')
-        axs[1, 0].imshow(trans_dm_array_cpu[:, :, idx_plot[0]], cmap='seismic')
-        axs[1, 1].imshow(trans_dm_array_cpu[:, :, idx_plot[1]], cmap='seismic')
+        axs[1, 0].imshow(trans_dm_array_cpu[:, :, 0], cmap='seismic')
+        axs[1, 1].imshow(trans_dm_array_cpu[:, :, 1], cmap='seismic')
         fig.suptitle(f'Mask, DM mask, DM shapes (modes {idx_plot[0]} and {idx_plot[1]})')
         fig.colorbar(im3, ax=axs.ravel().tolist(), fraction=0.02)
         plt.show()
@@ -752,10 +1005,11 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     Computes interaction matrices for multiple WFS configurations.
     
     Each WFS can have its own guide star position (gs_pol_coo) and height (gs_height).
-    The DM array is converted to the target device once; each WFS is then
-    computed as in interaction_matrix (single combined transformation).
+    The DM array is converted to the target device once; each WFS is
+    computed as in interaction_matrix (single combined transformation, as a
+    sparse operator applied to the DM array).
     WFS with the same guide star, WFS transformations, number of subapertures
-    and slope method share the transformed DM array and the derivatives,
+    and slope method share the transformation and the slope operators,
     which are computed once for the whole group.
     
     Parameters:
@@ -771,8 +1025,8 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
     - slope_method: str, 'derivatives' or 'telsum'
     - specula_convention: bool, optional
     - im_on_cpu: bool, optional, force output interaction matrices on CPU
-    - minimize_memory: bool, optional, kept for compatibility: the intermediate
-      arrays of each group are always released before computing the next one
+    - minimize_memory: bool, optional, kept for compatibility: no transformed
+      copy of the DM array is allocated
     - verbose: bool, optional
     
     Returns:
@@ -842,8 +1096,9 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
 
     # Convert the DM array once, instead of once per WFS
     dm_array = to_xp(xp, dm_array, dtype=float_dtype)
+    _check_dm_mask_shape(dm_array, dm_mask, specula_convention)
 
-    im_list = [None] * len(wfs_params)
+    operators = [None] * len(wfs_params)
     for i_group, members in enumerate(groups.values()):
         first = wfs_params[members[0]]
 
@@ -853,46 +1108,32 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
             print(f"    Subapertures: {first['nsubaps']}x{first['nsubaps']}")
             print(f"    GS: {first['gs_pol_coo']}, height: {first['gs_height']} m")
 
-        trans_dm_array, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
-            apply_dm_transformations_combined(
-                pup_diam_m=pup_diam_m,
-                pup_mask=pup_mask,
-                dm_array=dm_array,
-                dm_mask=dm_mask,
-                dm_height=dm_height,
-                dm_rotation=dm_rotation,
-                gs_pol_coo=first['gs_pol_coo'],
-                gs_height=first['gs_height'],
-                wfs_rotation=first['rotation'],
-                wfs_translation=first['translation'],
-                wfs_nsubaps=first['nsubaps'], slope_method=slope_method,
-                wfs_mag_global=first['mag_global'],
-                wfs_anamorphosis_90=first['anamorphosis_90'],
-                wfs_anamorphosis_45=first['anamorphosis_45'],
-                verbose=False,
-                specula_convention=specula_convention
-            )
-        del trans_dm_array
+        transform, trans_dm_mask, trans_pup_mask = _combined_transformation(
+            pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation,
+            first['gs_pol_coo'], first['gs_height'], first['rotation'],
+            first['translation'], first['mag_global'], first['anamorphosis_90'],
+            first['anamorphosis_45'], specula_convention)
+        slopes_x, slopes_y = _slope_operators(trans_dm_mask, trans_pup_mask,
+                                              first['nsubaps'], slope_method)
+        transformation = _transformation_operator(transform, dm_array.shape,
+                                                  specula_convention)
 
-        # The slope computation modifies the derivatives in place (no copy),
-        # which is correct here: all the WFS of a group have the same pupil mask
+        # Only the subaperture selection and the slope units differ in a group
         for i in members:
             params = wfs_params[i]
-            idx_valid_sa = params['idx_valid_sa']
-            if idx_valid_sa is not None:
-                idx_valid_sa = to_xp(xp, idx_valid_sa)
-            im = apply_wfs_transformations_combined(
-                derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
-                params['nsubaps'], params['fov_arcsec'], pup_diam_m,
-                idx_valid_sa=idx_valid_sa, slope_method=slope_method, verbose=False,
-                specula_convention=specula_convention, in_place=True
-            )
-            im_list[i] = cpuArray(im) if im_on_cpu else im
-            if verbose:
-                print(f"    {params['name']}: IM shape {im.shape}")
+            operators[i] = _wfs_operator(
+                slopes_x, slopes_y, params['nsubaps'], params['fov_arcsec'], pup_diam_m,
+                params['idx_valid_sa'], specula_convention) @ transformation
 
-        # Release the arrays of this group before computing the next one
-        del trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y
+    # One product per WFS (not one with the stacked operators): the results
+    # are identical to interaction_matrix also on GPU, where the rounding of
+    # the sparse product depends on the whole matrix
+    im_list = []
+    for params, operator in zip(wfs_params, operators):
+        im = _apply_operator(operator, dm_array)
+        im_list.append(cpuArray(im) if im_on_cpu else im)
+        if verbose:
+            print(f"    {params['name']}: IM shape {im.shape}")
 
     im_dict = {params['name']: im for params, im in zip(wfs_params, im_list)}
     for name, im in im_dict.items():
@@ -900,7 +1141,7 @@ def interaction_matrices_multi_wfs(pup_diam_m, pup_mask,
 
     derivatives_info = {
         'workflow': 'combined',
-        # WFS names of each group sharing the DM transformation and derivatives
+        # WFS names of each group sharing the DM transformation and slope operators
         'groups': [[wfs_params[i]['name'] for i in members] for members in groups.values()],
         'n_dm_transformations': len(groups),
     }
