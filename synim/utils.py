@@ -8,6 +8,7 @@ from synim import (
     xp, cpuArray, to_xp, float_dtype, affine_transform, rotate, shift, zoom
 )
 from scipy.ndimage import binary_dilation
+import scipy.sparse
 
 # Labels for the extrapolation directions
 directions_labels = ['Down (y+1)', 'Up (y-1)', 'Right (x+1)', 'Left (x-1)']
@@ -269,32 +270,17 @@ def shiftzoom_from_source_dm_params(source_pol_coo, source_height, dm_height, pi
     return shift, zoom
 
 
-def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
-                       dm_rotation=0.0, dm_magnification=(1.0, 1.0),
-                       wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
-                       wfs_magnification=(1.0, 1.0),
-                       wfs_anamorphosis_45=1.0,
-                       output_size=None):
+def rotshiftzoom_matrix(input_shape, output_size, dm_translation=(0.0, 0.0),
+                        dm_rotation=0.0, dm_magnification=(1.0, 1.0),
+                        wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
+                        wfs_magnification=(1.0, 1.0),
+                        wfs_anamorphosis_45=1.0):
     """
-    This function applies magnification, rotation, shift and resize of a
-    2D or 3D numpy/cupy array using affine transformation.
-    Rotation is applied in the same direction as the first function.
-
-    Parameters:
-    - input_array: numpy/cupy array, input data to be transformed
-    - dm_translation: tuple, translation for DM (x, y)
-    - dm_rotation: float, rotation angle for DM in degrees
-    - dm_magnification: tuple, magnification factors for DM (x, y)
-    - wfs_translation: tuple, translation for WFS (x, y)
-    - wfs_rotation: float, rotation angle for WFS in degrees
-    - wfs_magnification: tuple, magnification factors for WFS (x, y)
-    - wfs_anamorphosis_45 (float): Diagonal anamorphosis factor.
-      Values > 1 stretch along +45° diagonal and compress along -45° diagonal.
-      Implemented as a shear transformation.
-    - output_size: tuple, desired output size (height, width)
-
-    Returns:
-    - output: numpy/cupy array, transformed data
+    2x2 matrix and 2-element offset of the affine transformation applied by
+    rotshiftzoom_array (inverse mapping, as in affine_transform: the input
+    coordinates of an output pixel o are matrix @ o + offset) to an array
+    whose first two dimensions are input_shape, with an output of size
+    output_size. The parameters are the same as in rotshiftzoom_array.
     """
 
     # Parameter handling: conversion of single values to tuples
@@ -330,18 +316,8 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     except (TypeError, ValueError):
         wfs_magnification = (1.0, 1.0)
 
-    if xp.isnan(input_array).any():
-        input_array = xp.nan_to_num(input_array, copy=True, nan=0.0, posinf=None, neginf=None)
-
-    # Check if array is 2D or 3D
-    is_3d = len(input_array.shape) == 3
-
-    # resize
-    if output_size is None:
-        output_size = input_array.shape[:2]  # Only take the first two dimensions
-
     # Center of the input array
-    center = xp.array(input_array.shape[:2]) / 2.0
+    center = xp.array(input_shape[:2]) / 2.0
     # Convert rotations to radians
     # Note: Inverting the sign of rotation to match the first function's direction
     dm_rot_rad = xp.deg2rad(-dm_rotation)  # Negative sign to reverse direction
@@ -383,12 +359,6 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     # the inverse matrix must be M_DM_inv * M_WFS_inv.
     combined_matrix = xp.dot(dm_matrix, wfs_matrix)
 
-    # For 3D arrays, extend the transformation matrix to 3x3
-    if is_3d:
-        combined_matrix_3d = xp.eye(3)
-        combined_matrix_3d[:2, :2] = combined_matrix
-        combined_matrix = combined_matrix_3d
-
     # Calculate offset
     output_center = xp.array(output_size) / 2.0
 
@@ -396,17 +366,67 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     # 1. WFS translation is multiplied by the FULL combined matrix.
     # 2. DM translation is multiplied ONLY by the DM rotation matrix.
     rotated_dm_translation = xp.dot(dm_rot_matrix, xp.array(dm_translation)[:2])
-    spatial_combined = combined_matrix[:2, :2] if is_3d else combined_matrix
-    scaled_wfs_translation = xp.dot(spatial_combined, xp.array(wfs_translation)[:2])
+    scaled_wfs_translation = xp.dot(combined_matrix, xp.array(wfs_translation)[:2])
 
+    offset = center - xp.dot(combined_matrix, output_center) \
+        - rotated_dm_translation - scaled_wfs_translation
+
+    return combined_matrix, offset
+
+
+def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
+                       dm_rotation=0.0, dm_magnification=(1.0, 1.0),
+                       wfs_translation=(0.0, 0.0), wfs_rotation=0.0,
+                       wfs_magnification=(1.0, 1.0),
+                       wfs_anamorphosis_45=1.0,
+                       output_size=None):
+    """
+    This function applies magnification, rotation, shift and resize of a
+    2D or 3D numpy/cupy array using affine transformation.
+    Rotation is applied in the same direction as the first function.
+
+    Parameters:
+    - input_array: numpy/cupy array, input data to be transformed
+    - dm_translation: tuple, translation for DM (x, y)
+    - dm_rotation: float, rotation angle for DM in degrees
+    - dm_magnification: tuple, magnification factors for DM (x, y)
+    - wfs_translation: tuple, translation for WFS (x, y)
+    - wfs_rotation: float, rotation angle for WFS in degrees
+    - wfs_magnification: tuple, magnification factors for WFS (x, y)
+    - wfs_anamorphosis_45 (float): Diagonal anamorphosis factor.
+      Values > 1 stretch along +45° diagonal and compress along -45° diagonal.
+      Implemented as a shear transformation.
+    - output_size: tuple, desired output size (height, width)
+
+    Returns:
+    - output: numpy/cupy array, transformed data
+    """
+
+    if xp.isnan(input_array).any():
+        input_array = xp.nan_to_num(input_array, copy=True, nan=0.0, posinf=None, neginf=None)
+
+    # Check if array is 2D or 3D
+    is_3d = len(input_array.shape) == 3
+
+    # resize
+    if output_size is None:
+        output_size = input_array.shape[:2]  # Only take the first two dimensions
+
+    combined_matrix, offset = rotshiftzoom_matrix(
+        input_array.shape[:2], output_size,
+        dm_translation=dm_translation, dm_rotation=dm_rotation,
+        dm_magnification=dm_magnification, wfs_translation=wfs_translation,
+        wfs_rotation=wfs_rotation, wfs_magnification=wfs_magnification,
+        wfs_anamorphosis_45=wfs_anamorphosis_45)
+
+    # For 3D arrays, extend the transformation matrix to 3x3
     if is_3d:
-        offset_2d = center[:2] - xp.dot(spatial_combined, output_center) \
-            - rotated_dm_translation - scaled_wfs_translation
-        offset = xp.zeros(3, dtype=offset_2d.dtype)
-        offset[:2] = offset_2d
-    else:
-        offset = center - xp.dot(combined_matrix, output_center) \
-            - rotated_dm_translation - scaled_wfs_translation
+        combined_matrix_3d = xp.eye(3)
+        combined_matrix_3d[:2, :2] = combined_matrix
+        combined_matrix = combined_matrix_3d
+        offset_3d = xp.zeros(3, dtype=offset.dtype)
+        offset_3d[:2] = offset
+        offset = offset_3d
 
     # Apply transformation (scipy requires numpy)
     output = affine_transform(
@@ -418,6 +438,58 @@ def rotshiftzoom_array(input_array, dm_translation=(0.0, 0.0),
     )
 
     return output
+
+
+def affine_interpolation_matrix(input_shape, output_shape, matrix, offset, transposed=False):
+    """
+    Sparse (n_out, n_in) matrix of the bilinear interpolation done by
+    affine_transform(input, matrix, offset, output_shape, order=1) (constant
+    mode, cval=0) on a 2D array of shape input_shape: output.ravel() is
+    the matrix times input.ravel(). Applied to the (n_pixels, n_modes)
+    reshape of a cube, it transforms all the modes at once.
+
+    As in scipy.ndimage, an output pixel whose input coordinates are outside
+    [0, n - 1] on either axis is 0.
+
+    transposed: if True, the input is the transpose of an array of shape
+        input_shape[::-1] and the column indices refer to that array, so that
+        the matrix applies to the original (not transposed) array.
+
+    Returns a float64 scipy.sparse.csr_matrix (computed on CPU).
+    """
+    matrix = np.asarray(cpuArray(matrix), dtype=np.float64)
+    offset = np.asarray(cpuArray(offset), dtype=np.float64)
+    n0, n1 = input_shape[:2]
+    if n0 < 2 or n1 < 2:
+        raise ValueError(f'The input must have at least 2x2 pixels, got {input_shape}')
+
+    out0, out1 = np.meshgrid(np.arange(output_shape[0], dtype=np.float64),
+                             np.arange(output_shape[1], dtype=np.float64), indexing='ij')
+    c0 = (matrix[0, 0] * out0 + matrix[0, 1] * out1 + offset[0]).ravel()
+    c1 = (matrix[1, 0] * out0 + matrix[1, 1] * out1 + offset[1]).ravel()
+    inside = (c0 >= 0) & (c0 <= n0 - 1) & (c1 >= 0) & (c1 <= n1 - 1)
+    rows = np.flatnonzero(inside)
+    c0 = c0[inside]
+    c1 = c1[inside]
+
+    # Lower neighbour; at the last pixel (c = n - 1) the lower neighbour is
+    # n - 2 with fraction 1, so that the upper neighbour is inside the array
+    i0 = np.minimum(np.floor(c0).astype(np.intp), n0 - 2)
+    i1 = np.minimum(np.floor(c1).astype(np.intp), n1 - 2)
+    f0 = c0 - i0
+    f1 = c1 - i1
+
+    def column(a, b):
+        return b * n0 + a if transposed else a * n1 + b
+
+    cols = np.concatenate((column(i0, i1), column(i0, i1 + 1),
+                           column(i0 + 1, i1), column(i0 + 1, i1 + 1)))
+    values = np.concatenate(((1 - f0) * (1 - f1), (1 - f0) * f1, f0 * (1 - f1), f0 * f1))
+    operator = scipy.sparse.csr_matrix(
+        (values, (np.tile(rows, 4), cols)),
+        shape=(output_shape[0] * output_shape[1], n0 * n1))
+    operator.eliminate_zeros()
+    return operator
 
 
 def dm3d_to_2d(dm_array, mask,
@@ -588,12 +660,16 @@ def rebin_matrix(m, M, dtype=None):
     each row to m / M. The boundaries are computed with integer arithmetic,
     so the overlaps are exact (0 or 1 when M divides m).
     """
+    return to_xp(xp, _rebin_matrix_np(m, M), dtype=float_dtype if dtype is None else dtype)
+
+
+def _rebin_matrix_np(m, M):
+    """rebin_matrix(m, M) as a float64 numpy array."""
     s = np.arange(M)[:, np.newaxis]
     j = np.arange(m)[np.newaxis, :]
     low = np.maximum(s * m, j * M)
     high = np.minimum((s + 1) * m, (j + 1) * M)
-    overlap = np.clip(high - low, 0, None) / M
-    return to_xp(xp, overlap, dtype=float_dtype if dtype is None else dtype)
+    return np.clip(high - low, 0, None) / M
 
 
 def rebin_fractional_sum(array, row_matrix, col_matrix):

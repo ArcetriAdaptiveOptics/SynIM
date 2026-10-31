@@ -40,8 +40,11 @@ SynIM is organized into several main modules:
 **synim.py**
    Core functions for interaction matrix computation:
    
-   - ``interaction_matrix()``: Main function with intelligent workflow selection
+   - ``interaction_matrix()``: Main function, computed as a sparse operator applied to
+     the DM cube (see :ref:`computation_workflows`)
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
+   - ``apply_dm_transformations_combined()`` / ``apply_wfs_transformations_combined()``:
+     explicit step-by-step computation, kept as reference and for debugging
    - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
    - ``compute_telsum_with_extrapolation()``: Telescoping sum estimation from phase differences per subaperture
 
@@ -106,13 +109,16 @@ Computation Workflows
    All the geometric transformations (DM shift, rotation and magnification from
    the guide star direction and height, WFS shift, rotation, magnification and
    anamorphosis) are combined into a single affine transformation, applied to
-   the influence functions in one interpolation step:
+   the influence functions in one interpolation step. Conceptually, the slopes
+   of one DM mode :math:`\varphi` are computed as follows:
 
    1. Combine all DM and WFS transformations into a single composite operation
-   2. Apply it to the influence functions (the phase) in one interpolation step
-   3. Compute derivatives or G-tilts (telescoping sum) with edge repair on the
-      transformed grid
-   4. Bin to subaperture resolution and extract the slopes of the valid subapertures
+      and apply it to the phase in one interpolation step
+   2. Multiply by the transformed DM mask and repair the edges (the pixels just
+      outside the valid region are extrapolated from the inside)
+   3. Compute derivatives or G-tilts (telescoping sum) on the transformed grid
+   4. Average over each subaperture and extract the slopes of the valid
+      subapertures, in slope units
 
    The slope of a subaperture is the mean over its pupil pixels (derivatives)
    or over its pairs of adjacent pupil pixels (telescoping sum), so partially
@@ -128,10 +134,88 @@ Computation Workflows
    anamorphosis scale them), which a resampling of the derivative maps does not
    account for.
 
+**The interaction matrix as a sparse operator**
+   The masks do not depend on the DM mode. Once they are fixed, every step
+   above is a *linear* function of the phase :math:`\varphi` (raveled to a
+   vector of :math:`n_{pix}` pixels), so the whole chain is a product of
+   sparse matrices:
+
+   .. math::
+
+      s = C \, P_{valid} \, M_{sa} \, G \, R \, D_{mask} \, T \, \varphi = A \, \varphi
+
+   :math:`T`
+      Bilinear interpolation of the combined DM + WFS transformation: each
+      output pixel is a weighted sum of at most 4 input pixels. Built by
+      ``utils.affine_interpolation_matrix`` from the matrix and offset of
+      ``utils.rotshiftzoom_matrix`` (``_transformation_operator``).
+   :math:`D_{mask}`
+      Multiplication by the transformed DM mask (diagonal,
+      ``_slope_operators``).
+   :math:`R`
+      Edge repair: the pixels inside the strict DM mask are kept, the edge
+      pixels around it are extrapolated from up to 8 neighbours, all the
+      others are 0 (``_repair_operator``). Derivatives only: the telescoping
+      sum uses only pairs of valid pixels.
+   :math:`G`
+      x and y derivatives (central differences) or differences of adjacent
+      pixels (telescoping sum), restricted to the valid pixels
+      (``_slope_operators``).
+   :math:`M_{sa}`
+      Mean over each subaperture, with the pixel fractions of
+      ``utils.rebin_matrix`` for non-integer ratios, and the subapertures
+      outside the masks set to 0 (``_slope_operators``).
+   :math:`P_{valid}`, :math:`C`
+      Selection of the valid subapertures, x/y order of the convention and
+      conversion to slope units (``_wfs_operator``).
+
+   With the DM cube seen as a matrix :math:`\Phi` of size
+   :math:`n_{pix} \times n_{modes}` (a reshape, not a copy), the interaction
+   matrix is a single product:
+
+   .. math::
+
+      IM = A \, \Phi
+
+   Why this is efficient:
+
+   - :math:`A` does not depend on the number of modes: it is built once from
+     the masks, and the memory used besides the input cube is that of
+     :math:`A` and of the result. No transformed copy of the cube, or of its
+     derivatives, is ever allocated.
+   - :math:`A` is very sparse. The mean of the derivatives over a subaperture
+     *telescopes*: along each row of a subaperture, the sum of the differences
+     of adjacent pixels is the difference between the last and the first
+     pixel, so the interior pixels cancel and only the pixels at the
+     subaperture border keep a non-zero weight (the cancellation is partial
+     only where the masks cut the subaperture). Each slope therefore depends
+     on :math:`O(N)` pixels for :math:`N \times N` pixels per subaperture,
+     not :math:`O(N^2)`. For 480×480 pixels and 40×40 subapertures,
+     :math:`A` has about 200 000 non-zero elements (about 1.6 MB).
+   - :math:`A` is built on CPU in float64 (``scipy.sparse``), including the
+     transformed masks, and rounded once to the working precision, so CPU and
+     GPU use the same operator. The product with the cube runs on the target
+     device. On GPU it uses a small custom CuPy kernel (one thread per element
+     of the result, summing each row in a fixed order) instead of cuSPARSE:
+     the result is bit-wise reproducible, and the cube is read in its C order,
+     without the Fortran-ordered copy that cuSPARSE would need.
+
+   **Relation with the explicit computation.**
+   ``apply_dm_transformations_combined`` (transformed phase and derivatives)
+   and ``apply_wfs_transformations_combined`` (slopes from the derivatives)
+   compute the same chain step by step on the transformed cube. They are kept
+   permanently, as the independent reference for the sparse operator
+   (``test/test_sparse_operator.py`` checks that the two agree for each
+   geometric term, both slope methods and both conventions), and to inspect
+   the transformed phase and derivatives when debugging.
+
    With several WFS (``interaction_matrices_multi_wfs``), the WFS with the same
    guide star, WFS transformations, number of subapertures and slope method
-   share the transformed influence functions and the derivatives, which are
-   computed once for the group (see ``derivatives_info['groups']``).
+   share the transformation and slope operators, which are computed once for
+   the group (see ``derivatives_info['groups']``). The operators of all the WFS
+   are stacked and applied to the cube with a single product, so the cube is
+   read once; each row is computed independently, so the results are identical
+   to ``interaction_matrix``.
 
 **Projection matrices**
    Projection matrices transform scalar fields (DM modes and the projection

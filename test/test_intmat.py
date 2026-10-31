@@ -500,8 +500,12 @@ class TestIntmat(unittest.TestCase):
             specula_convention=True
         )
 
-        # Uses more relaxed tolerances for the LGS case (complex geometric transformations)
-        np.testing.assert_allclose(im_former, im_new, rtol=1e-6, atol=1e-8,
+        # Uses more relaxed tolerances for the LGS case (complex geometric transformations).
+        # On GPU the former method is less accurate (cupyx affine_transform computes the
+        # interpolation coordinates in single precision: differences of a few 1e-6 of
+        # max |IM| from the CPU results, while the new method agrees with CPU to 3e-7)
+        atol = 1e-8 if synim_core.xp is np else 1e-5 * np.abs(im_former).max()
+        np.testing.assert_allclose(im_former, im_new, rtol=1e-6, atol=atol,
                                    err_msg="Former and new methods differ for LGS case")
 
     def test_consistency_single_vs_multi_wfs(self):
