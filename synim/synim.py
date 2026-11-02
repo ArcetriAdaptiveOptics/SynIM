@@ -463,8 +463,9 @@ def _transform_mask(mask, transform, threshold=0.5):
     float64 (scipy.ndimage.affine_transform), so that the masks, and the
     operators that depend on them through their thresholds, are the same on
     CPU and GPU (cupyx affine_transform uses single precision coordinates
-    for single precision arrays). Returns a float_dtype array on the target
-    device.
+    for single precision arrays). Returns a float_dtype numpy array: the
+    operators are built on CPU, only the explicit path needs the masks on
+    the target device.
     """
     transform = dict(transform)
     output_size = transform.pop('output_size')
@@ -473,7 +474,7 @@ def _transform_mask(mask, transform, threshold=0.5):
     trans_mask = scipy.ndimage.affine_transform(
         mask, cpuArray(matrix), offset=cpuArray(offset), output_shape=output_size, order=1)
     trans_mask[trans_mask < threshold] = 0
-    return to_xp(xp, trans_mask, dtype=float_dtype)
+    return trans_mask.astype(float_dtype)
 
 
 def _combined_transformation(pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation,
@@ -490,6 +491,7 @@ def _combined_transformation(pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotati
     - trans_dm_mask: transformed DM mask (values below 0.5 set to 0)
     - trans_pup_mask: pupil mask with the WFS transformations only (values
       below 0.5 set to 0)
+    The masks are numpy arrays (see _transform_mask).
     """
     # *** Compute WFS magnification including anamorphosis at 90° ***
     wfs_magnification = (wfs_mag_global, wfs_mag_global * wfs_anamorphosis_90)
@@ -543,9 +545,9 @@ def _combined_transformation(pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotati
     trans_pup_mask = _transform_mask(pup_mask, dict(
         transform, dm_translation=(0, 0), dm_rotation=0, dm_magnification=(1, 1)))
 
-    if xp.max(trans_dm_mask) <= 0:
+    if np.max(trans_dm_mask) <= 0:
         raise ValueError('Transformed DM mask is empty.')
-    if xp.max(trans_pup_mask) <= 0:
+    if np.max(trans_pup_mask) <= 0:
         raise ValueError('Transformed pupil mask is empty.')
 
     return transform, trans_dm_mask, trans_pup_mask
@@ -579,6 +581,8 @@ def apply_dm_transformations_combined(pup_diam_m, pup_mask, dm_array, dm_mask,
         pup_diam_m, pup_mask, dm_mask, dm_height, dm_rotation, gs_pol_coo, gs_height,
         wfs_rotation, wfs_translation, wfs_mag_global, wfs_anamorphosis_90,
         wfs_anamorphosis_45, specula_convention, verbose=verbose)
+    trans_dm_mask = to_xp(xp, trans_dm_mask)
+    trans_pup_mask = to_xp(xp, trans_pup_mask)
 
     # Apply ALL transformations in one step
     trans_dm_array = rotshiftzoom_array(dm_array, **transform)
@@ -651,7 +655,9 @@ def _difference_operators(n0, n1, slope_method):
     Sparse x and y operators on an n0 x n1 grid: derivatives as _gradient
     (central differences, one-sided at the edges) or, for the telescoping
     sum, differences of adjacent pixels. They depend only on the grid size,
-    so they are cached: all the WFS of a calibration share them.
+    so they are cached: all the WFS of a calibration share them. The
+    returned matrices are shared by all the callers: do not modify them in
+    place (e.g. sort_indices, eliminate_zeros, data *= ...).
     """
     def one_axis(n):
         if slope_method == 'telsum':
