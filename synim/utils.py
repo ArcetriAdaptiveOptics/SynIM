@@ -468,7 +468,6 @@ def affine_interpolation_matrix(input_shape, output_shape, matrix, offset, trans
     c0 = (matrix[0, 0] * out0 + matrix[0, 1] * out1 + offset[0]).ravel()
     c1 = (matrix[1, 0] * out0 + matrix[1, 1] * out1 + offset[1]).ravel()
     inside = (c0 >= 0) & (c0 <= n0 - 1) & (c1 >= 0) & (c1 <= n1 - 1)
-    rows = np.flatnonzero(inside)
     c0 = c0[inside]
     c1 = c1[inside]
 
@@ -482,11 +481,13 @@ def affine_interpolation_matrix(input_shape, output_shape, matrix, offset, trans
     def column(a, b):
         return b * n0 + a if transposed else a * n1 + b
 
-    cols = np.concatenate((column(i0, i1), column(i0, i1 + 1),
-                           column(i0 + 1, i1), column(i0 + 1, i1 + 1)))
-    values = np.concatenate(((1 - f0) * (1 - f1), (1 - f0) * f1, f0 * (1 - f1), f0 * f1))
+    # CSR arrays built directly: 4 neighbours for each output pixel inside the input
+    cols = np.stack((column(i0, i1), column(i0, i1 + 1),
+                     column(i0 + 1, i1), column(i0 + 1, i1 + 1)), axis=1)
+    values = np.stack(((1 - f0) * (1 - f1), (1 - f0) * f1, f0 * (1 - f1), f0 * f1), axis=1)
+    indptr = np.concatenate(([0], np.cumsum(4 * inside)))
     operator = scipy.sparse.csr_matrix(
-        (values, (np.tile(rows, 4), cols)),
+        (values.ravel(), cols.ravel(), indptr),
         shape=(output_shape[0] * output_shape[1], n0 * n1))
     operator.eliminate_zeros()
     return operator

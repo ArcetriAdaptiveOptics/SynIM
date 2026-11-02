@@ -1,7 +1,9 @@
+import functools
 import math
 import warnings
 
 import numpy as np
+import scipy.ndimage
 import scipy.sparse
 
 import synim as _synim
@@ -458,7 +460,7 @@ def _transform_mask(mask, transform, threshold=0.5):
     """
     Mask transformed as rotshiftzoom_array(mask, **transform), with the
     values below threshold set to 0. The interpolation is computed on CPU in
-    float64 (affine_interpolation_matrix), so that the masks, and the
+    float64 (scipy.ndimage.affine_transform), so that the masks, and the
     operators that depend on them through their thresholds, are the same on
     CPU and GPU (cupyx affine_transform uses single precision coordinates
     for single precision arrays). Returns a float_dtype array on the target
@@ -468,8 +470,8 @@ def _transform_mask(mask, transform, threshold=0.5):
     output_size = transform.pop('output_size')
     mask = np.nan_to_num(cpuArray(mask).astype(np.float64), nan=0.0)
     matrix, offset = rotshiftzoom_matrix(mask.shape, output_size, **transform)
-    trans_mask = (affine_interpolation_matrix(mask.shape, output_size, matrix, offset)
-                  @ mask.ravel()).reshape(output_size)
+    trans_mask = scipy.ndimage.affine_transform(
+        mask, cpuArray(matrix), offset=cpuArray(offset), output_shape=output_size, order=1)
     trans_mask[trans_mask < threshold] = 0
     return to_xp(xp, trans_mask, dtype=float_dtype)
 
@@ -643,12 +645,24 @@ def apply_wfs_transformations_combined(derivatives_x, derivatives_y, trans_pup_m
         raise ValueError(f"Unknown slope_method: {slope_method}")
 
 
-def _gradient_operator(n):
-    """(n, n) sparse matrix of _gradient along an axis of length n."""
-    gradient = scipy.sparse.diags([-0.5, 0.5], [-1, 1], shape=(n, n), format='lil')
-    gradient[0, :2] = [-1, 1]
-    gradient[n - 1, n - 2:] = [-1, 1]
-    return gradient.tocsr()
+@functools.lru_cache(maxsize=8)
+def _difference_operators(n0, n1, slope_method):
+    """
+    Sparse x and y operators on an n0 x n1 grid: derivatives as _gradient
+    (central differences, one-sided at the edges) or, for the telescoping
+    sum, differences of adjacent pixels. They depend only on the grid size,
+    so they are cached: all the WFS of a calibration share them.
+    """
+    def one_axis(n):
+        if slope_method == 'telsum':
+            return scipy.sparse.diags([-1.0, 1.0], [0, 1], shape=(n - 1, n))
+        gradient = scipy.sparse.diags([-0.5, 0.5], [-1, 1], shape=(n, n), format='lil')
+        gradient[0, :2] = [-1, 1]
+        gradient[n - 1, n - 2:] = [-1, 1]
+        return gradient
+
+    return (scipy.sparse.kron(scipy.sparse.identity(n0), one_axis(n1), format='csr'),
+            scipy.sparse.kron(one_axis(n0), scipy.sparse.identity(n1), format='csr'))
 
 
 def _repair_operator(strict_mask):
@@ -707,9 +721,6 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
         return scipy.sparse.kron(scipy.sparse.csr_matrix(a), scipy.sparse.csr_matrix(b),
                                  format='csr')
 
-    def adjacent_differences(n):
-        return scipy.sparse.diags([-1.0, 1.0], [0, 1], shape=(n - 1, n))
-
     masking = diag(mask)
     if slope_method == 'derivatives':
         if dm_mask_sa.max() <= 0:
@@ -720,8 +731,7 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
         weight = np.where(weight > 0, weight, 1)
         scale = np.where(combined_mask_sa, (n0 / wfs_nsubaps) / weight, 0)
         mean = diag(scale) @ kron(rows, cols) @ diag(strict_mask & (in_pupil > 0))
-        gradient_x = kron(scipy.sparse.identity(n0), _gradient_operator(n1))
-        gradient_y = kron(_gradient_operator(n0), scipy.sparse.identity(n1))
+        gradient_x, gradient_y = _difference_operators(n0, n1, slope_method)
         return mean @ gradient_x @ repair, mean @ gradient_y @ repair
 
     if slope_method == 'telsum':
@@ -729,17 +739,19 @@ def _slope_operators(trans_dm_mask, trans_pup_mask, wfs_nsubaps, slope_method,
             raise ValueError(f'The telescoping sum needs at least 2 pixels per subaperture:'
                              f' {n0} pixels, {wfs_nsubaps} subapertures.')
         # see _telsum_fractional and _compute_slopes_from_telsum
+        difference_x, difference_y = _difference_operators(n0, n1, slope_method)
+
         def operator(axis):
             if axis == 1:
                 used = in_pupil[:, 1:] * in_pupil[:, :-1]
                 valid = strict_mask[:, 1:] & strict_mask[:, :-1]
                 row_matrix, col_matrix = rows, np.minimum(cols[:, 1:], cols[:, :-1])
-                difference = kron(scipy.sparse.identity(n0), adjacent_differences(n1))
+                difference = difference_x
             else:
                 used = in_pupil[1:] * in_pupil[:-1]
                 valid = strict_mask[1:] & strict_mask[:-1]
                 row_matrix, col_matrix = np.minimum(rows[:, 1:], rows[:, :-1]), cols
-                difference = kron(adjacent_differences(n0), scipy.sparse.identity(n1))
+                difference = difference_y
             weight = row_matrix @ used @ col_matrix.T
             scale = np.where(combined_mask_sa & (weight > 0),
                              (n0 / wfs_nsubaps) / np.where(weight > 0, weight, 1), 0)

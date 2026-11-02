@@ -160,7 +160,8 @@ Computation Workflows
    :math:`G`
       x and y derivatives (central differences) or differences of adjacent
       pixels (telescoping sum), restricted to the valid pixels
-      (``_slope_operators``).
+      (``_slope_operators``; the difference matrices depend only on the grid
+      size and are cached by ``_difference_operators``).
    :math:`M_{sa}`
       Mean over each subaperture, with the pixel fractions of
       ``utils.rebin_matrix`` for non-integer ratios, and the subapertures
