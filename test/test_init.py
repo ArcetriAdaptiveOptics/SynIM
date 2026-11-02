@@ -26,7 +26,8 @@ class TestInit(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr[-2000:])
 
     def test_import_without_init_raises(self):
-        for module in ('synim.synim', 'synim.synpm', 'synim.utils',
+        for module in ('synim.synim', 'synim.geometry', 'synim.reference',
+                       'synim.sparse_operator', 'synim.synpm', 'synim.utils',
                        'synim.params_utils', 'synim.params_manager'):
             with self.subTest(module=module):
                 result = run_python(f"""

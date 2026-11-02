@@ -5,6 +5,7 @@ subapertures):
   integer upsampling
 - slopes (derivatives and telescoping sum) without NaN and without loss at
   the pupil edge, and close to a finely sampled (integer ratio) reference
+  (physical tests, run on the reference and on the optimized implementation)
 - pupil and DM masks not modified, NaN warning on the interaction matrix
 """
 import unittest
@@ -39,14 +40,14 @@ def _modes(n):
     return np.stack(modes, axis=2).astype(np.float32)
 
 
-def _im(n, nsa, slope_method, pup=None, modes=None, dm_mask=None):
+def _im(n, nsa, slope_method, pup=None, modes=None, dm_mask=None, method='operator'):
     pup = _pupil(n) if pup is None else pup
     modes = _modes(n) if modes is None else modes
     dm_mask = np.ones((n, n), dtype=np.float32) if dm_mask is None else dm_mask
     return synim.cpuArray(synim_core.interaction_matrix(
         8.0, pup, modes, dm_mask, 0.0, 0.0, nsa, 4.0,
         (0.0, 0.0), np.inf, 0.0, (0.0, 0.0), 1.0, specula_convention=False,
-        slope_method=slope_method))
+        slope_method=slope_method, method=method))
 
 
 def _upsampled(array, k):
@@ -146,6 +147,11 @@ class TestRebinFractional(unittest.TestCase):
 class TestFractionalSlopes(unittest.TestCase):
     """Interaction matrices with 90 pixels and 12 subapertures (7.5 px/subap)."""
 
+    method = 'reference'
+
+    def _im(self, *args, **kwargs):
+        return _im(*args, method=self.method, **kwargs)
+
     n, nsa = 90, 12
 
     def test_tip_tilt_constant(self):
@@ -154,8 +160,8 @@ class TestFractionalSlopes(unittest.TestCase):
         nsa2 = self.nsa ** 2
         for slope_method in ('derivatives', 'telsum'):
             with self.subTest(slope_method=slope_method):
-                im = _im(self.n, self.nsa, slope_method)
-                im_ref = _im(96, self.nsa, slope_method)
+                im = self._im(self.n, self.nsa, slope_method)
+                im_ref = self._im(96, self.nsa, slope_method)
                 self.assertFalse(np.isnan(im).any())
                 expected = np.median(im_ref[:nsa2, 0][im_ref[:nsa2, 0] != 0])
                 for values in (im[:nsa2, 0], im[nsa2:, 1]):
@@ -189,8 +195,8 @@ class TestFractionalSlopes(unittest.TestCase):
         for slope_method, tol_full, tol_partial in (('derivatives', 5e-3, 1e-2),
                                                      ('telsum', 5e-3, 1e-2)):
             with self.subTest(slope_method=slope_method):
-                im = _im(self.n, self.nsa, slope_method)
-                ref = _im(360, self.nsa, slope_method)
+                im = self._im(self.n, self.nsa, slope_method)
+                ref = self._im(360, self.nsa, slope_method)
                 self.assertEqual(im.shape, (2 * nsa2, 6))
                 norm = np.sqrt(np.mean(ref[full] ** 2, axis=0))
                 err_full = np.sqrt(np.mean((im - ref)[full] ** 2, axis=0)) / norm
@@ -219,6 +225,11 @@ class TestFractionalSlopes(unittest.TestCase):
 class TestTelsumOverPupil(unittest.TestCase):
     """The telescoping sum is averaged over the pupil, as the derivatives."""
 
+    method = 'reference'
+
+    def _im(self, *args, **kwargs):
+        return _im(*args, method=self.method, **kwargs)
+
     def test_independent_of_dm_mask_outside_pupil(self):
         # Only pixel pairs inside the pupil are used: a DM mask larger than
         # the pupil (here the whole array or the pupil without obstruction,
@@ -229,8 +240,8 @@ class TestTelsumOverPupil(unittest.TestCase):
                 yy, xx = np.mgrid[:n, :n]
                 r = np.hypot(xx - c, yy - c)
                 dilated = (r <= n / 2 + 3).astype(np.float32)
-                im_ones = _im(n, 12, 'telsum')
-                im_dilated = _im(n, 12, 'telsum', dm_mask=dilated)
+                im_ones = self._im(n, 12, 'telsum')
+                im_dilated = self._im(n, 12, 'telsum', dm_mask=dilated)
                 np.testing.assert_allclose(im_dilated, im_ones, rtol=0,
                                            atol=1e-5 * np.abs(im_ones).max())
 
@@ -245,11 +256,23 @@ class TestTelsumOverPupil(unittest.TestCase):
                 illumination = np.tile(illumination / illumination.max(), 2)
                 full = illumination > 0.999
                 partial = (illumination > 0.5) & ~full
-                der, tel = _im(n, 12, 'derivatives'), _im(n, 12, 'telsum')
+                der, tel = self._im(n, 12, 'derivatives'), self._im(n, 12, 'telsum')
                 norm = np.sqrt(np.mean(der[full] ** 2, axis=0))
                 for mask, tol in ((full, 0.01), (partial, 0.02)):
                     err = np.sqrt(np.mean((tel - der)[mask] ** 2, axis=0)) / norm
                     self.assertLess(err.max(), tol, err)
+
+
+class TestFractionalSlopesOperator(TestFractionalSlopes):
+    """The same physical tests on the optimized implementation."""
+
+    method = 'operator'
+
+
+class TestTelsumOverPupilOperator(TestTelsumOverPupil):
+    """The same physical tests on the optimized implementation."""
+
+    method = 'operator'
 
 
 class TestMasksAndNaN(unittest.TestCase):

@@ -1,8 +1,10 @@
 """
 interaction_matrices_multi_wfs: WFS with the same guide star, WFS
 transformations, number of subapertures and slope method share the DM
-transformation and the derivatives. The results must be identical to the
-interaction matrices computed one WFS at a time.
+transformation and the slope operators (method='operator') or the
+transformed DM array and the derivatives (method='reference'). With both
+methods the results must be identical to the interaction matrices computed
+one WFS at a time.
 """
 import unittest
 
@@ -41,37 +43,54 @@ class TestMultiWfsGroups(unittest.TestCase):
             dict(common, name='e', fov_arcsec=4.0, magnification=(1.02, 1.0)),
         ]
 
-    def _single(self, config, slope_method):
+    def _single(self, config, slope_method, method):
         mag = config.get('magnification', (1.0, 1.0))
         return synim.cpuArray(synim_core.interaction_matrix(
             8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
             config['nsubaps'], config['fov_arcsec'], tuple(config['gs_pol_coo']),
             config['gs_height'], config['rotation'], tuple(config['translation']),
             float(np.sqrt(mag[0] * mag[1])), wfs_anamorphosis_90=mag[1] / mag[0],
-            idx_valid_sa=config.get('idx_valid_sa'), slope_method=slope_method))
+            idx_valid_sa=config.get('idx_valid_sa'), slope_method=slope_method,
+            method=method))
 
     def test_groups_and_results(self):
-        for slope_method in ('derivatives', 'telsum'):
-            with self.subTest(slope_method=slope_method):
-                im_dict, info = synim_core.interaction_matrices_multi_wfs(
-                    8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
-                    self.configs, slope_method=slope_method)
-                self.assertEqual(info['workflow'], 'combined')
-                self.assertEqual(info['groups'], [['a', 'b', 'd'], ['c'], ['e']])
-                self.assertEqual(info['n_dm_transformations'], 3)
-                self.assertEqual(list(im_dict), ['a', 'b', 'c', 'd', 'e'])
-                for config in self.configs:
-                    np.testing.assert_array_equal(
-                        synim.cpuArray(im_dict[config['name']]),
-                        self._single(config, slope_method),
-                        err_msg=f"WFS {config['name']}")
+        for method in synim_core.METHODS:
+            for slope_method in ('derivatives', 'telsum'):
+                with self.subTest(method=method, slope_method=slope_method):
+                    self._check_groups_and_results(method, slope_method)
+
+    def _check_groups_and_results(self, method, slope_method):
+        im_dict, info = synim_core.interaction_matrices_multi_wfs(
+            8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
+            self.configs, slope_method=slope_method, method=method)
+        self.assertEqual(info['workflow'], 'combined')
+        self.assertEqual(info['groups'], [['a', 'b', 'd'], ['c'], ['e']])
+        self.assertEqual(info['n_dm_transformations'], 3)
+        self.assertEqual(list(im_dict), ['a', 'b', 'c', 'd', 'e'])
+        for config in self.configs:
+            np.testing.assert_array_equal(
+                synim.cpuArray(im_dict[config['name']]),
+                self._single(config, slope_method, method),
+                err_msg=f"WFS {config['name']}")
 
     def test_im_on_cpu(self):
-        im_dict, _ = synim_core.interaction_matrices_multi_wfs(
-            8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
-            self.configs[:2], im_on_cpu=True)
-        for im in im_dict.values():
-            self.assertIsInstance(im, np.ndarray)
+        for method in synim_core.METHODS:
+            with self.subTest(method=method):
+                im_dict, _ = synim_core.interaction_matrices_multi_wfs(
+                    8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
+                    self.configs[:2], im_on_cpu=True, method=method)
+                for im in im_dict.values():
+                    self.assertIsInstance(im, np.ndarray)
+
+    def test_unknown_method(self):
+        with self.assertRaises(ValueError):
+            synim_core.interaction_matrices_multi_wfs(
+                8.0, self.pup_mask, self.dm_array, self.dm_mask, 8000.0, 1.0,
+                self.configs[:1], method='explicit')
+        with self.assertRaises(ValueError):
+            synim_core.interaction_matrix(
+                8.0, self.pup_mask, self.dm_array, self.dm_mask, 0.0, 0.0, N_SUBAPS, 4.0,
+                (0.0, 0.0), np.inf, 0.0, (0.0, 0.0), 1.0, method='explicit')
 
 
 if __name__ == '__main__':

@@ -1,5 +1,13 @@
 """
-Physical checks of the WFS transformations in interaction_matrix.
+Physical tests of the interaction matrix: results predicted from the
+physics, independently of the implementation.
+
+They run on the reference implementation (method='reference',
+synim.reference), where the physics is defined, and on the optimized one
+(method='operator'). Unlike the equivalence test (test_sparse_operator.py),
+they also check the geometry shared by the two implementations
+(synim.geometry): an error there (e.g. the sign of a rotation, or the
+masks) would not show up as a difference between the two.
 
 For a linear phase (tilt), the slopes of the transformed WFS are
     g' = A^T g
@@ -11,7 +19,10 @@ rounding.
 The tests estimate the 2x2 matrix C that maps the slopes of the reference
 WFS (no transformation) to the slopes of the transformed WFS, and check its
 invariants (eigenvalues, orthogonality, rotation angle). These do not depend
-on axis ordering or sign conventions.
+on axis ordering or sign conventions, except for the 90 deg rotation test,
+which pins the current sign convention of the rotation.
+The absolute value of the slopes of a tilt is checked against the
+definition of the slope units.
 """
 import unittest
 
@@ -23,6 +34,7 @@ import synim.synim as synim_core
 N_PIX = 120
 N_SUBAPS = 12
 PUP_DIAM_M = 8.0
+FOV_ARCSEC = 4.0
 TOL = 1e-4
 
 
@@ -32,6 +44,8 @@ def _tilt_modes(n):
 
 
 class TestWfsTransformationsOnTilt(unittest.TestCase):
+
+    method = 'reference'
 
     @classmethod
     def setUpClass(cls):
@@ -56,8 +70,8 @@ class TestWfsTransformationsOnTilt(unittest.TestCase):
         params.update(wfs_params)
         im = synim.cpuArray(synim_core.interaction_matrix(
             PUP_DIAM_M, self.pup_mask, self.modes, self.dm_mask,
-            wfs_nsubaps=N_SUBAPS, wfs_fov_arcsec=4.0, slope_method=slope_method,
-            **params)).astype(np.float64)
+            wfs_nsubaps=N_SUBAPS, wfs_fov_arcsec=FOV_ARCSEC, slope_method=slope_method,
+            method=self.method, **params)).astype(np.float64)
         n_sa = N_SUBAPS * N_SUBAPS
         first, second = im[:n_sa][self.central], im[n_sa:][self.central]
         # Uniform gradient: all central subapertures must give the same slopes
@@ -113,6 +127,61 @@ class TestWfsTransformationsOnTilt(unittest.TestCase):
         mag = 1.05
         c = self._transfer_matrix(dict(wfs_mag_global=mag), slope_method='telsum')
         np.testing.assert_allclose(c, np.eye(2) / mag, rtol=0, atol=TOL)
+
+    def test_tilt_slope_value(self):
+        """A tilt of 1 nm per pixel gives a phase difference of N nm across a
+        subaperture of N pixels and size d, i.e. a tilt of N * 1e-9 / d rad;
+        the slopes are in units of half the WFS field of view."""
+        n_pix_sa = N_PIX / N_SUBAPS
+        d = PUP_DIAM_M / N_SUBAPS
+        expected = n_pix_sa * 1e-9 / d * 206265 / (FOV_ARCSEC / 2)
+        for slope_method in ('derivatives', 'telsum'):
+            for specula_convention in (True, False):
+                with self.subTest(slope_method=slope_method,
+                                  specula_convention=specula_convention):
+                    s = self._slope_matrix(dict(specula_convention=specula_convention),
+                                           slope_method)
+                    # the first slope is along the second axis of the DM array
+                    # (the first mode) in both conventions
+                    np.testing.assert_allclose(s, expected * np.eye(2), rtol=0,
+                                               atol=TOL * expected)
+
+    def test_rotation_90(self):
+        """A 90 deg rotation swaps the x and y slopes (with the current sign
+        convention, x -> y and y -> -x), as three 30 deg rotations."""
+        c = self._transfer_matrix(dict(wfs_rotation=90.0))
+        np.testing.assert_allclose(c, [[0, -1], [1, 0]], rtol=0, atol=TOL)
+        c_30 = self._transfer_matrix(dict(wfs_rotation=30.0))
+        np.testing.assert_allclose(c, np.linalg.matrix_power(c_30, 3), rtol=0, atol=10 * TOL)
+
+    def test_lgs_cone(self):
+        """With a guide star at height h, the footprint on a DM at height H is
+        smaller by 1 - H / h, and the slopes of a tilt on the DM scale by the
+        same factor."""
+        dm_height, gs_height = 8000.0, 90e3
+        c = self._transfer_matrix(dict(dm_height=dm_height, gs_height=gs_height))
+        np.testing.assert_allclose(c, (1 - dm_height / gs_height) * np.eye(2), rtol=0,
+                                   atol=TOL)
+
+    def test_off_axis_shift(self):
+        """An off-axis guide star shifts the footprint on an altitude DM:
+        the slopes of a tilt do not change."""
+        c = self._transfer_matrix(dict(dm_height=8000.0, gs_pol_coo=(30.0, 40.0)))
+        np.testing.assert_allclose(c, np.eye(2), rtol=0, atol=TOL)
+
+    def test_dm_rotation(self):
+        angle = 20.0
+        c = self._transfer_matrix(dict(dm_rotation=angle))
+        np.testing.assert_allclose(c @ c.T, np.eye(2), rtol=0, atol=TOL)
+        self.assertAlmostEqual(np.linalg.det(c), 1.0, delta=TOL)
+        measured = np.degrees(np.arccos(np.clip(c[0, 0], -1, 1)))
+        self.assertAlmostEqual(measured, angle, delta=1e-2)
+
+
+class TestWfsTransformationsOnTiltOperator(TestWfsTransformationsOnTilt):
+    """The same physical tests on the optimized implementation."""
+
+    method = 'operator'
 
 
 if __name__ == '__main__':

@@ -1,3 +1,8 @@
+"""
+Physical test of the reference implementation (synim.reference): a pure
+tilt gives the slopes predicted from its gradient and the slope units, with
+the derivatives and with the telescoping sum, computed step by step.
+"""
 import unittest
 import numpy as np
 
@@ -5,7 +10,7 @@ import numpy as np
 import specula
 specula.init(device_idx=-1, precision=1)
 
-import synim.synim as synim_core
+import synim.reference as synim_core
 from test import on_backend
 
 # numpy arrays in and out, with the SynIM backend (CPU or GPU)
