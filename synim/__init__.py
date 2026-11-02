@@ -31,8 +31,8 @@ gpu_complex_dtype_list = cpu_complex_dtype_list
 # "from synim import ..." when they are imported: synim.init() must be
 # called before importing any of them.
 _CONFIG_DEPENDENT_MODULES = (
-    'synim.synim', 'synim.synpm', 'synim.utils', 'synim.params_utils',
-    'synim.params_manager',
+    'synim.synim', 'synim.geometry', 'synim.reference', 'synim.sparse_operator',
+    'synim.synpm', 'synim.utils', 'synim.params_utils', 'synim.params_manager',
 )
 
 
@@ -64,7 +64,8 @@ def init(device_idx=-1, precision=1):
     Initialize SynIM with numpy or cupy backend.
 
     Must be called before importing the SynIM submodules (synim.synim,
-    synim.synpm, synim.utils, synim.params_utils, synim.params_manager):
+    synim.geometry, synim.reference, synim.sparse_operator, synim.synpm,
+    synim.utils, synim.params_utils, synim.params_manager):
     they bind the array library and the data types when they are imported.
     Calling it again after those imports with the same configuration has no
     effect; with a different configuration it raises a RuntimeError.

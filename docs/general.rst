@@ -38,15 +38,29 @@ Core Components
 SynIM is organized into several main modules:
 
 **synim.py**
-   Core functions for interaction matrix computation:
-   
-   - ``interaction_matrix()``: Main function, computed as a sparse operator applied to
-     the DM cube (see :ref:`computation_workflows`)
+   Public API for interaction matrix computation:
+
+   - ``interaction_matrix()``: Main function (see :ref:`computation_workflows`)
    - ``interaction_matrices_multi_wfs()``: Optimized multi-WFS computation
-   - ``apply_dm_transformations_combined()`` / ``apply_wfs_transformations_combined()``:
-     explicit step-by-step computation, kept as reference and for debugging
-   - ``compute_derivatives_with_extrapolation()``: Numerical derivatives with edge handling
-   - ``compute_telsum_with_extrapolation()``: Telescoping sum estimation from phase differences per subaperture
+   - ``compute_subaperture_illumination()``: relative illumination of the subapertures
+
+   ``interaction_matrix()`` and ``interaction_matrices_multi_wfs()`` take a
+   ``method`` argument that selects one of the two implementations of the
+   interaction matrix (see
+   :ref:`reference_and_optimized`):
+
+   - ``'operator'`` (default), **sparse_operator.py**: the whole computation as
+     one sparse linear operator applied to the DM cube
+   - ``'reference'``, **reference.py**: the explicit step-by-step computation
+     (``apply_dm_transformations_combined()`` /
+     ``apply_wfs_transformations_combined()``,
+     ``compute_derivatives_with_extrapolation()``,
+     ``compute_telsum_with_extrapolation()``)
+
+   The geometry shared by the two implementations (combined transformation,
+   transformed masks, valid subapertures, slope units) is in **geometry.py**.
+   The functions that moved to these modules are still available as
+   ``synim.synim.<name>``.
 
    Slope extraction supports two methods controlled by ``slope_method`` argument of the main functions:
 
@@ -202,13 +216,9 @@ Computation Workflows
      without the Fortran-ordered copy that cuSPARSE would need.
 
    **Relation with the explicit computation.**
-   ``apply_dm_transformations_combined`` (transformed phase and derivatives)
-   and ``apply_wfs_transformations_combined`` (slopes from the derivatives)
-   compute the same chain step by step on the transformed cube. They are kept
-   permanently, as the independent reference for the sparse operator
-   (``test/test_sparse_operator.py`` checks that the two agree for each
-   geometric term, both slope methods and both conventions), and to inspect
-   the transformed phase and derivatives when debugging.
+   The reference implementation (``method='reference'``) computes the same
+   chain step by step on the transformed cube, see
+   :ref:`reference_and_optimized`.
 
    With several WFS (``interaction_matrices_multi_wfs``), the WFS with the same
    guide star, WFS transformations, number of subapertures and slope method
@@ -216,7 +226,79 @@ Computation Workflows
    the group (see ``derivatives_info['groups']``). The operators of all the WFS
    are stacked and applied to the cube with a single product, so the cube is
    read once; each row is computed independently, so the results are identical
-   to ``interaction_matrix``.
+   to ``interaction_matrix``. With ``method='reference'`` the WFS of a group
+   share the transformed cube and its derivatives instead.
+
+.. _reference_and_optimized:
+
+**Reference and optimized implementations**
+   The interaction matrix has two implementations, selected with the
+   ``method`` argument of ``interaction_matrix`` and
+   ``interaction_matrices_multi_wfs``:
+
+   ``'reference'`` (``synim/reference.py``)
+      The explicit computation, one step at a time on the DM cube:
+      ``apply_dm_transformations_combined`` (transformed phase, masking, edge
+      repair, derivatives or telescoping sum) and
+      ``apply_wfs_transformations_combined`` (mean over the subapertures,
+      valid subapertures, slope units). Every step returns arrays that can be
+      inspected. It needs memory for the transformed cube and its
+      derivatives, so it is meant for validation and debugging.
+   ``'operator'`` (default, ``synim/sparse_operator.py``)
+      The same chain as one sparse operator (see above): much faster and
+      with much less memory.
+
+   The two implementations do not decompose into the same steps (arrays in
+   the reference, sparse operators in the optimized one), so they are two
+   separate modules rather than two variants of the same functions. What
+   they share, and only that, is in ``synim/geometry.py``: the combined
+   transformation and the transformed masks (``_combined_transformation``,
+   ``_transform_mask``), the selection of the valid subapertures
+   (``_valid_sa_indices``) and the slope units (``_slope_units``).
+
+   **Rotation convention.** ``dm_rotation`` and ``wfs_rotation`` both rotate
+   the phase map, in the same direction as the SPECULA ``rotInDeg`` (of a DM
+   or an atmospheric layer) and ``rotAnglePhInDeg`` (of a SH WFS): on a tilt,
+   a DM rotation and a WFS rotation by the same angle give the same slopes.
+   A rotation of +90° maps the x slopes to y and the y slopes to −x
+   (``test_rotation_90``, ``test_dm_rotation``).
+
+   **Rule for changes.** The reference implementation is where the physics
+   is defined. Every change to the computation of the interaction matrix is
+   made first in ``reference.py`` (or ``geometry.py``) and checked with the
+   physical tests, then ported to ``sparse_operator.py``; the equivalence
+   test must pass before the change is merged.
+
+   **Tests.**
+
+   - *Equivalence* (``test/test_sparse_operator.py``,
+     ``test/test_multi_wfs_groups.py``): the two methods give the same
+     interaction matrices, up to rounding, for each geometric term, both
+     slope methods, both conventions, integer and non-integer numbers of
+     pixels per subaperture, with and without a selection of the valid
+     subapertures, for one and for several WFS.
+   - *Physical* (``test/test_wfs_transformations.py``,
+     ``test/test_slope_method.py``, ``test/test_fractional_subapertures.py``):
+     results predicted from the physics, run on the reference implementation
+     and, except for the step-by-step functions of ``test_slope_method.py``,
+     also on the optimized one. The equivalence test checks consistency, not
+     physics: an error in ``geometry.py`` would affect both methods in the
+     same way, so only the physical tests can detect it. They check the
+     absolute value of the slopes of a tilt, a 90° WFS rotation swapping x
+     and y, rotations, magnifications and anamorphoses of the WFS, the cone
+     effect of a laser guide star (slopes scaled by
+     :math:`1 - h_{dm}/H_{lgs}`, DM at height :math:`h_{dm}`, guide star at
+     height :math:`H_{lgs}`), the shift from an off-axis guide star, the sign
+     of DM rotations, and subapertures with
+     a non-integer number of pixels against a finely sampled computation.
+   - *Regression* (``test/test_regression_reference.py``): results of the
+     default method against stored values.
+
+   To use the reference from a script, e.g. to check a result:
+
+   .. code-block:: python
+
+      im_ref = synim.synim.interaction_matrix(..., method='reference')
 
 **Projection matrices**
    Projection matrices transform scalar fields (DM modes and the projection

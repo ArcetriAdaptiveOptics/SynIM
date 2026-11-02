@@ -1,15 +1,22 @@
 """
+Equivalence of the two implementations of the interaction matrix (see
+"Reference and optimized implementations" in docs/general.rst).
+
 interaction_matrix and interaction_matrices_multi_wfs compute the
-interaction matrix as a sparse linear operator applied to the DM array
-(see "Computation Workflows" in docs/general.rst). The explicit computation
-on the transformed DM array (apply_dm_transformations_combined followed by
-apply_wfs_transformations_combined) is kept as the independent reference:
-the two must give the same results, up to rounding errors, for both slope
-methods, both conventions, integer and non-integer numbers of pixels per
-subaperture, with and without a selection of the valid subapertures, and
-for each geometric term separately (DM rotation, DM shift and magnification
-from the guide star, WFS rotation, shift, magnification and both
-anamorphoses) and combined.
+interaction matrix with method='operator' (default, synim.sparse_operator)
+as a sparse linear operator applied to the DM array, and with
+method='reference' (synim.reference) explicitly on the transformed DM array
+(apply_dm_transformations_combined followed by
+apply_wfs_transformations_combined). The two must give the same results, up
+to rounding errors, for both slope methods, both conventions, integer and
+non-integer numbers of pixels per subaperture, with and without a selection
+of the valid subapertures, and for each geometric term separately (DM
+rotation, DM shift and magnification from the guide star, WFS rotation,
+shift, magnification and both anamorphoses) and combined.
+
+This test checks consistency, not physics: the geometry shared by the two
+implementations (synim.geometry) is checked by the physical tests
+(test/test_wfs_transformations.py and the others listed in the docs).
 """
 import itertools
 import unittest
@@ -83,21 +90,14 @@ class TestSparseOperator(unittest.TestCase):
                        wfs_nsubaps=n_subaps,
                        idx_valid_sa=self.idx_valid_sa[n_subaps] if select else None)
 
-    def _explicit(self, geometry, options):
-        """Interaction matrix computed explicitly on the transformed DM array."""
+    def _reference(self, geometry, options):
+        """Interaction matrix of the reference implementation."""
         options = dict(options)
-        idx_valid_sa = options.pop('idx_valid_sa')
-        if idx_valid_sa is not None:
-            idx_valid_sa = synim.xp.asarray(idx_valid_sa)
-        _, trans_dm_mask, trans_pup_mask, derivatives_x, derivatives_y = \
-            synim_core.apply_dm_transformations_combined(
-                PUP_DIAM_M, self.pup_mask, self.dm_array, self.dm_mask,
-                **geometry, **options)
-        return synim.cpuArray(synim_core.apply_wfs_transformations_combined(
-            derivatives_x, derivatives_y, trans_pup_mask, trans_dm_mask,
-            options['wfs_nsubaps'], FOV_ARCSEC, PUP_DIAM_M, idx_valid_sa=idx_valid_sa,
-            slope_method=options['slope_method'],
-            specula_convention=options['specula_convention'], in_place=True))
+        if options['idx_valid_sa'] is not None:
+            options['idx_valid_sa'] = synim.xp.asarray(options['idx_valid_sa'])
+        return synim.cpuArray(synim_core.interaction_matrix(
+            PUP_DIAM_M, self.pup_mask, self.dm_array, self.dm_mask,
+            wfs_fov_arcsec=FOV_ARCSEC, method='reference', **geometry, **options))
 
     def assert_same(self, im, expected):
         im = synim.cpuArray(im)
@@ -113,7 +113,7 @@ class TestSparseOperator(unittest.TestCase):
                     im = synim_core.interaction_matrix(
                         PUP_DIAM_M, self.pup_mask, self.dm_array, self.dm_mask,
                         wfs_fov_arcsec=FOV_ARCSEC, **geometry, **options)
-                    self.assert_same(im, self._explicit(geometry, options))
+                    self.assert_same(im, self._reference(geometry, options))
 
     def test_interaction_matrices_multi_wfs(self):
         """All the geometries with the same DM parameters in one call, one WFS each."""
@@ -136,10 +136,11 @@ class TestSparseOperator(unittest.TestCase):
                         magnification=(mag / np.sqrt(anam_90), mag * np.sqrt(anam_90)),
                         anamorphosis_45=geometry['wfs_anamorphosis_45'],
                         idx_valid_sa=options['idx_valid_sa']))
-                im_dict, _ = synim_core.interaction_matrices_multi_wfs(
+                im_dicts = {method: synim_core.interaction_matrices_multi_wfs(
                     PUP_DIAM_M, self.pup_mask, self.dm_array, self.dm_mask,
                     dm_height, dm_rotation, configs, slope_method=options['slope_method'],
-                    specula_convention=options['specula_convention'])
+                    specula_convention=options['specula_convention'], method=method)[0]
+                    for method in ('operator', 'reference')}
 
                 for config, (name, geometry) in zip(configs, geometries):
                     with self.subTest(geometry=name, **{
@@ -147,10 +148,12 @@ class TestSparseOperator(unittest.TestCase):
                             for k, v in options.items()}):
                         # same magnification parameters as the multi-WFS function
                         mag, anam_90 = synim_core._wfs_magnification_params(config)
-                        expected = self._explicit(
+                        expected = self._reference(
                             dict(geometry, wfs_mag_global=mag, wfs_anamorphosis_90=anam_90),
                             options)
-                        self.assert_same(im_dict[name], expected)
+                        np.testing.assert_array_equal(
+                            synim.cpuArray(im_dicts['reference'][name]), expected)
+                        self.assert_same(im_dicts['operator'][name], expected)
 
     def test_interpolation_matrix(self):
         """affine_interpolation_matrix gives the same result as rotshiftzoom_array."""
@@ -176,7 +179,7 @@ class TestSparseOperator(unittest.TestCase):
 
     def test_non_finite_values(self):
         """NaN and inf values of the DM array are replaced with nan_to_num, as
-        rotshiftzoom_array does in the explicit computation."""
+        rotshiftzoom_array does in the reference implementation."""
         geometry = dict(NO_TRANSFORMATION, **GEOMETRIES['all'])
         for value in (np.nan, np.inf):
             with self.subTest(value=value):
@@ -189,6 +192,37 @@ class TestSparseOperator(unittest.TestCase):
                     for array in (dm_array, np.nan_to_num(dm_array)))
                 np.testing.assert_array_equal(im, expected)
                 self.assertFalse(np.isnan(im).any())
+
+class TestModuleLayout(unittest.TestCase):
+
+    def test_names_kept_in_synim_synim(self):
+        """The functions moved to synim.geometry, synim.reference and
+        synim.sparse_operator are still available as synim.synim.<name>."""
+        import synim.geometry
+        import synim.reference
+        import synim.sparse_operator
+        for module, names in (
+                (synim.geometry, ('_without_nan', '_warn_if_nan', '_valid_sa_indices',
+                                  '_check_dm_mask_shape', '_transform_mask',
+                                  '_combined_transformation')),
+                (synim.reference, ('_repair_interpolated_phase',
+                                   'compute_telsum_with_extrapolation', '_telsum_fractional',
+                                   '_compute_slopes_from_telsum', '_gradient',
+                                   'compute_derivatives_with_extrapolation',
+                                   '_compute_slopes_from_derivatives',
+                                   'apply_dm_transformations_combined',
+                                   'apply_wfs_transformations_combined')),
+                (synim.sparse_operator, ('_difference_operators', '_repair_operator',
+                                         '_slope_operators', '_wfs_operator',
+                                         '_transformation_operator', '_CSR_DENSE_KERNEL_CODE',
+                                         '_apply_operator'))):
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertIs(getattr(synim_core, name), getattr(module, name))
+
+    def test_methods(self):
+        self.assertEqual(list(synim_core.METHODS), ['operator', 'reference'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -11,6 +11,7 @@ import numpy as np
 
 import synim
 import synim.synim as synim_core
+import synim.sparse_operator as sparse_operator
 import synim.params_utils as params_utils
 from synim.utils import apply_mask, rebin, dm2d_to_3d
 
@@ -83,21 +84,23 @@ class TestDoubleInputsSinglePrecision(unittest.TestCase):
         # record the dtype of the DM cube multiplied by the sparse operator
         # (the masks are transformed in float64 on purpose: they are 2D)
         dtypes = []
-        original = synim_core._apply_operator
+        original = sparse_operator._apply_operator
 
         def spy(operator, array, *args, **kwargs):
             dtypes.append(array.dtype)
             return original(operator, array, *args, **kwargs)
 
-        synim_core._apply_operator = spy
+        sparse_operator._apply_operator = spy
         try:
-            for slope_method in ('derivatives', 'telsum'):
-                im = synim_core.interaction_matrix(
-                    8.0, self.pup_mask, self.dm_array, self.dm_mask, 0.0, 0.0, 8, 4.0,
-                    (10.0, 0.0), 90e3, 5.0, (0.0, 0.0), 1.0, slope_method=slope_method)
-                self.assertEqual(im.dtype, np.float32)
+            for method in synim_core.METHODS:
+                for slope_method in ('derivatives', 'telsum'):
+                    im = synim_core.interaction_matrix(
+                        8.0, self.pup_mask, self.dm_array, self.dm_mask, 0.0, 0.0, 8, 4.0,
+                        (10.0, 0.0), 90e3, 5.0, (0.0, 0.0), 1.0, slope_method=slope_method,
+                        method=method)
+                    self.assertEqual(im.dtype, np.float32)
         finally:
-            synim_core._apply_operator = original
+            sparse_operator._apply_operator = original
         self.assertTrue(dtypes)
         self.assertTrue(all(d == np.float32 for d in dtypes), dtypes)
 
