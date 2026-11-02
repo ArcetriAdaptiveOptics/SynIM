@@ -80,15 +80,16 @@ class TestDoubleInputsSinglePrecision(unittest.TestCase):
         self.assertEqual(synim.float_dtype, np.float32)
 
     def test_interaction_matrix(self):
-        # record the dtype of every array transformed by rotshiftzoom_array
+        # record the dtype of the DM cube multiplied by the sparse operator
+        # (the masks are transformed in float64 on purpose: they are 2D)
         dtypes = []
-        original = synim_core.rotshiftzoom_array
+        original = synim_core._apply_operator
 
-        def spy(array, *args, **kwargs):
+        def spy(operator, array, *args, **kwargs):
             dtypes.append(array.dtype)
-            return original(array, *args, **kwargs)
+            return original(operator, array, *args, **kwargs)
 
-        synim_core.rotshiftzoom_array = spy
+        synim_core._apply_operator = spy
         try:
             for slope_method in ('derivatives', 'telsum'):
                 im = synim_core.interaction_matrix(
@@ -96,7 +97,7 @@ class TestDoubleInputsSinglePrecision(unittest.TestCase):
                     (10.0, 0.0), 90e3, 5.0, (0.0, 0.0), 1.0, slope_method=slope_method)
                 self.assertEqual(im.dtype, np.float32)
         finally:
-            synim_core.rotshiftzoom_array = original
+            synim_core._apply_operator = original
         self.assertTrue(dtypes)
         self.assertTrue(all(d == np.float32 for d in dtypes), dtypes)
 
