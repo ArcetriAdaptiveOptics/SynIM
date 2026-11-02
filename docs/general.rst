@@ -256,6 +256,13 @@ Computation Workflows
    ``_transform_mask``), the selection of the valid subapertures
    (``_valid_sa_indices``) and the slope units (``_slope_units``).
 
+   **Rotation convention.** ``dm_rotation`` and ``wfs_rotation`` both rotate
+   the phase map, in the same direction as the SPECULA ``rotInDeg`` (of a DM
+   or an atmospheric layer) and ``rotAnglePhInDeg`` (of a SH WFS): on a tilt,
+   a DM rotation and a WFS rotation by the same angle give the same slopes.
+   A rotation of +90° maps the x slopes to y and the y slopes to −x
+   (``test_rotation_90``, ``test_dm_rotation``).
+
    **Rule for changes.** The reference implementation is where the physics
    is defined. Every change to the computation of the interaction matrix is
    made first in ``reference.py`` (or ``geometry.py``) and checked with the
@@ -279,8 +286,10 @@ Computation Workflows
      same way, so only the physical tests can detect it. They check the
      absolute value of the slopes of a tilt, a 90° WFS rotation swapping x
      and y, rotations, magnifications and anamorphoses of the WFS, the cone
-     effect of a laser guide star (slopes scaled by :math:`1 - H/h`), the
-     shift from an off-axis guide star, DM rotations, and subapertures with
+     effect of a laser guide star (slopes scaled by
+     :math:`1 - h_{dm}/H_{lgs}`, DM at height :math:`h_{dm}`, guide star at
+     height :math:`H_{lgs}`), the shift from an off-axis guide star, the sign
+     of DM rotations, and subapertures with
      a non-integer number of pixels against a finely sampled computation.
    - *Regression* (``test/test_regression_reference.py``): results of the
      default method against stored values.

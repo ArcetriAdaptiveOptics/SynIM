@@ -155,13 +155,12 @@ class TestWfsTransformationsOnTilt(unittest.TestCase):
         np.testing.assert_allclose(c, np.linalg.matrix_power(c_30, 3), rtol=0, atol=10 * TOL)
 
     def test_lgs_cone(self):
-        """With a guide star at height h, the footprint on a DM at height H is
-        smaller by 1 - H / h, and the slopes of a tilt on the DM scale by the
-        same factor."""
-        dm_height, gs_height = 8000.0, 90e3
-        c = self._transfer_matrix(dict(dm_height=dm_height, gs_height=gs_height))
-        np.testing.assert_allclose(c, (1 - dm_height / gs_height) * np.eye(2), rtol=0,
-                                   atol=TOL)
+        """With a guide star at height H_lgs, the footprint on a DM at height
+        h_dm is smaller by 1 - h_dm / H_lgs, and the slopes of a tilt on the DM
+        scale by the same factor."""
+        h_dm, H_lgs = 8000.0, 90e3
+        c = self._transfer_matrix(dict(dm_height=h_dm, gs_height=H_lgs))
+        np.testing.assert_allclose(c, (1 - h_dm / H_lgs) * np.eye(2), rtol=0, atol=TOL)
 
     def test_off_axis_shift(self):
         """An off-axis guide star shifts the footprint on an altitude DM:
@@ -170,12 +169,22 @@ class TestWfsTransformationsOnTilt(unittest.TestCase):
         np.testing.assert_allclose(c, np.eye(2), rtol=0, atol=TOL)
 
     def test_dm_rotation(self):
-        angle = 20.0
-        c = self._transfer_matrix(dict(dm_rotation=angle))
-        np.testing.assert_allclose(c @ c.T, np.eye(2), rtol=0, atol=TOL)
-        self.assertAlmostEqual(np.linalg.det(c), 1.0, delta=TOL)
-        measured = np.degrees(np.arccos(np.clip(c[0, 0], -1, 1)))
-        self.assertAlmostEqual(measured, angle, delta=1e-2)
+        """A DM rotation rotates the slopes of a tilt. dm_rotation and
+        wfs_rotation rotate the phase map in the same direction (as the
+        SPECULA rotInDeg of a DM or layer and rotAnglePhInDeg of a SH WFS),
+        so the same angle gives the same transfer matrix (this pins the sign
+        of the DM rotation, as test_rotation_90 does for the WFS)."""
+        for angle in (20.0, -20.0, 90.0):
+            with self.subTest(dm_rotation=angle):
+                c = self._transfer_matrix(dict(dm_rotation=angle))
+                np.testing.assert_allclose(c @ c.T, np.eye(2), rtol=0, atol=TOL)
+                self.assertAlmostEqual(np.linalg.det(c), 1.0, delta=TOL)
+                measured = np.degrees(np.arccos(np.clip(c[0, 0], -1, 1)))
+                self.assertAlmostEqual(measured, abs(angle), delta=1e-2)
+                np.testing.assert_allclose(
+                    c, self._transfer_matrix(dict(wfs_rotation=angle)), rtol=0, atol=TOL)
+        np.testing.assert_allclose(self._transfer_matrix(dict(dm_rotation=90.0)),
+                                   [[0, -1], [1, 0]], rtol=0, atol=TOL)
 
 
 class TestWfsTransformationsOnTiltOperator(TestWfsTransformationsOnTilt):
