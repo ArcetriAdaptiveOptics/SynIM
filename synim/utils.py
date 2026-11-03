@@ -316,8 +316,9 @@ def rotshiftzoom_matrix(input_shape, output_size, dm_translation=(0.0, 0.0),
     except (TypeError, ValueError):
         wfs_magnification = (1.0, 1.0)
 
-    # Center of the input array
-    center = xp.array(input_shape[:2]) / 2.0
+    # Center of the input array: pixel i is centred at i, so the centre of
+    # N pixels is (N - 1) / 2 (the same convention as SPECULA AtmoPropagation)
+    center = (xp.array(input_shape[:2]) - 1) / 2.0
     # Convert rotations to radians
     # Note: Inverting the sign of rotation to match the first function's direction
     dm_rot_rad = xp.deg2rad(-dm_rotation)  # Negative sign to reverse direction
@@ -360,7 +361,7 @@ def rotshiftzoom_matrix(input_shape, output_size, dm_translation=(0.0, 0.0),
     combined_matrix = xp.dot(dm_matrix, wfs_matrix)
 
     # Calculate offset
-    output_center = xp.array(output_size) / 2.0
+    output_center = (xp.array(output_size) - 1) / 2.0
 
     # The mathematical proof of the 2-step equivalence requires:
     # 1. WFS translation is multiplied by the FULL combined matrix.

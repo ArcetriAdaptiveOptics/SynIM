@@ -34,7 +34,8 @@ class TestGeometryVsPixelSynim(unittest.TestCase):
 
     def setUp(self):
         self.size = 200
-        self.center = self.size / 2.0
+        # Pixel i is centred at i: the array centre is (N - 1) / 2
+        self.center = (self.size - 1) / 2.0
         x = np.arange(self.size)
         y = np.arange(self.size)
         self._xx, self._yy = np.meshgrid(x, y)
