@@ -11,6 +11,14 @@ from specula.lib.make_mask import make_mask
 # numpy arrays in and out, with the SynIM backend (CPU or GPU)
 rotshiftzoom_array = on_backend(_rotshiftzoom_array)
 
+
+def _core_centroid(img):
+    """Centroid (y, x) of the pixels above half maximum: sub-pixel peak position
+    of a symmetric spot, insensitive to the truncation of its wings."""
+    core = np.where(img > 0.5 * img.max(), img, 0.0)
+    yy, xx = np.indices(img.shape)
+    return np.sum(yy * core) / np.sum(core), np.sum(xx * core) / np.sum(core)
+
 class TestRotShiftZoomArray(unittest.TestCase):
     def setUp(self):
         # Create a circular mask
@@ -21,7 +29,9 @@ class TestRotShiftZoomArray(unittest.TestCase):
         x = np.arange(self.size)
         y = np.arange(self.size)
         xx, yy = np.meshgrid(x, y)
-        self.gauss = np.exp(-((xx - self.size//2)**2 + (yy - self.size//2)**2) / (2*10**2))
+        # Pixel i is centred at i: the array centre is (N - 1) / 2
+        self.center = (self.size - 1) / 2
+        self.gauss = np.exp(-((xx - self.center)**2 + (yy - self.center)**2) / (2*10**2))
         self.gauss_masked = self.gauss * self.mask
         # create a stripes pattern
         self.stripes = np.zeros((self.size, self.size), dtype=np.float32)
@@ -216,9 +226,10 @@ class TestRotShiftZoomArray(unittest.TestCase):
         rotated = rotshiftzoom_array(
             self.rectangular, wfs_rotation=90, output_size=(self.size, self.size)
         )
-        # The mask rotated by 90° should be equal to the transpose and vertical flip
+        # The rectangle is centred on the array centre, so the rotated mask
+        # must be exactly np.rot90 of it
         expected = np.rot90(self.rectangular, k=1)
-        diff = rotated - np.roll(expected, shift=(1, 0), axis=(0, 1))
+        diff = rotated - expected
 
         plot_debug = False
         if plot_debug:
@@ -231,8 +242,7 @@ class TestRotShiftZoomArray(unittest.TestCase):
             axs[2].set_title('Difference')
             plt.show()
 
-        self.assertTrue(np.allclose(rotated,
-                        np.roll(expected, shift=(1, 0), axis=(0, 1)), atol=1e-2))
+        self.assertTrue(np.allclose(rotated, expected, atol=1e-2))
 
     def test_wfs_translation_independence(self):
         """
@@ -249,16 +259,15 @@ class TestRotShiftZoomArray(unittest.TestCase):
             output_size=(self.size, self.size)
         )
 
-        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
-        center_y, center_x = self.size // 2, self.size // 2
+        peak_y, peak_x = _core_centroid(transformed)
 
-        expected_y = center_y + trans_y
-        expected_x = center_x + trans_x
+        expected_y = self.center + trans_y
+        expected_x = self.center + trans_x
 
-        self.assertEqual(peak_y, expected_y,
-                         "WFS Y translation was corrupted by WFS magnification!")
-        self.assertEqual(peak_x, expected_x,
-                         "WFS X translation was corrupted by WFS magnification!")
+        self.assertAlmostEqual(peak_y, expected_y, delta=0.05,
+                               msg="WFS Y translation was corrupted by WFS magnification!")
+        self.assertAlmostEqual(peak_x, expected_x, delta=0.05,
+                               msg="WFS X translation was corrupted by WFS magnification!")
 
     def test_dm_translation_independence_from_magnification(self):
         """
@@ -275,16 +284,15 @@ class TestRotShiftZoomArray(unittest.TestCase):
             output_size=(self.size, self.size)
         )
 
-        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
-        center_y, center_x = self.size // 2, self.size // 2
+        peak_y, peak_x = _core_centroid(transformed)
 
-        expected_y = int(center_y + trans_y * mag)
-        expected_x = int(center_x + trans_x * mag)
+        expected_y = self.center + trans_y * mag
+        expected_x = self.center + trans_x * mag
 
-        self.assertEqual(peak_y, expected_y,
-                         "DM Y translation was corrupted by Cone Effect!")
-        self.assertEqual(peak_x, expected_x,
-                         "DM X translation was corrupted by Cone Effect!")
+        self.assertAlmostEqual(peak_y, expected_y, delta=0.05,
+                               msg="DM Y translation was corrupted by Cone Effect!")
+        self.assertAlmostEqual(peak_x, expected_x, delta=0.05,
+                               msg="DM X translation was corrupted by Cone Effect!")
 
     def test_dm_translation_invariance_under_rotation(self):
         """
@@ -334,13 +342,12 @@ class TestRotShiftZoomArray(unittest.TestCase):
             output_size=(self.size, self.size)
         )
 
-        peak_y, peak_x = np.unravel_index(np.argmax(transformed), transformed.shape)
-        center_y, center_x = self.size // 2, self.size // 2
+        peak_y, peak_x = _core_centroid(transformed)
 
-        self.assertEqual(peak_y, center_y + trans_y,
-                         "WFS Y translation corrupted by rotation!")
-        self.assertEqual(peak_x, center_x + trans_x,
-                         "WFS X translation corrupted by rotation!")
+        self.assertAlmostEqual(peak_y, self.center + trans_y, delta=0.05,
+                               msg="WFS Y translation corrupted by rotation!")
+        self.assertAlmostEqual(peak_x, self.center + trans_x, delta=0.05,
+                               msg="WFS X translation corrupted by rotation!")
 
     def test_dm_translation_rotates_with_wfs(self):
         """

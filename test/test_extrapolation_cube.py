@@ -101,3 +101,47 @@ class TestExtrapolationCube(unittest.TestCase):
 
         # extr_3d is (n, n, 1), extr_2d is (n, n)
         np.testing.assert_allclose(extr_3d[..., 0], extr_2d, rtol=1e-10, atol=1e-12)
+
+
+class TestExtrapolationLinearPhase(unittest.TestCase):
+
+    def test_linear_phase_is_extrapolated_exactly(self):
+        """
+        A linear ramp must be extrapolated exactly on every edge pixel.
+
+        Regression test: a direction with a single valid neighbour (constant
+        extrapolation P1) was averaged with a direction having two valid
+        neighbours (linear extrapolation 2*P1 - P2), which biased the result
+        by half a step. The linear extrapolations are now averaged among
+        themselves, and the single-neighbour fallback is used only if there
+        is no direction with two neighbours.
+
+        Scan: N in (16, 24, 32, 48, 64, 80), radius = f*N with 18 values of f
+        in linspace(0.15, 0.49), circular masks centred at (N-1)/2 + offset,
+        offset in (0, 0.25, 0.5). Ramp = 0.3*x + 0.7*y.
+        Measured before the fix: 44 wrong edge pixels out of 26168, max error
+        0.35 (half of the 0.7 step), first failing case N=16, radius 3.04,
+        offset 0.5. After the fix: 0 wrong pixels (max error ~3e-14 in the
+        SPECULA copy of the same code).
+        """
+        n_wrong = 0
+        n_edge = 0
+        max_err = 0.0
+        for n in (16, 24, 32, 48, 64, 80):
+            y, x = np.mgrid[0:n, 0:n].astype(np.float64)
+            ramp = 0.3 * x + 0.7 * y
+            for f in np.linspace(0.15, 0.49, 18):
+                for offset in (0.0, 0.25, 0.5):
+                    c = (n - 1) / 2 + offset
+                    mask = np.hypot(x - c, y - c) <= f * n
+                    edge, ref, coeff = calculate_extrapolation_indices_coeffs(mask)
+                    if len(edge) == 0:
+                        continue
+                    out = apply_extrapolation(ramp, edge, ref, coeff)
+                    err = np.abs(out.ravel()[edge] - ramp.ravel()[edge])
+                    n_edge += len(edge)
+                    n_wrong += int(np.sum(err > 1e-9))
+                    max_err = max(max_err, float(err.max()))
+        self.assertGreater(n_edge, 0)
+        self.assertEqual(n_wrong, 0,
+                         f"{n_wrong}/{n_edge} edge pixels wrong, max error {max_err:.3g}")

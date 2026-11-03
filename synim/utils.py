@@ -71,91 +71,49 @@ def calculate_extrapolation_indices_coeffs(mask, debug=False, debug_pixels=None)
     ]
 
     # Iterate over each edge pixel
-    problem_indices = []
     for i, (y, x) in enumerate(zip(*edge_pixels)):
         # Check if this pixel is in the debug list
-        is_debug_pixel = False
-        if debug_pixels is not None:
-            for p in debug_pixels:
-                if p[0] == y and p[1] == x:
-                    is_debug_pixel = True
-                    break
-
-        valid_directions = 0
-
+        is_debug_pixel = debug_pixels is not None and any(
+            p[0] == y and p[1] == x for p in debug_pixels)
         if is_debug_pixel:
             print(f"\n[DEBUG] Detailed analysis for pixel [{y},{x}]:")
 
-        # Examine the 4 directions
+        # Linear indices of the reference points at distance 1 and 2 in each
+        # direction, -1 where they are outside the image or the mask
+        refs = []
         for dir_idx, (dy, dx) in enumerate(directions):
-            # Coordinates of reference points at distance 1 and 2
             y1, x1 = y + dy, x + dx
             y2, x2 = y + 2*dy, x + 2*dx
-
-            # Check if the points are valid (inside the image and inside the mask)
             valid_ref1 = (0 <= y1 < mask.shape[0] and
                           0 <= x1 < mask.shape[1] and
                           binary_mask[y1, x1])
-
-            valid_ref2 = (0 <= y2 < mask.shape[0] and
+            valid_ref2 = (valid_ref1 and
+                          0 <= y2 < mask.shape[0] and
                           0 <= x2 < mask.shape[1] and
                           binary_mask[y2, x2])
-
+            refs.append((y1 * mask.shape[1] + x1 if valid_ref1 else -1,
+                         y2 * mask.shape[1] + x2 if valid_ref2 else -1))
             if is_debug_pixel:
-                print(f"  Direction {directions_labels[dir_idx]}: ")
-                print(f"    Ref1 [{y1},{x1}] valid: {valid_ref1}")
-                print(f"    Ref2 [{y2},{x2}] valid: {valid_ref2}")
+                print(f"  Direction {directions_labels[dir_idx]}: "
+                      f"Ref1 [{y1},{x1}] valid: {valid_ref1}, Ref2 [{y2},{x2}] valid: {valid_ref2}")
 
-            if valid_ref1:
-                # Index of the first reference point (linear index)
-                ref_idx1 = y1 * mask.shape[1] + x1
-                reference_indices[i, 2*dir_idx] = ref_idx1
+        # Linear extrapolation 2*P1 - P2, averaged over the directions with both
+        # reference points; the value of the first valid neighbour only if there
+        # is none. Averaging the two kinds would bias the result (by half a step
+        # for a linear phase), so they are never mixed.
+        linear = [d for d, (_, ref2) in enumerate(refs) if ref2 >= 0]
+        if linear:
+            for d in linear:
+                reference_indices[i, 2*d:2*d + 2] = refs[d]
+                coefficients[i, 2*d] = 2.0 / len(linear)
+                coefficients[i, 2*d + 1] = -1.0 / len(linear)
+        else:
+            d = next(d for d, (ref1, _) in enumerate(refs) if ref1 >= 0)
+            reference_indices[i, 2*d] = refs[d][0]
+            coefficients[i, 2*d] = 1.0
 
-                if valid_ref2:
-                    # Index of the second reference point (linear index)
-                    ref_idx2 = y2 * mask.shape[1] + x2
-                    reference_indices[i, 2*dir_idx + 1] = ref_idx2
-
-                    # Coefficients for linear extrapolation: 2*P₁ - P₂
-                    coefficients[i, 2*dir_idx] = 2.0
-                    coefficients[i, 2*dir_idx + 1] = -1.0
-                    valid_directions += 1
-
-                    if is_debug_pixel:
-                        print(f"    Using extrapolation: 2*{ref_idx1} - {ref_idx2}")
-                else:
-                    # If the second point is invalid, check if it's the only valid pixel
-                    if valid_directions == 0:
-                        coefficients[i, 2*dir_idx] = 1.0
-                        valid_directions += 1
-                        if is_debug_pixel:
-                            print(f"    Using first ref value: {ref_idx1} (only valid pixel)")
-                    else:
-                        # Set coefficients to 0
-                        coefficients[i, 2*dir_idx] = 0.0
-                        coefficients[i, 2*dir_idx + 1] = 0.0
-            else:
-                # Set coefficients to 0 if the first reference is invalid
-                coefficients[i, 2*dir_idx] = 0.0
-                coefficients[i, 2*dir_idx + 1] = 0.0
-
-        # Normalize coefficients based on the number of valid directions
-        if valid_directions > 1:
-            factor = 1.0 / valid_directions
-
-            if is_debug_pixel:
-                print(f"  Valid directions: {valid_directions}, factor: {factor}")
-                print("  Coefficients before normalization:", coefficients[i])
-
-            for dir_idx in range(4):
-                if coefficients[i, 2*dir_idx] != 0:
-                    coefficients[i, 2*dir_idx] *= factor
-                    if coefficients[i, 2*dir_idx + 1] != 0:
-                        coefficients[i, 2*dir_idx + 1] *= factor
-
-            if is_debug_pixel:
-                print("  Coefficients after normalization:", coefficients[i])
-                problem_indices.append(i)
+        if is_debug_pixel:
+            print("  Coefficients:", coefficients[i])
 
     if debug:
         print(f"Average valid directions per pixel:"
@@ -316,8 +274,9 @@ def rotshiftzoom_matrix(input_shape, output_size, dm_translation=(0.0, 0.0),
     except (TypeError, ValueError):
         wfs_magnification = (1.0, 1.0)
 
-    # Center of the input array
-    center = xp.array(input_shape[:2]) / 2.0
+    # Center of the input array: pixel i is centred at i, so the centre of
+    # N pixels is (N - 1) / 2 (the same convention as SPECULA AtmoPropagation)
+    center = (xp.array(input_shape[:2]) - 1) / 2.0
     # Convert rotations to radians
     # Note: Inverting the sign of rotation to match the first function's direction
     dm_rot_rad = xp.deg2rad(-dm_rotation)  # Negative sign to reverse direction
@@ -360,7 +319,7 @@ def rotshiftzoom_matrix(input_shape, output_size, dm_translation=(0.0, 0.0),
     combined_matrix = xp.dot(dm_matrix, wfs_matrix)
 
     # Calculate offset
-    output_center = xp.array(output_size) / 2.0
+    output_center = (xp.array(output_size) - 1) / 2.0
 
     # The mathematical proof of the 2-step equivalence requires:
     # 1. WFS translation is multiplied by the FULL combined matrix.
