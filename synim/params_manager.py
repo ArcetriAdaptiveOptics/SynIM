@@ -40,6 +40,14 @@ from specula.data_objects.recmat import Recmat
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.calc_noise_cov_elong import calc_noise_cov_elong
 
+def _im_from_arrays(im_arrays, im_filename):
+    """Interaction matrix from compute_interaction_matrices(in_memory=True)."""
+    if im_filename not in im_arrays:
+        raise KeyError(f"Interaction matrix {im_filename} not in im_arrays: compute it"
+                       " with compute_interaction_matrices(in_memory=True)")
+    return im_arrays[im_filename]
+
+
 def _release_gpu_memory():
     """
     Return to the GPU the blocks of the cupy memory pool that are not in use
@@ -1035,7 +1043,7 @@ class ParamsManager:
                                      wfs_type=None, component_type=None,
                                      slope_method='derivatives',
                                      overwrite=False, verbose=None,
-                                     display=False):
+                                     display=False, in_memory=False):
         """
         Compute and save interaction matrices for all combinations of WFSs and DMs/Layers.
         Uses multi-WFS optimization when possible.
@@ -1049,13 +1057,20 @@ class ParamsManager:
             overwrite (bool, optional): Whether to overwrite existing files
             verbose (bool, optional): Override the class's verbose setting
             display (bool, optional): Whether to display plots
+            in_memory (bool, optional): If True, nothing is read from or written
+                to disk: all the interaction matrices are computed and returned
+                as arrays (on the compute device), keyed by the filename they
+                would have on disk, for assemble_interaction_matrices(im_arrays=...).
+                output_im_dir and output_rec_dir are not used.
             
         Returns:
-            dict: Dictionary mapping WFS-Component pairs to saved interaction matrix paths
+            dict: Dictionary mapping WFS-Component pairs to saved interaction matrix
+                paths, or, with in_memory, interaction matrix filenames to arrays
         """
         saved_matrices = {}
-        os.makedirs(output_im_dir, exist_ok=True)
-        os.makedirs(output_rec_dir, exist_ok=True)
+        if not in_memory:
+            os.makedirs(output_im_dir, exist_ok=True)
+            os.makedirs(output_rec_dir, exist_ok=True)
 
         verbose_flag = self.verbose if verbose is None else verbose
 
@@ -1150,16 +1165,16 @@ class ParamsManager:
                     slope_method=slope_method,
                 )
 
-                im_path = os.path.join(output_im_dir, im_filename)
+                im_path = None if in_memory else os.path.join(output_im_dir, im_filename)
 
                 # Check if file exists
-                if os.path.exists(im_path) and not overwrite:
+                if not in_memory and os.path.exists(im_path) and not overwrite:
                     if verbose_flag:
                         print(f"  File already exists: {im_filename}")
                     saved_matrices[f"{wfs_name}_{comp_name}"] = im_path
                     continue
                 else:
-                    if verbose_flag:
+                    if verbose_flag and not in_memory:
                         if os.path.exists(im_path):
                             print(f"  Overwriting existing file: {im_filename}")
                         else:
@@ -1212,7 +1227,7 @@ class ParamsManager:
                     verbose=verbose_flag,
                     slope_method=slope_method,
                     specula_convention=True,
-                    im_on_cpu=True,
+                    im_on_cpu=not in_memory,
                     minimize_memory=True
                 )
 
@@ -1223,6 +1238,11 @@ class ParamsManager:
                 for wfs_info in wfs_to_compute:
                     wfs_name = wfs_info['name']
                     im = im_dict[wfs_name]
+
+                    if in_memory:
+                        # Kept on the compute device, keyed by its filename
+                        saved_matrices[wfs_info['filename']] = im
+                        continue
 
                     # *** Convert to CPU for transpose and saving ***
                     im = cpuArray(im)
@@ -1271,7 +1291,7 @@ class ParamsManager:
     def assemble_interaction_matrices(self, wfs_type='ngs', output_im_dir=None,
                                     component_type='dm', save=False,
                                     apply_filter=True, active_wfs_mask=None,
-                                    slope_method='derivatives'):
+                                    slope_method='derivatives', im_arrays=None):
         """
         Assemble interaction matrices for a specific type of WFS into
         a single full interaction matrix.
@@ -1287,6 +1307,9 @@ class ParamsManager:
             active_wfs_mask (list of bool, optional): Mask to select active WFSs for assembly.
                 If None, all WFSs of the specified type are included.
             apply_filter (bool): Whether to apply filtmat_tag filtering if present
+            im_arrays (dict, optional): Interaction matrices in memory, keyed by
+                filename, as returned by compute_interaction_matrices(in_memory=True):
+                used instead of the files in output_im_dir
             
         Returns:
             tuple: (im_full, n_slopes_per_wfs, mode_indices, component_indices) -
@@ -1295,7 +1318,7 @@ class ParamsManager:
         self._monitor.start_section("assemble_interaction_matrices")
 
         # Set up output directory
-        if output_im_dir is None:
+        if output_im_dir is None and im_arrays is None:
             raise ValueError("output_im_dir must be specified.")
 
         # Validate component_type
@@ -1479,9 +1502,12 @@ class ParamsManager:
             layer_index=first_comp_idx if component_type == 'layer' else None,
             slope_method=slope_method,
         )
-        first_im_path = os.path.join(output_im_dir, first_im_filename)
-        first_intmat_obj = Intmat.restore(first_im_path)
-        im_dtype = first_intmat_obj.intmat.dtype
+        if im_arrays is not None:
+            im_dtype = _im_from_arrays(im_arrays, first_im_filename).dtype
+        else:
+            first_im_path = os.path.join(output_im_dir, first_im_filename)
+            first_intmat_obj = Intmat.restore(first_im_path)
+            im_dtype = first_intmat_obj.intmat.dtype
 
         # Create the full interaction matrix
         im_full = np.zeros((n_tot_slopes, n_tot_modes), dtype=im_dtype)
@@ -1504,20 +1530,22 @@ class ParamsManager:
                     layer_index=comp_ind if component_type == 'layer' else None,
                     slope_method=slope_method,
                 )
-                im_path = os.path.join(output_im_dir, im_filename)
-
                 if self.verbose:
                     print(f"--> Indices: WFS {ii+1}, Component {comp_ind}")
                     print(f"--> Loading IM: {im_filename}")
 
-                # Load the interaction matrix
-                intmat_obj = Intmat.restore(im_path)
+                # Load the interaction matrix (from memory, or from its file)
+                if im_arrays is not None:
+                    im = _im_from_arrays(im_arrays, im_filename)
+                else:
+                    im_path = os.path.join(output_im_dir, im_filename)
+                    im = Intmat.restore(im_path).intmat
 
                 if self.verbose:
-                    print(f"    IM shape: {intmat_obj.intmat.shape}")
+                    print(f"    IM shape: {im.shape}")
 
-                # Use intmat_obj.intmat as base (on CPU: SPECULA may restore it on GPU)
-                im = cpuArray(intmat_obj.intmat)
+                # On CPU (SPECULA may restore it on GPU)
+                im = cpuArray(im)
 
                 # *** APPLY FILTER HERE (after loading) ***
                 if apply_filter:
@@ -2295,7 +2323,8 @@ class ParamsManager:
                                         save_inverse_covariances=False,
                                         inverse_cov_output_dir=None,
                                         inverse_cov_prefix=None,
-                                        verbose=None):
+                                        verbose=None,
+                                        in_memory_ims=False):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
         
@@ -2324,6 +2353,9 @@ class ParamsManager:
             inverse_cov_output_dir (str, optional): Directory for inverse covariance debug files (MMSE only)
             inverse_cov_prefix (str, optional): Prefix for inverse covariance debug filenames (MMSE only)
             verbose (bool, optional): Override the class's verbose setting
+            in_memory_ims (bool, optional): If True, the interaction matrices are
+                kept in memory (on the compute device) and not written to / read
+                from self.im_dir (existing files are then not reused)
             
         Returns:
             dict: Dictionary with:
@@ -2359,7 +2391,7 @@ class ParamsManager:
             print(f"-" * 70)
 
         # Compute IMs without saving permanently
-        _ = self.compute_interaction_matrices(
+        ims = self.compute_interaction_matrices(
             output_im_dir=self.im_dir,
             output_rec_dir=self.rec_dir,
             wfs_type=wfs_type,
@@ -2367,7 +2399,8 @@ class ParamsManager:
             slope_method=slope_method,
             overwrite=overwrite,
             verbose=verbose_flag,
-            display=False
+            display=False,
+            in_memory=in_memory_ims
         )
 
         # Assemble full IM
@@ -2377,8 +2410,10 @@ class ParamsManager:
                 output_im_dir=self.im_dir,
                 component_type=component_type,
                 save=False,  # Don't save assembled IM
-                slope_method=slope_method
+                slope_method=slope_method,
+                im_arrays=ims if in_memory_ims else None
             )
+        del ims
 
         # Temp dir is automatically cleaned up here
 
