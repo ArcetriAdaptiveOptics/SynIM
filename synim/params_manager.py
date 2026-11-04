@@ -3164,22 +3164,23 @@ class ParamsManager:
             if verbose_flag:
                 print(f"\n[{idx+1}/{len(component_list)}] Processing {component_type}{comp_idx}...")
 
-            # Get component parameters
-            comp_params = self.get_component_params(
-                comp_idx,
-                is_layer=(component_type == 'layer'),
-                cut_start_mode=False,  # Load ALL modes
-                xp_local=np
+            # Modes as a 2D array (n_modes, n_valid_pixels), ALL modes, on
+            # the device of the covariance computation: no 3D array, nothing
+            # cached (each component is used only once here)
+            comp_key = self._resolve_component_key(component_type, comp_idx)
+            on_gpu = not skip_gpu_covariance and xp is not np
+            dm2d, dm_mask = load_influence_functions(
+                self.cm, self.params[comp_key], self.pixel_pupil, verbose=self.verbose,
+                full_config=self.params, as_2d=True,
+                xp_local=xp if on_gpu else np,
+                float_dtype_local=float_dtype if on_gpu else cpu_float_dtype
             )
 
-            # Get start_mode
-            comp_key = self._resolve_component_key(component_type, comp_idx)
             component_metadata = self._get_component_generated_metadata(comp_key)
 
             # Total modes available
-            total_modes = comp_params['dm_array'].shape[2]
-            pixel_dm = int(component_metadata.get('meta_pupil_pixels',
-                                                  comp_params['dm_array'].shape[0]))
+            total_modes = dm2d.shape[0]
+            pixel_dm = int(component_metadata.get('meta_pupil_pixels', dm_mask.shape[0]))
             meta_pupil_diameter = float(
                 component_metadata.get('meta_pupil_diameter_m',
                                        pixel_dm * self.pixel_pitch)
@@ -3232,10 +3233,6 @@ class ParamsManager:
                 else:
                     print(f"  File not found, computing...")
 
-            # Convert 3D DM array to 2D
-            dm2d = dm3d_to_2d(cpuArray(comp_params['dm_array']), cpuArray(comp_params['dm_mask']),
-                              xp_local=np, float_dtype_local=cpu_float_dtype)
-
             if verbose_flag:
                 print(f"  Computing covariance matrix...")
 
@@ -3249,7 +3246,7 @@ class ParamsManager:
                 cov_float_dtype = np.float64 if n_elements <= 1e6 else np.float32
 
                 C_atm_rad2 = compute_ifs_covmat(
-                    comp_params['dm_mask'],
+                    cpuArray(dm_mask),
                     meta_pupil_diameter,
                     dm2d,
                     r0,
@@ -3260,7 +3257,7 @@ class ParamsManager:
                 )
             else:
                 C_atm_rad2 = compute_ifs_covmat(
-                    to_xp(xp, comp_params['dm_mask'], dtype=float_dtype),
+                    to_xp(xp, dm_mask, dtype=float_dtype),
                     meta_pupil_diameter,
                     to_xp(xp, dm2d, dtype=float_dtype),
                     r0,
@@ -3298,6 +3295,11 @@ class ParamsManager:
                 print(f"  Saved to FITS: {cov_filename}")
 
             C_atm_blocks.append(C_atm_rad2)
+
+            # Release this component's modes before loading the next one:
+            # the components have different sizes
+            del dm2d, dm_mask
+            _release_gpu_memory()
 
         if verbose_flag:
             print(f"\n{'='*60}")

@@ -3,6 +3,7 @@ Loading of DM / layer influence functions in ParamsManager:
 - load_influence_functions builds the 3D array with the requested array
   module and dtype (on GPU the cube is built directly on the device)
 - get_component_params(use_cache=False) neither reads nor writes the cache
+- with as_2d=True, the 2D modes are returned without building the 3D array
 
 The file I/O is replaced by in-memory objects.
 """
@@ -13,7 +14,7 @@ import numpy as np
 
 import synim.params_utils as params_utils
 import synim.params_manager as params_manager
-from synim.utils import dm2d_to_3d
+from synim.utils import dm2d_to_3d, dm3d_to_2d
 
 
 def _mask(n=24, radius=10):
@@ -65,6 +66,23 @@ class TestLoadInfluenceFunctions(unittest.TestCase):
             dm_array, _ = self._load(xp_local=np, float_dtype_local=np.float64)
         self.assertEqual(calls, [(np, np.float64)])
         self.assertEqual(dm_array.dtype, np.float64)
+
+    def test_as_2d_same_as_round_trip(self):
+        # as_2d returns what dm3d_to_2d returns from the 3D array, bit for bit
+        dm_array, mask = self._load()
+        expected = dm3d_to_2d(dm_array, mask, xp_local=np,
+                              float_dtype_local=params_utils.cpu_float_dtype)
+        modes, dm_mask = self._load(as_2d=True)
+        self.assertIsInstance(modes, np.ndarray)
+        self.assertEqual(modes.dtype, expected.dtype)
+        self.assertTrue(modes.flags.c_contiguous)
+        np.testing.assert_array_equal(modes, expected)
+        np.testing.assert_array_equal(dm_mask, self.mask)
+
+    def test_as_2d_does_not_build_3d(self):
+        with mock.patch.object(params_utils, 'dm2d_to_3d') as spy:
+            self._load(as_2d=True)
+        spy.assert_not_called()
 
 
 class TestGetComponentParamsCache(unittest.TestCase):

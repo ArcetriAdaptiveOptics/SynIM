@@ -231,7 +231,8 @@ def load_pupilstop(cm, pupilstop_params, pixel_pupil, pixel_pitch, verbose=False
 
 def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                              is_inverse_basis=False, full_config=None,
-                             xp_local=np, float_dtype_local=cpu_float_dtype):
+                             xp_local=np, float_dtype_local=cpu_float_dtype,
+                             as_2d=False):
     """
     Load or generate DM influence functions.
     
@@ -248,9 +249,14 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
             SPECULA already restored them there) and the 3D array is built
             on the GPU.
         float_dtype_local: data type of that 3D array
+        as_2d (bool): For a normal basis, return the 2D array (n_modes,
+            n_valid_pixels) instead of the 3D array, normalized as
+            dm3d_to_2d would return it from the 3D array: the round trip
+            through the 3D array is avoided. Created with xp_local.
 
     Returns:
-        tuple: (dm_array, dm_mask) - For DM: 3D array, For inverse basis: 2D array
+        tuple: (dm_array, dm_mask) - For DM: 3D array (2D with as_2d),
+            For inverse basis: 2D array
     """
 
     ifunc_tag = get_tag_or_object(dm_params, 'ifunc', full_config=full_config)
@@ -312,6 +318,10 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                 if ifunc.influence_function.shape[0] > dm_params['nmodes']:
                     ifunc.influence_function = ifunc.influence_function[:dm_params['nmodes'],:]
 
+            if as_2d:
+                return (_modes_2d(ifunc.influence_function, xp_local, float_dtype_local),
+                        ifunc.mask_inf_func.copy())
+
             # Convert influence function from 2D to 3D
             dm_array = dm2d_to_3d(ifunc.influence_function, ifunc.mask_inf_func,
                                   xp_local=xp_local, float_dtype_local=float_dtype_local)
@@ -347,6 +357,9 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                                              obsratio=obsratio, diaratio=1.0,
                                              start_mode=0, mask=mask)
 
+        if as_2d:
+            return _modes_2d(z_ifunc, xp_local, float_dtype_local), z_mask
+
         # For Zernike, always return 3D
         dm_array = dm2d_to_3d(z_ifunc, z_mask,
                               xp_local=np, float_dtype_local=cpu_float_dtype)
@@ -360,6 +373,21 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
     else:
         raise ValueError("No valid influence function configuration found."
                          " Need either 'ifunc_tag', 'ifunc_object', or 'type_str'.")
+
+
+def _modes_2d(influence_function, xp_local, float_dtype_local):
+    """
+    2D modes (n_modes, n_valid_pixels) as dm3d_to_2d(dm2d_to_3d(...)) returns
+    them: normalized twice (unit RMS, then piston removed), once by each
+    conversion. The influence function array is normalized in place when
+    it already has the right array type and dtype (no copy): the callers
+    pass arrays that are not used afterwards.
+    """
+    modes = xp_local.ascontiguousarray(to_xp(xp_local, influence_function,
+                                             dtype=float_dtype_local))
+    normalize_modes(modes, xp_local=xp_local)
+    normalize_modes(modes, xp_local=xp_local)
+    return modes
 
 
 def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=True):
