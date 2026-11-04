@@ -1516,8 +1516,10 @@ class ParamsManager:
                 if self.verbose:
                     print(f"    IM shape: {intmat_obj.intmat.shape}")
 
-                # Use intmat_obj.intmat as base (on CPU: SPECULA may restore it on GPU)
-                im = cpuArray(intmat_obj.intmat)
+                # Filter and select the modes on the compute device (SPECULA may
+                # already have restored the IM there): only the final block is
+                # copied to the host
+                im = to_xp(xp, intmat_obj.intmat)
 
                 # *** APPLY FILTER HERE (after loading) ***
                 if apply_filter:
@@ -1554,10 +1556,18 @@ class ParamsManager:
                 else:
                     idx_start = sum(n_slopes_list[:ii])
 
+                # A contiguous range of modes (the usual case) is a slice, not a
+                # gather of columns
+                if relative_mode_idx == list(range(relative_mode_idx[0],
+                                                   relative_mode_idx[-1] + 1)):
+                    mode_sel = slice(relative_mode_idx[0], relative_mode_idx[-1] + 1)
+                else:
+                    mode_sel = relative_mode_idx
+
                 try:
                     im_full[idx_start:idx_start+n_slopes_list[ii],
                         start_col_in_full:start_col_in_full+n_modes_this_comp] = \
-                        im[:, relative_mode_idx]
+                        cpuArray(im[:, mode_sel])
                 except Exception as e:
                     print(f"Error assembling IM for WFS {ii+1}, Component {comp_ind}: {e}")
                     print(f"  IM shape: {im.shape}")
@@ -1659,8 +1669,16 @@ class ParamsManager:
                 print(f"    Warning: Filter file not found: {filtmat_path}")
             return im
 
-        with fits.open(filtmat_path) as hdul:
-            filtmat = hdul[0].data  # Shape: (2, n_slopes, n_modes)
+        # The filter matrices are read once per file and kept, with the dtype
+        # of the file (native byte order), on the array module of the IM
+        array_module = np if isinstance(im, np.ndarray) else xp
+        cache = self.__dict__.setdefault('_filtmat_cache', {})
+        cache_key = (filtmat_path, array_module.__name__)
+        if cache_key not in cache:
+            with fits.open(filtmat_path) as hdul:
+                filtmat = hdul[0].data  # Shape: (2, n_slopes, n_modes)
+            cache[cache_key] = array_module.asarray(filtmat.astype(filtmat.dtype.newbyteorder('=')))
+        filtmat = cache[cache_key]
 
         debug_verbose = False
         if debug_verbose:
