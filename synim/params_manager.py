@@ -835,6 +835,17 @@ class ParamsManager:
             # Pyramid specific parameters
             wfs_nsubaps = wfs_params.get('pup_diam', 0)
 
+        # SynIM builds slopes as two blocks (all the subapertures of one axis,
+        # then all of the other) in the interaction matrices, the noise
+        # covariance and the illumination weights: interleaved slopes would
+        # be silently in the wrong order
+        slopec_key = find_slopec_key(wfs_key, self.params)
+        if slopec_key is not None and self.params[slopec_key].get('interleave', False):
+            raise NotImplementedError(
+                f"{slopec_key}: interleaved slopes (interleave: true) are not"
+                f" supported by SynIM, which orders the slopes of {wfs_key} as"
+                f" two blocks (one axis, then the other)")
+
         # Load SubapData for valid subapertures
         idx_valid_sa = find_subapdata(
             self.cm,
