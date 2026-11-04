@@ -453,8 +453,16 @@ def affine_interpolation_matrix(input_shape, output_shape, matrix, offset, trans
 
 
 def dm3d_to_2d(dm_array, mask,
-               xp_local=xp, float_dtype_local=float_dtype):
-    """Convert a 3D DM influence function to a 2D array using a mask."""
+               xp_local=xp, float_dtype_local=float_dtype, block_size=256):
+    """
+    Convert a 3D DM influence function (n, n, n_modes) to a 2D array
+    (n_modes, n_valid_pixels) using a mask.
+
+    Each mode is normalized to unit RMS and then its mean (piston) is removed.
+
+    The modes are processed in blocks of block_size: the temporary arrays
+    have the size of one block, not of the whole dm_array.
+    """
 
     # *** MODIFIED: Convert inputs to xp with correct dtype ***
     dm_array = to_xp(xp_local, dm_array, dtype=float_dtype_local)
@@ -467,13 +475,21 @@ def dm3d_to_2d(dm_array, mask,
     if dm_array.ndim != 3:
         raise ValueError("The dm_array must be a 3D array.")
     nmodes = dm_array.shape[2]
-    idx = xp_local.where(mask > 0)
-    dm_array_2d = dm_array[idx[0], idx[1], :].transpose()
-    for i in range(nmodes):
-        # *** MODIFIED: Use float_dtype ***
-        dm_array_2d[i,:] = dm_array_2d[i,:].astype(float_dtype_local)
-        dm_array_2d[i,:] /= xp_local.sqrt(xp_local.mean(dm_array_2d[i,:]**2))
-        dm_array_2d[i,:] -= xp_local.mean(dm_array_2d[i,:])
+    # Valid pixels as rows of the (n * n, n_modes) view of the 3D array:
+    # each one is a contiguous row, faster to gather than with 2D indices
+    flat_idx = xp_local.flatnonzero(mask > 0)
+    dm_rows = dm_array.reshape(-1, nmodes)
+    dm_array_2d = xp_local.empty((nmodes, len(flat_idx)), dtype=float_dtype_local)
+    block_size = max(1, int(block_size))
+    pix_block = block_size * 64
+    for start in range(0, len(flat_idx), pix_block):
+        stop = min(start + pix_block, len(flat_idx))
+        dm_array_2d[:, start:stop] = dm_rows[flat_idx[start:stop]].T
+    for start in range(0, nmodes, block_size):
+        block = dm_array_2d[start:start + block_size]
+        # normalize by the RMS, then remove the mean (piston)
+        block /= xp_local.sqrt(xp_local.mean(block**2, axis=1, keepdims=True))
+        block -= xp_local.mean(block, axis=1, keepdims=True)
 
     return dm_array_2d
 
