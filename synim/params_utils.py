@@ -1530,7 +1530,7 @@ def compute_pseudoinverse_reconstructor(interaction_matrix, xp=np,
 def compute_mmse_reconstructor(interaction_matrix, C_atm,
                               noise_variance=None, C_noise=None,
                               cinverse=False, xp=np, dtype=np.float32,
-                              verbose=False):
+                              verbose=False, to_host=True):
     """
     Compute the Minimum Mean Square Error (MMSE) reconstructor.
     
@@ -1545,9 +1545,13 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         xp (module, optional): Numerical library to use (e.g., numpy or cupy).
         dtype (data-type, optional): Data type for computations.
         verbose (bool, optional): Whether to print detailed information during computation.
+        to_host (bool, optional): If True (default), the reconstructor is returned
+            as a numpy array. If False, it is returned as an xp array (on the GPU
+            with xp=cupy), without copying it to the host. Inputs that are
+            already xp arrays of the given dtype are used without copies.
         
     Returns:
-        numpy.ndarray: MMSE reconstructor matrix
+        numpy.ndarray: MMSE reconstructor matrix (xp array if to_host is False)
     """
     if verbose:
         print("Starting MMSE reconstructor computation")
@@ -1673,7 +1677,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         print("MMSE reconstruction matrix computed")
         print(f"  Matrix shape: {W_mmse.shape}")
 
-    return cpuArray(W_mmse)
+    return cpuArray(W_mmse) if to_host else W_mmse
 
 
 def update_component_calibration_metadata(component_config=None,
