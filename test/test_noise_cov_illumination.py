@@ -13,17 +13,13 @@ at 0.3) and a mocked elongated precision matrix:
     link i and i + n) and rows k, k + n are scaled by ill_k;
   - several WFSs with different numbers of valid subapertures.
 """
+import contextlib
 import unittest
 from unittest import mock
 
 import numpy as np
 
-import specula
-specula.init(device_idx=-1, precision=1)
-
-import synim
-synim.init(device_idx=-1, precision=1)
-
+# SynIM (and SPECULA) are initialized by test/__init__.py, on CPU or GPU
 import synim.synim as synim_mod  # the module referenced as `synim` in params_manager
 from synim.params_manager import ParamsManager
 
@@ -64,21 +60,17 @@ def _make_pm(n_valid_per_wfs, low_idx_per_wfs):
 def _run(pm, n_valid, use_elongation, elong_blocks=None):
     ill_iter = iter(pm._ills)
     n_total = 2 * sum(n_valid)
-    patches = [mock.patch.object(
-        synim_mod, 'compute_subaperture_illumination',
-        side_effect=lambda **kw: next(ill_iter).copy())]
-    if elong_blocks is not None:
-        patches.append(mock.patch.object(
-            pm, '_build_elongated_noise_covariance',
-            create=True, return_value=_blockdiag(elong_blocks)))
-    for p in patches:
-        p.start()
-    try:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(
+            synim_mod, 'compute_subaperture_illumination',
+            side_effect=lambda **kw: next(ill_iter).copy()))
+        if elong_blocks is not None:
+            stack.enter_context(mock.patch.object(
+                pm, '_build_elongated_noise_covariance',
+                create=True, return_value=_blockdiag(elong_blocks)))
         return pm._build_noise_covariance_impl(
             False, 'lgs', None, n_total, None, None, use_elongation,
             None, True)
-    finally:
-        mock.patch.stopall()
 
 
 def _blockdiag(blocks):
