@@ -1637,16 +1637,51 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         C_noise_inv = C_noise
         C_atm_inv = C_atm
 
-    # Compute H = A' Cz^(-1) A + Cx^(-1)
+    # The MMSE reconstructor is W = H^(-1) A' Cz^(-1), with
+    # H = A' Cz^(-1) A + Cx^(-1). It is computed by solving H W = A' Cz^(-1)
+    # in place (no explicit inverse): Cholesky when Cz^(-1) is symmetric
+    # (H symmetric positive definite), LU otherwise. A sparse Cz^(-1) (a few
+    # non-zeros per row, e.g. the elongated LGS noise model) is applied
+    # without dense products.
+    scalar_noise = isinstance(C_noise_inv, (int, float)) \
+        or (hasattr(C_noise_inv, 'size') and C_noise_inv.size == 1)
+
+    # X = Cz^(-1) A (n_slopes, n_modes) and the right-hand side
+    # B = A' Cz^(-1) (n_modes, n_slopes), column-major
+    if verbose:
+        print("Computing X = Cz^(-1) A and A' Cz^(-1)")
+    if scalar_noise:
+        X = A * C_noise_inv
+        B = X.T
+        symmetric_noise = True
+    else:
+        sparse = _sparse_rows(C_noise_inv, xp)
+        if sparse is not None:
+            cols, vals, symmetric_noise = sparse
+            if verbose:
+                print(f"  Cz^(-1) is sparse: at most {cols.shape[1]} non-zeros per row"
+                      f"{'' if symmetric_noise else ', not symmetric'}")
+            X = _sparse_rows_matmul(cols, vals, A, xp)
+            if symmetric_noise:
+                B = X.T
+            else:
+                cols, vals, _ = _sparse_rows(C_noise_inv.T, xp)
+                B = _sparse_rows_matmul(cols, vals, A, xp).T
+            del cols, vals
+        else:
+            symmetric_noise = bool(xp.array_equal(C_noise_inv, C_noise_inv.T))
+            X = xp.dot(C_noise_inv, A)
+            B = X.T if symmetric_noise else xp.dot(C_noise_inv.T, A).T
+
+    # H = A' Cz^(-1) A + Cx^(-1), column-major: H' = X' A + Cx^(-1)' in C order
     if verbose:
         print("Computing H = A' Cz^(-1) A + Cx^(-1)")
-
-    # Check if C_noise_inv is scalar
-    if isinstance(C_noise_inv, (int, float)) \
-        or (hasattr(C_noise_inv, 'size') and C_noise_inv.size == 1):
-        H = C_noise_inv * xp.dot(A.T, A) + C_atm_inv
-    else:
-        H = xp.dot(A.T, xp.dot(C_noise_inv, A)) + C_atm_inv
+    H_t = xp.dot(X.T, A)
+    if not symmetric_noise:
+        del X
+    H_t += C_atm_inv.T
+    H = H_t.T
+    del H_t
 
     # *** DIAGNOSTICS ***
     if verbose:
@@ -1660,33 +1695,142 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     if not xp.all(xp.isfinite(H)):
         raise ValueError("H contains NaN or Inf values!")
 
-    # Compute H^(-1)
+    # Solve H W = B, H and B overwritten. Cholesky is chosen from the symmetry
+    # of Cz^(-1) only: potrf reads only the lower triangle of H, so a slightly
+    # asymmetric H (e.g. from a float32 Cx^(-1), or the rounding of the
+    # products) is implicitly symmetrized. This is fine for an H that is
+    # symmetric positive definite up to rounding.
     if verbose:
-        print("Inverting H")
+        print(f"Computing W = H^(-1) A' Cz^(-1)"
+              f" ({'Cholesky' if symmetric_noise else 'LU'} solve)")
+    W_mmse = _solve_inplace(H, B, xp, positive_definite=symmetric_noise)
 
-    try:
-        H_inv = xp.linalg.inv(H)
-    except:
+    if W_mmse is None:
+        # H is numerically singular (or not positive definite): pseudo-inverse
         if verbose:
-            print(f"    Using pseudo-inverse")
-        H_inv = xp.linalg.pinv(H, rcond=1e-14)
-
-    # Compute W = H^(-1) A' Cz^(-1)
-    if verbose:
-        print("Computing W = H^(-1) A' Cz^(-1)")
-
-    # Check if C_noise_inv is scalar
-    if isinstance(C_noise_inv, (int, float)) \
-        or (hasattr(C_noise_inv, 'size') and C_noise_inv.size == 1):
-        W_mmse = C_noise_inv * xp.dot(H_inv, A.T)
-    else:
-        W_mmse = xp.dot(H_inv, xp.dot(A.T, C_noise_inv))
+            print("    Factorization failed, using the pseudo-inverse of H")
+        # H was overwritten by the factorization; B is unchanged
+        H = xp.dot(A.T, B.T if symmetric_noise else xp.dot(C_noise_inv, A))
+        H += C_atm_inv
+        try:
+            H_inv = xp.linalg.inv(H) if symmetric_noise else xp.linalg.pinv(H, rcond=1e-14)
+        except Exception:
+            H_inv = xp.linalg.pinv(H, rcond=1e-14)
+        del H
+        W_mmse = xp.dot(H_inv, B)
 
     if verbose:
         print("MMSE reconstruction matrix computed")
         print(f"  Matrix shape: {W_mmse.shape}")
 
     return cpuArray(W_mmse) if to_host else W_mmse
+
+
+def _sparse_rows(matrix, xp, max_nnz_per_row=8):
+    """
+    Row-wise sparse form of a square matrix with at most max_nnz_per_row
+    non-zeros per row (else None): (cols, vals, symmetric), with cols and
+    vals of shape (n_rows, k). Rows with fewer than k non-zeros are padded
+    with zero values (column 0).
+    """
+    nnz_per_row = xp.count_nonzero(matrix, axis=1)
+    k = int(nnz_per_row.max()) if matrix.shape[0] > 0 else 0
+    if k == 0 or k > max_nnz_per_row:
+        return None
+    n = matrix.shape[0]
+    rows, cols = xp.nonzero(matrix)          # row-major order
+    vals = matrix[rows, cols]
+
+    # symmetric: same pattern and values as the transpose
+    key = rows.astype(xp.int64) * n + cols
+    key_t = cols.astype(xp.int64) * n + rows
+    order_t = xp.argsort(key_t)
+    symmetric = bool(xp.array_equal(key, key_t[order_t])) and \
+        bool(xp.array_equal(vals, vals[order_t]))
+
+    row_start = xp.cumsum(nnz_per_row) - nnz_per_row
+    pos = xp.arange(rows.size) - row_start[rows]
+    ell_cols = xp.zeros((n, k), dtype=xp.int64)
+    ell_vals = xp.zeros((n, k), dtype=matrix.dtype)
+    ell_cols[rows, pos] = cols
+    ell_vals[rows, pos] = vals
+    return ell_cols, ell_vals, symmetric
+
+
+def _sparse_rows_matmul(cols, vals, dense, xp, block_elements=2**26):
+    """
+    matrix @ dense for a matrix in the row-wise sparse form of _sparse_rows:
+    each output row is a combination of k rows of dense. Computed in blocks
+    of rows (temporaries of about block_elements elements).
+    """
+    n_rows, k = cols.shape
+    out = xp.empty((n_rows, dense.shape[1]), dtype=xp.result_type(vals, dense))
+    block = max(1, block_elements // max(1, dense.shape[1]))
+    for start in range(0, n_rows, block):
+        stop = min(start + block, n_rows)
+        out_block = out[start:stop]
+        xp.multiply(dense[cols[start:stop, 0]], vals[start:stop, 0:1], out=out_block)
+        for j in range(1, k):
+            out_block += dense[cols[start:stop, j]] * vals[start:stop, j:j + 1]
+    return out
+
+
+def _solve_inplace(H, B, xp, positive_definite):
+    """
+    Solve H W = B in place: H (F-contiguous, n x n) is overwritten by its
+    Cholesky (positive_definite) or LU factors, and B (F-contiguous,
+    n x n_rhs) by the solution, which is returned. Returns None, with B
+    unchanged, if the factorization fails (H singular, or not positive
+    definite).
+    """
+    if not (H.flags.f_contiguous and B.flags.f_contiguous) or B.dtype != H.dtype:
+        raise ValueError("H and B must be F-contiguous, with the same dtype")
+    if xp is np:
+        import scipy.linalg
+        try:
+            return scipy.linalg.solve(H, B, assume_a='pos' if positive_definite else 'gen',
+                                      overwrite_a=True, overwrite_b=True, check_finite=False)
+        except np.linalg.LinAlgError:
+            return None
+
+    from cupy.cuda import device
+    from cupy_backends.cuda.libs import cublas, cusolver
+    if H.dtype == np.float32:
+        prefix = 's'
+    elif H.dtype == np.float64:
+        prefix = 'd'
+    else:
+        raise ValueError(f"Unsupported dtype for the solve: {H.dtype}")
+
+    n = H.shape[0]
+    n_rhs = B.shape[1]
+    handle = device.get_cusolver_handle()
+    info = xp.zeros(1, dtype=np.int32)
+    if positive_definite:
+        uplo = cublas.CUBLAS_FILL_MODE_LOWER
+        work_size = getattr(cusolver, prefix + 'potrf_bufferSize')(handle, uplo, n, H.data.ptr, n)
+        work = xp.empty(work_size, dtype=H.dtype)
+        getattr(cusolver, prefix + 'potrf')(handle, uplo, n, H.data.ptr, n, work.data.ptr,
+                                            work_size, info.data.ptr)
+        del work
+        if int(info.get()[0]) != 0:
+            return None
+        getattr(cusolver, prefix + 'potrs')(handle, uplo, n, n_rhs, H.data.ptr, n,
+                                            B.data.ptr, n, info.data.ptr)
+    else:
+        work_size = getattr(cusolver, prefix + 'getrf_bufferSize')(handle, n, n, H.data.ptr, n)
+        work = xp.empty(work_size, dtype=H.dtype)
+        ipiv = xp.empty(n, dtype=np.int32)
+        getattr(cusolver, prefix + 'getrf')(handle, n, n, H.data.ptr, n, work.data.ptr,
+                                            ipiv.data.ptr, info.data.ptr)
+        del work
+        if int(info.get()[0]) != 0:
+            return None
+        getattr(cusolver, prefix + 'getrs')(handle, cublas.CUBLAS_OP_N, n, n_rhs, H.data.ptr, n,
+                                            ipiv.data.ptr, B.data.ptr, n, info.data.ptr)
+    if int(info.get()[0]) != 0:
+        raise RuntimeError(f"Solve failed (info = {int(info.get()[0])})")
+    return B
 
 
 def update_component_calibration_metadata(component_config=None,
