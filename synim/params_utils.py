@@ -362,6 +362,36 @@ def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                          " Need either 'ifunc_tag', 'ifunc_object', or 'type_str'.")
 
 
+def find_slopec_key(wfs_key, params):
+    """
+    Key of the slopec section of a WFS (e.g. sh_lgs1 -> slopec_lgs1,
+    pyramid_ngs1 -> slopec_ngs1, sh1 -> slopec1), falling back to 'slopec'.
+
+    Returns:
+        str or None: the key, or None if there is no matching section
+    """
+    slopec_key = None
+    if wfs_key.startswith('sh_'):
+        potential_slopec = 'slopec_' + wfs_key[3:]
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+    elif wfs_key.startswith('pyramid_'):
+        potential_slopec = 'slopec_' + wfs_key[8:]
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+    # Handle numeric indices (e.g., sh1 -> slopec1)
+    elif any(char.isdigit() for char in wfs_key):
+        numeric_part = ''.join(char for char in wfs_key if char.isdigit())
+        potential_slopec = f'slopec{numeric_part}'
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+
+    # Check standard slopec key
+    if slopec_key is None and 'slopec' in params:
+        slopec_key = 'slopec'
+    return slopec_key
+
+
 def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=True):
     """
     Find and load SubapData for valid subapertures.
@@ -390,28 +420,7 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=
 
     # Second check - Try to find corresponding slopec section based on WFS name
     elif wfs_key is not None:
-        # Determine potential slopec key based on WFS key (e.g., sh_lgs1 -> slopec_lgs1)
-        slopec_key = None
-        if wfs_key.startswith('sh_'):
-            potential_slopec = 'slopec_' + wfs_key[3:]
-            if potential_slopec in params:
-                slopec_key = potential_slopec
-        elif wfs_key.startswith('pyramid_'):
-            potential_slopec = 'slopec_' + wfs_key[8:]
-            if potential_slopec in params:
-                slopec_key = potential_slopec
-        # Handle numeric indices (e.g., sh1 -> slopec1)
-        elif any(char.isdigit() for char in wfs_key):
-            # Extract numeric portion
-            numeric_part = ''.join(char for char in wfs_key if char.isdigit())
-            if numeric_part:
-                potential_slopec = f'slopec{numeric_part}'
-                if potential_slopec in params:
-                    slopec_key = potential_slopec
-
-        # Check standard slopec key
-        if slopec_key is None and 'slopec' in params:
-            slopec_key = 'slopec'
+        slopec_key = find_slopec_key(wfs_key, params)
 
         if slopec_key:
             slopec_params = params[slopec_key]
@@ -2402,6 +2411,7 @@ __all__ = [
     'validate_opt_sources',
     'load_pupilstop',
     'load_influence_functions',
+    'find_slopec_key',
     'find_subapdata',
     'extract_projection_params',
     'extract_source_coordinates',
