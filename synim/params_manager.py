@@ -3827,9 +3827,10 @@ class ParamsManager:
                 verbose=verbose_flag
             )
 
-            # scale by illumination
-            illumination_inv_array = np.diag(illumination_concat)
-            C_noise_inv = illumination_inv_array @ C_noise_inv
+            # scale by illumination: diag(illumination) @ C_noise_inv, as a
+            # row scaling in place (same values, no dense n_slopes^3 product
+            # and no second n_slopes x n_slopes array)
+            C_noise_inv *= illumination_concat[:, np.newaxis]
 
             if verbose_flag:
                 diag_vals = np.diag(C_noise_inv)
