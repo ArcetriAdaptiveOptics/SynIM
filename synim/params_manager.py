@@ -1153,7 +1153,7 @@ class ParamsManager:
 
                 # Generate filename
                 im_filename = generate_im_filename(
-                    self.params_file,
+                    self.params,
                     wfs_type=source_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
@@ -1483,7 +1483,7 @@ class ParamsManager:
         first_wfs_idx = int(wfs_list[0]['index'])
         first_comp_idx = component_indices[0]
         first_im_filename = generate_im_filename(
-            self.params_file,
+            self.params,
             wfs_type=wfs_type,
             wfs_index=first_wfs_idx,
             dm_index=first_comp_idx if component_type == 'dm' else None,
@@ -1508,7 +1508,7 @@ class ParamsManager:
 
                 # Generate and load the interaction matrix file
                 im_filename = generate_im_filename(
-                    self.params_file,
+                    self.params,
                     wfs_type=wfs_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_ind if component_type == 'dm' else None,
@@ -1822,7 +1822,7 @@ class ParamsManager:
                 source_idx = source['index']
 
                 pm_filename = generate_pm_filename(
-                    self.params_file, opt_index=source_idx,
+                    self.params, opt_index=source_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
                     layer_index=comp_idx if comp_type == 'layer' else None
                 )
@@ -1882,7 +1882,7 @@ class ParamsManager:
                 source_config = source['config']
 
                 pm_filename = generate_pm_filename(
-                    self.params_file, opt_index=source_idx,
+                    self.params, opt_index=source_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
                     layer_index=comp_idx if comp_type == 'layer' else None
                 )
@@ -2035,7 +2035,7 @@ class ParamsManager:
                     opt_index = opt_source['index']
 
                     pm_filename = generate_pm_filename(
-                        self.params_file, opt_index=opt_index, dm_index=dm_index
+                        self.params, opt_index=opt_index, dm_index=dm_index
                     )
 
                     if pm_filename is None:
@@ -2089,7 +2089,7 @@ class ParamsManager:
                     opt_index = opt_source['index']
 
                     pm_filename = generate_pm_filename(
-                        self.params_file, opt_index=opt_index, layer_index=layer_index
+                        self.params, opt_index=opt_index, layer_index=layer_index
                     )
 
                     if pm_filename is None:
@@ -3083,7 +3083,7 @@ class ParamsManager:
                             timestamp=False, verbose=False):
         """Generate the interaction matrix filename for a given WFS-DM/Layer combination."""
         return generate_im_filename(
-            self.params_file,
+            self.params,
             wfs_type=wfs_type,
             wfs_index=wfs_index,
             dm_index=dm_index,
