@@ -59,13 +59,13 @@ print(f"  (n_dm_modes, n_layer_modes) = ({p_opt.shape[0]}, {p_opt.shape[1]})")
 print(f"  RMS: {np.sqrt(np.mean(p_opt**2)):.4f}")
 print(f"  Min/Max: {p_opt.min():.4f} / {p_opt.max():.4f}")
 
-print(f"\nFull DM projection matrix (pm_full_dm):")
+print(f"\nDM projection matrix of the first optical source (pm_full_dm):")
 print(f"  Shape: {pm_full_dm.shape}")
-print(f"  (n_opt_sources, n_dm_modes, n_pupil_modes)")
+print(f"  (1, n_dm_modes, n_pupil_modes)")
 
-print(f"\nFull Layer projection matrix (pm_full_layer):")
+print(f"\nLayer projection matrix of the first optical source (pm_full_layer):")
 print(f"  Shape: {pm_full_layer.shape}")
-print(f"  (n_opt_sources, n_layer_modes, n_pupil_modes)")
+print(f"  (1, n_layer_modes, n_pupil_modes)")
 
 print(f"\nOptical sources:")
 print(f"  Count: {info['n_opt_sources']}")
@@ -80,18 +80,18 @@ print(f"\n{'='*70}\n")
 # ===================================================================
 # Step 4: Visualizations
 # ===================================================================
-if pm_full_dm is not None and info['n_opt_sources'] > 1:
-    plt.figure(figsize=(12, 6))
-    for i in range(min(info['n_opt_sources'], 17)):
-        plt.subplot(3, 6, i+1)
-        plt.imshow(pm_full_dm[i, :100, :100], cmap='viridis', aspect='auto')
-        plt.title(f"opt{i+1}\n(w={info['weights'][i]:.2f})", fontsize=8)
-        plt.axis('off')
-    plt.suptitle("DM Projection Matrices - All Optical Sources (first 100 modes)",
-                 fontsize=12)
+# compute_tomographic_projection_matrix returns the PMs of the first optical
+# source only (the sources are processed one at a time)
+if pm_full_dm is not None:
+    plt.figure(figsize=(6, 5))
+    plt.imshow(pm_full_dm[0, :100, :100], cmap='viridis', aspect='auto')
+    plt.colorbar()
+    plt.title(f"DM projection matrix, opt1 (w={info['weights'][0]:.2f}), first 100 modes")
+    plt.xlabel('Pupil modes')
+    plt.ylabel('DM modes')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_pm_dir, "pm_dm_all_sources.png"), dpi=150)
-    print(f"✓ Saved all sources visualization")
+    plt.savefig(os.path.join(output_pm_dir, "pm_dm_opt1.png"), dpi=150)
+    print(f"✓ Saved first source visualization")
 
 plt.figure(figsize=(10, 6))
 plt.hist(p_opt.flatten(), bins=100, edgecolor='black', alpha=0.7)
