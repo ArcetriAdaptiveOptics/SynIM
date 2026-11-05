@@ -2756,7 +2756,7 @@ class ParamsManager:
         for comp, avail in zip(comp_list, comp_avail):
             comp_index = comp['index']
             pm_filename = generate_pm_filename(
-                self.params_file, opt_index=opt_index,
+                self.params, opt_index=opt_index,
                 dm_index=comp_index if comp_type == 'dm' else None,
                 layer_index=comp_index if comp_type == 'layer' else None
             )
@@ -2958,21 +2958,21 @@ class ParamsManager:
         # ==================== 6. COMPUTE WEIGHTED COMBINATION ====================
         # One optical source at a time: its DM and layer PMs are read, the
         # target columns are selected and the weighted products are
-        # accumulated on the compute device. The PMs of all the sources are
+        # accumulated. The PMs of all the sources are
         # never stacked (they would take tens of GB).
         # The sums and the pseudo-inverse are always computed in float64:
         # tpdm_pdm + reg_factor I is ill-conditioned (MORFEO LGS: cond ~4e4,
         # with a large part of p_opt in its weakest directions), so float32
         # products give p_opt errors up to ~6e-2 on GPU and ~6e-4 on CPU.
+        # They are computed on the CPU: on GPUs with slow float64 (e.g. RTX
+        # PRO) it takes about the same time, and the GPU memory stays free.
         if verbose_flag:
             print(f"\n{'='*60}")
             print(f"Computing Weighted Combination")
             print(f"{'='*60}")
 
-        keep_dm_xp = to_xp(xp, keep_dm_cols)
-        keep_layer_xp = to_xp(xp, keep_layer_cols_from_full)
-        tpdm_pdm = xp.zeros((len(keep_dm_cols), len(keep_dm_cols)), dtype=np.float64)
-        tpdm_pl = xp.zeros((len(keep_dm_cols), len(keep_layer_cols_from_full)),
+        tpdm_pdm = np.zeros((len(keep_dm_cols), len(keep_dm_cols)), dtype=np.float64)
+        tpdm_pl = np.zeros((len(keep_dm_cols), len(keep_layer_cols_from_full)),
                            dtype=np.float64)
 
         # Accumulate weighted contributions
@@ -2987,8 +2987,8 @@ class ParamsManager:
                 pm_full_dm = pdm_full[np.newaxis]
                 pm_full_layer = pl_full[np.newaxis]
 
-            pdm_i = to_xp(xp, pdm_full, dtype=np.float64)[keep_dm_xp]
-            pl_i = to_xp(xp, pl_full, dtype=np.float64)[keep_layer_xp]
+            pdm_i = pdm_full[keep_dm_cols].astype(np.float64)
+            pl_i = pl_full[keep_layer_cols_from_full].astype(np.float64)
             w = weights_array[i] / total_weight
 
             tpdm_pdm += pdm_i @ pdm_i.T * w
@@ -2998,8 +2998,6 @@ class ParamsManager:
             if verbose_flag:
                 print(f"  Processed opt{opt_index} (weight={w:.3f})")
 
-        tpdm_pdm = cpuArray(tpdm_pdm)
-        tpdm_pl = cpuArray(tpdm_pl)
         n_dm_sliced_modes = tpdm_pdm.shape[0]
 
         if verbose_flag:
