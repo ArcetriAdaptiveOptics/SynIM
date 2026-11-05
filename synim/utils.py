@@ -485,13 +485,24 @@ def dm3d_to_2d(dm_array, mask,
     for start in range(0, len(flat_idx), pix_block):
         stop = min(start + pix_block, len(flat_idx))
         dm_array_2d[:, start:stop] = dm_rows[flat_idx[start:stop]].T
-    for start in range(0, nmodes, block_size):
-        block = dm_array_2d[start:start + block_size]
-        # normalize by the RMS, then remove the mean (piston)
-        block /= xp_local.sqrt(xp_local.mean(block**2, axis=1, keepdims=True))
-        block -= xp_local.mean(block, axis=1, keepdims=True)
+    normalize_modes(dm_array_2d, xp_local=xp_local, block_size=block_size)
 
     return dm_array_2d
+
+
+def normalize_modes(modes_2d, xp_local=xp, block_size=256):
+    """
+    Normalize in place each mode (row) of a 2D array (n_modes, n_pixels) to
+    unit RMS, then remove its mean (piston), as dm2d_to_3d and dm3d_to_2d do.
+
+    The modes are processed in blocks of block_size rows. Returns modes_2d.
+    """
+    block_size = max(1, int(block_size))
+    for start in range(0, modes_2d.shape[0], block_size):
+        block = modes_2d[start:start + block_size]
+        block /= xp_local.sqrt(xp_local.mean(block**2, axis=1, keepdims=True))
+        block -= xp_local.mean(block, axis=1, keepdims=True)
+    return modes_2d
 
 
 def dm2d_to_3d(dm_array, mask, normalize=True,
@@ -796,6 +807,7 @@ __all__ = [
 
     # DM array conversions
     'dm3d_to_2d',
+    'normalize_modes',
     'dm2d_to_3d',
 
     # Array transformations
