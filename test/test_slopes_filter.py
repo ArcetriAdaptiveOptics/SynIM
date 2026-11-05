@@ -37,6 +37,7 @@ class TestSlopesFilter(unittest.TestCase):
         self.pm = params_manager.ParamsManager.__new__(params_manager.ParamsManager)
         self.pm.params = {'slopec_lgs1': {'filtmat_data': 'filt_test'}}
         self.pm.cm = _FakeCalibManager(self.tmp.name)
+        self.pm._filtmat_cache = {}  # set by __init__, bypassed here
 
     def _expected(self):
         f = self.filtmat.astype(np.float64)

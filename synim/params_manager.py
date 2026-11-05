@@ -138,6 +138,8 @@ class ParamsManager:
         # Cache for DM and WFS parameters (loaded on demand)
         self.dm_cache = {}  # Key: dm_index, Value: dict with dm_array, dm_mask, etc.
         self.wfs_cache = {}  # Key: (wfs_type, wfs_index), Value: dict with wfs params
+        # Offline slopes filter matrices, read once: Key: (path, array module)
+        self._filtmat_cache = {}
 
     def set_require_subapdata_file(self, value):
         """Set whether missing subapdata files should raise an error."""
@@ -1672,7 +1674,7 @@ class ParamsManager:
         # The filter matrices are read once per file and kept, with the dtype
         # of the file (native byte order), on the array module of the IM
         array_module = np if isinstance(im, np.ndarray) else xp
-        cache = self.__dict__.setdefault('_filtmat_cache', {})
+        cache = self._filtmat_cache
         cache_key = (filtmat_path, array_module.__name__)
         if cache_key not in cache:
             with fits.open(filtmat_path) as hdul:
