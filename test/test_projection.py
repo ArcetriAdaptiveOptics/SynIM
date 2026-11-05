@@ -501,10 +501,10 @@ class TestTomographicProjectionAssembly(unittest.TestCase):
     in the tomographic projection matrix assembly.
     """
 
-    @patch('synim.params_manager.ParamsManager.compute_projection_matrix')
+    @patch('synim.params_manager.ParamsManager._load_source_pms')
     @patch('synim.params_manager.extract_dm_list')
     @patch('synim.params_manager.extract_layer_list')
-    def test_mode_truncation_and_ttf_padding(self, mock_layer_list, mock_dm_list, mock_compute_pm):
+    def test_mode_truncation_and_ttf_padding(self, mock_layer_list, mock_dm_list, mock_load_pms):
         from synim.params_manager import ParamsManager
 
         # 1. Setup a dummy ParamsManager without calling __init__
@@ -517,7 +517,8 @@ class TestTomographicProjectionAssembly(unittest.TestCase):
             'dm1': {'nmodes': 100, 'start_mode': 0},
             'dm2': {'nmodes': 100, 'start_mode': 0},
             'layer1': {'nmodes': 200, 'start_mode': 0},
-            'layer2': {'nmodes': 200, 'start_mode': 0}
+            'layer2': {'nmodes': 200, 'start_mode': 0},
+            'source_opt1': {'polar_coordinates': [0.0, 0.0], 'weight': 1.0}
         }
 
         mock_dm_list.return_value = [{'index': '1'}, {'index': '2'}]
@@ -532,10 +533,8 @@ class TestTomographicProjectionAssembly(unittest.TestCase):
         pm.ref_n_modes_dm = [50, 40]      # Target DM modes: 90 total
         pm.ref_n_modes_layer = [60, 70]   # Target Layer modes: 130 total
 
-        # Single optical source with weight 1.0
-        pm.projection_params = {
-            'opt_sources': [{'weight': 1.0}]
-        }
+        # Single optical source with weight 1.0 (source_opt1 in pm.params)
+        pm.projection_params = None
 
         # 2. Create dummy full projection matrices (as if loaded from disk)
         # Shapes: (n_opt_sources, n_total_modes, n_pupil_modes)
@@ -543,11 +542,13 @@ class TestTomographicProjectionAssembly(unittest.TestCase):
         dummy_full_dm = np.random.randn(1, 200, 500).astype(np.float32)
         dummy_full_layer = np.random.randn(1, 400, 500).astype(np.float32)
 
-        mock_compute_pm.return_value = (None, dummy_full_dm, dummy_full_layer)
+        # _load_source_pms returns the PMs of one source: DMs first, then layers
+        mock_load_pms.side_effect = lambda output_dir, opt_index, comp_type, *a, **k: (
+            dummy_full_dm[0] if comp_type == 'dm' else dummy_full_layer[0])
 
         # 3. Call the target function
         p_opt, _, _, info = pm.compute_tomographic_projection_matrix(
-            output_dir=None, save=False, wfs_type='ref', verbose=False
+            output_dir='unused', save=False, wfs_type='ref', verbose=False
         )
 
         # 4. Assertions

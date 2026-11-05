@@ -2729,6 +2729,62 @@ class ParamsManager:
         return results
 
 
+    def _load_source_pms(self, output_dir, opt_index, comp_type, comp_list, comp_avail,
+                         n_pupil_modes=None):
+        """
+        Projection matrices of one optical source for all the DMs or all the
+        layers, read from their files in output_dir and concatenated along the
+        mode axis, in the order of comp_list.
+
+        Args:
+            output_dir (str): directory of the PM files
+            opt_index (int): index of the optical source
+            comp_type (str): 'dm' or 'layer'
+            comp_list (list): components, as from extract_dm_list / extract_layer_list
+            comp_avail (list): number of modes of each component in its PM file
+            n_pupil_modes (int, optional): used for the zero blocks of missing
+                layer files
+
+        Returns:
+            numpy.ndarray: (sum(comp_avail), n_pupil_modes)
+
+        A missing DM file raises FileNotFoundError; a missing layer file is
+        replaced by zeros (with a warning if verbose), as in
+        compute_projection_matrix.
+        """
+        blocks = []
+        for comp, avail in zip(comp_list, comp_avail):
+            comp_index = comp['index']
+            pm_filename = generate_pm_filename(
+                self.params_file, opt_index=opt_index,
+                dm_index=comp_index if comp_type == 'dm' else None,
+                layer_index=comp_index if comp_type == 'layer' else None
+            )
+            pm_path = None if pm_filename is None else os.path.join(output_dir, pm_filename)
+
+            if pm_path is None or not os.path.exists(pm_path):
+                if comp_type == 'dm':
+                    raise FileNotFoundError(f"PM file for opt{opt_index}, dm{comp_index}"
+                                            f" not found: {pm_path}")
+                if n_pupil_modes is None:
+                    raise FileNotFoundError(f"PM file for opt{opt_index}, layer{comp_index}"
+                                            f" not found: {pm_path}")
+                if self.verbose:
+                    print(f"  Warning: PM file for opt{opt_index}, layer{comp_index}"
+                          f" not found ({pm_path}), using zeros")
+                blocks.append(np.zeros((avail, n_pupil_modes), dtype=cpu_float_dtype))
+                continue
+
+            if self.verbose:
+                print(f"  Loading opt{opt_index}: {pm_filename}")
+            pm = cpuArray(Intmat.restore(pm_path).intmat)
+            if pm.shape[0] != avail:
+                raise ValueError(f"{pm_filename}: {pm.shape[0]} modes, expected {avail}"
+                                 f" (nmodes - start_mode of {comp_type}{comp_index})")
+            blocks.append(pm)
+
+        return np.concatenate(blocks, axis=0)
+
     def compute_tomographic_projection_matrix(self, output_dir=None, save=False,
                                             wfs_type='lgs', verbose=None):
         """
@@ -2750,11 +2806,17 @@ class ParamsManager:
                 mode truncation configurations.
             verbose (bool, optional): Override the class's verbose setting.
         
+        The PM files of the optical sources are read and used one source at a
+        time, so that the PMs of all the sources are never held in memory
+        together.
+
         Returns:
             tuple: (p_opt, pm_full_dm, pm_full_layer, info)
                 - p_opt: Final projection matrix (n_dm_modes_target, n_layer_modes_target)
-                - pm_full_dm: Full DM projection matrix (loaded from disk)
-                - pm_full_layer: Full Layer projection matrix (loaded from disk)
+                - pm_full_dm: DM projection matrix of the first optical source,
+                  all the DM modes, shape (1, n_dm_modes, n_pupil_modes)
+                - pm_full_layer: Layer projection matrix of the first optical
+                  source, all the layer modes, shape (1, n_layer_modes, n_pupil_modes)
                 - info: dict with computation metadata
         """
 
@@ -2776,18 +2838,15 @@ class ParamsManager:
             print(f"  Regularization factor: {reg_factor}")
             print(f"{'='*60}\n")
 
-        # ==================== 1. LOAD FULL PM MATRICES ====================
-        # Compute or load the giant un-truncated 3D projection matrices
-        _, pm_full_dm, pm_full_layer = self.compute_projection_matrix(
-            reg_factor=reg_factor,
-            output_dir=output_dir,
-            save=False  # Do not save intermediate giant matrices
-        )
+        if output_dir is None:
+            raise ValueError("output_dir must be specified.")
 
-        if verbose_flag:
-            print(f"\n  Loaded giant PM matrices from disk/memory:")
-            print(f"    pm_full_dm shape: {pm_full_dm.shape} (opt, dm_modes, pup_modes)")
-            print(f"    pm_full_layer shape: {pm_full_layer.shape} (opt, lay_modes, pup_modes)")
+        dm_list = extract_dm_list(self.params)
+        layer_list = extract_layer_list(self.params)
+        if not dm_list:
+            raise ValueError("No DMs found in configuration.")
+        if not layer_list:
+            raise ValueError("No layers found in configuration.")
 
         # ==================== 2. EXTRACT TRUNCATION LIMITS ====================
         # Fetch the desired target modes from the YAML configuration
@@ -2811,12 +2870,14 @@ class ParamsManager:
         keep_dm_cols = []
         curr_offset = 0
         n_dm_modes_target = 0
-        
+        dm_avail = []   # modes of each DM in its PM files
+
         # Iterate over physically defined DMs
-        for i, dm in enumerate(extract_dm_list(self.params)):
+        for i, dm in enumerate(dm_list):
             dm_key = self._resolve_component_key('dm', int(dm['index']))
             avail = self.params[dm_key].get('nmodes') - self.params[dm_key].get('start_mode', 0)
-            
+            dm_avail.append(avail)
+
             # If the configuration list is shorter than physical DMs, extra DMs are ignored (keep=0)
             if truncate_dm_cfg:
                 keep = truncate_dm_cfg[i] if i < len(truncate_dm_cfg) else 0
@@ -2830,9 +2891,7 @@ class ParamsManager:
                 
             curr_offset += avail
 
-        # Slice the 3D DM matrix: keep only the required target modes
         keep_dm_cols = np.array(keep_dm_cols, dtype=int)
-        pm_full_dm_sliced = pm_full_dm[:, keep_dm_cols, :]
 
 
         # ==================== 4. SLICE LAYER PROJECTION MATRIX ====================
@@ -2842,13 +2901,14 @@ class ParamsManager:
         curr_full_offset = 0
         curr_target_offset = 0
         n_layer_modes_target = 0
-        n_layer_modes_full = pm_full_layer.shape[1]
+        layer_avail = []   # modes of each layer in its PM files
 
         # Iterate over physically defined Layers
-        for i, layer in enumerate(extract_layer_list(self.params)):
+        for i, layer in enumerate(layer_list):
             layer_key = self._resolve_component_key('layer', int(layer['index']))
             start_mode = self.params[layer_key].get('start_mode', 0)
             avail = self.params[layer_key].get('nmodes') - start_mode
+            layer_avail.append(avail)
 
             # If the configuration list is shorter than physical layers, ignore the rest
             if truncate_layer_cfg:
@@ -2873,26 +2933,20 @@ class ParamsManager:
                 
             curr_full_offset += avail
 
-        # Slice the 3D Layer matrix: keep only the high-frequency target modes
         keep_layer_cols_from_full = np.array(keep_layer_cols_from_full, dtype=int)
-        pm_full_layer_sliced = pm_full_layer[:, keep_layer_cols_from_full, :]
+        n_layer_modes_full = curr_full_offset
 
         if len(keep_layer_cols_from_full) == 0 or len(keep_dm_cols) == 0:
              raise ValueError("Mode truncation removed all valid modes from DMs or Layers.")
 
         if verbose_flag:
-            print(f"  Sliced DM PM shape: {pm_full_dm_sliced.shape}")
-            print(f"  Sliced Layer PM shape: {pm_full_layer_sliced.shape}")
+            print(f"  DM modes kept: {len(keep_dm_cols)} of {curr_offset}")
+            print(f"  Layer modes kept: {len(keep_layer_cols_from_full)} of {n_layer_modes_full}")
 
 
         # ==================== 5. EXTRACT OPTICAL SOURCE WEIGHTS ====================
-        if self.projection_params is not None:
-            opt_sources = self.projection_params['opt_sources']
-            weights_array = np.array([src['weight'] for src in opt_sources])
-        else:
-            opt_sources_list = extract_opt_list(self.params)
-            opt_sources = [{'index': src['index'], **src['config']} for src in opt_sources_list]
-            weights_array = np.array([src.get('weight', 1.0) for src in opt_sources])
+        opt_sources = extract_opt_list(self.params)
+        weights_array = np.array([src['config'].get('weight', 1.0) for src in opt_sources])
 
         n_opt = len(opt_sources)
         total_weight = np.sum(weights_array)
@@ -2902,30 +2956,51 @@ class ParamsManager:
 
 
         # ==================== 6. COMPUTE WEIGHTED COMBINATION ====================
+        # One optical source at a time: its DM and layer PMs are read, the
+        # target columns are selected and the weighted products are
+        # accumulated on the compute device. The PMs of all the sources are
+        # never stacked (they would take tens of GB).
+        # The sums and the pseudo-inverse are always computed in float64:
+        # tpdm_pdm + reg_factor I is ill-conditioned (MORFEO LGS: cond ~4e4,
+        # with a large part of p_opt in its weakest directions), so float32
+        # products give p_opt errors up to ~6e-2 on GPU and ~6e-4 on CPU.
         if verbose_flag:
             print(f"\n{'='*60}")
             print(f"Computing Weighted Combination")
             print(f"{'='*60}")
 
-        # Dimensions for math are strictly tied to the sliced arrays
-        n_dm_sliced_modes = pm_full_dm_sliced.shape[1]
-        n_layer_sliced_modes = pm_full_layer_sliced.shape[1]
-        n_pupil_modes = pm_full_dm_sliced.shape[2]
-
-        tpdm_pdm = np.zeros((n_dm_sliced_modes, n_dm_sliced_modes), dtype=cpu_float_dtype)
-        tpdm_pl = np.zeros((n_dm_sliced_modes, n_layer_sliced_modes), dtype=cpu_float_dtype)
+        keep_dm_xp = to_xp(xp, keep_dm_cols)
+        keep_layer_xp = to_xp(xp, keep_layer_cols_from_full)
+        tpdm_pdm = xp.zeros((len(keep_dm_cols), len(keep_dm_cols)), dtype=np.float64)
+        tpdm_pl = xp.zeros((len(keep_dm_cols), len(keep_layer_cols_from_full)),
+                           dtype=np.float64)
 
         # Accumulate weighted contributions
-        for i in range(n_opt):
-            pdm_i = pm_full_dm_sliced[i, :, :]      
-            pl_i = pm_full_layer_sliced[i, :, :]    
+        for i, opt_source in enumerate(opt_sources):
+            opt_index = opt_source['index']
+            pdm_full = self._load_source_pms(output_dir, opt_index, 'dm', dm_list, dm_avail)
+            pl_full = self._load_source_pms(output_dir, opt_index, 'layer', layer_list,
+                                            layer_avail, n_pupil_modes=pdm_full.shape[1])
+            if i == 0:
+                # first source only, as (1, n_modes, n_pupil_modes), for display
+                n_pupil_modes = pdm_full.shape[1]
+                pm_full_dm = pdm_full[np.newaxis]
+                pm_full_layer = pl_full[np.newaxis]
+
+            pdm_i = to_xp(xp, pdm_full, dtype=np.float64)[keep_dm_xp]
+            pl_i = to_xp(xp, pl_full, dtype=np.float64)[keep_layer_xp]
             w = weights_array[i] / total_weight
 
             tpdm_pdm += pdm_i @ pdm_i.T * w
             tpdm_pl += pdm_i @ pl_i.T * w
+            del pdm_full, pl_full, pdm_i, pl_i
 
             if verbose_flag:
-                print(f"  Processed opt{i+1} (weight={w:.3f})")
+                print(f"  Processed opt{opt_index} (weight={w:.3f})")
+
+        tpdm_pdm = cpuArray(tpdm_pdm)
+        tpdm_pl = cpuArray(tpdm_pl)
+        n_dm_sliced_modes = tpdm_pdm.shape[0]
 
         if verbose_flag:
             print(f"\n  tpdm_pdm shape: {tpdm_pdm.shape} (P_DM^T @ P_DM)")
@@ -2939,7 +3014,7 @@ class ParamsManager:
             print(f"{'='*60}")
 
         # Add Tikhonov regularization factor
-        tpdm_pdm_reg = tpdm_pdm + reg_factor * np.eye(n_dm_sliced_modes, dtype=cpu_float_dtype)
+        tpdm_pdm_reg = tpdm_pdm + reg_factor * np.eye(n_dm_sliced_modes, dtype=np.float64)
 
         # Compute pseudoinverse
         rcond = 1e-14
@@ -2971,6 +3046,8 @@ class ParamsManager:
         else:
             # No zero-padding needed
             p_opt = p_opt_reduced
+        # computed in float64, returned and saved with the library precision
+        p_opt = p_opt.astype(cpu_float_dtype, copy=False)
 
         if verbose_flag:
             print(f"\n  Tomographic projection matrix successfully computed: {p_opt.shape}")
