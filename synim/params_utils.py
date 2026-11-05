@@ -390,6 +390,36 @@ def _modes_2d(influence_function, xp_local, float_dtype_local):
     return modes
 
 
+def find_slopec_key(wfs_key, params):
+    """
+    Key of the slopec section of a WFS (e.g. sh_lgs1 -> slopec_lgs1,
+    pyramid_ngs1 -> slopec_ngs1, sh1 -> slopec1), falling back to 'slopec'.
+
+    Returns:
+        str or None: the key, or None if there is no matching section
+    """
+    slopec_key = None
+    if wfs_key.startswith('sh_'):
+        potential_slopec = 'slopec_' + wfs_key[3:]
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+    elif wfs_key.startswith('pyramid_'):
+        potential_slopec = 'slopec_' + wfs_key[8:]
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+    # Handle numeric indices (e.g., sh1 -> slopec1)
+    elif any(char.isdigit() for char in wfs_key):
+        numeric_part = ''.join(char for char in wfs_key if char.isdigit())
+        potential_slopec = f'slopec{numeric_part}'
+        if potential_slopec in params:
+            slopec_key = potential_slopec
+
+    # Check standard slopec key
+    if slopec_key is None and 'slopec' in params:
+        slopec_key = 'slopec'
+    return slopec_key
+
+
 def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=True):
     """
     Find and load SubapData for valid subapertures.
@@ -418,28 +448,7 @@ def find_subapdata(cm, wfs_params, wfs_key, params, verbose=False, require_file=
 
     # Second check - Try to find corresponding slopec section based on WFS name
     elif wfs_key is not None:
-        # Determine potential slopec key based on WFS key (e.g., sh_lgs1 -> slopec_lgs1)
-        slopec_key = None
-        if wfs_key.startswith('sh_'):
-            potential_slopec = 'slopec_' + wfs_key[3:]
-            if potential_slopec in params:
-                slopec_key = potential_slopec
-        elif wfs_key.startswith('pyramid_'):
-            potential_slopec = 'slopec_' + wfs_key[8:]
-            if potential_slopec in params:
-                slopec_key = potential_slopec
-        # Handle numeric indices (e.g., sh1 -> slopec1)
-        elif any(char.isdigit() for char in wfs_key):
-            # Extract numeric portion
-            numeric_part = ''.join(char for char in wfs_key if char.isdigit())
-            if numeric_part:
-                potential_slopec = f'slopec{numeric_part}'
-                if potential_slopec in params:
-                    slopec_key = potential_slopec
-
-        # Check standard slopec key
-        if slopec_key is None and 'slopec' in params:
-            slopec_key = 'slopec'
+        slopec_key = find_slopec_key(wfs_key, params)
 
         if slopec_key:
             slopec_params = params[slopec_key]
@@ -1558,7 +1567,7 @@ def compute_pseudoinverse_reconstructor(interaction_matrix, xp=np,
 def compute_mmse_reconstructor(interaction_matrix, C_atm,
                               noise_variance=None, C_noise=None,
                               cinverse=False, xp=np, dtype=np.float32,
-                              verbose=False):
+                              verbose=False, to_host=True):
     """
     Compute the Minimum Mean Square Error (MMSE) reconstructor.
     
@@ -1573,9 +1582,13 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         xp (module, optional): Numerical library to use (e.g., numpy or cupy).
         dtype (data-type, optional): Data type for computations.
         verbose (bool, optional): Whether to print detailed information during computation.
+        to_host (bool, optional): If True (default), the reconstructor is returned
+            as a numpy array. If False, it is returned as an xp array (on the GPU
+            with xp=cupy), without copying it to the host. Inputs that are
+            already xp arrays of the given dtype are used without copies.
         
     Returns:
-        numpy.ndarray: MMSE reconstructor matrix
+        numpy.ndarray: MMSE reconstructor matrix (xp array if to_host is False)
     """
     if verbose:
         print("Starting MMSE reconstructor computation")
@@ -1701,7 +1714,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         print("MMSE reconstruction matrix computed")
         print(f"  Matrix shape: {W_mmse.shape}")
 
-    return cpuArray(W_mmse)
+    return cpuArray(W_mmse) if to_host else W_mmse
 
 
 def update_component_calibration_metadata(component_config=None,
@@ -2426,6 +2439,7 @@ __all__ = [
     'validate_opt_sources',
     'load_pupilstop',
     'load_influence_functions',
+    'find_slopec_key',
     'find_subapdata',
     'extract_projection_params',
     'extract_source_coordinates',

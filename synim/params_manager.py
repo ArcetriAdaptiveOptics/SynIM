@@ -138,6 +138,8 @@ class ParamsManager:
         # Cache for DM and WFS parameters (loaded on demand)
         self.dm_cache = {}  # Key: dm_index, Value: dict with dm_array, dm_mask, etc.
         self.wfs_cache = {}  # Key: (wfs_type, wfs_index), Value: dict with wfs params
+        # Offline slopes filter matrices, read once: Key: (path, array module)
+        self._filtmat_cache = {}
 
     def set_require_subapdata_file(self, value):
         """Set whether missing subapdata files should raise an error."""
@@ -835,6 +837,17 @@ class ParamsManager:
             # Pyramid specific parameters
             wfs_nsubaps = wfs_params.get('pup_diam', 0)
 
+        # SynIM builds slopes as two blocks (all the subapertures of one axis,
+        # then all of the other) in the interaction matrices, the noise
+        # covariance and the illumination weights: interleaved slopes would
+        # be silently in the wrong order
+        slopec_key = find_slopec_key(wfs_key, self.params)
+        if slopec_key is not None and self.params[slopec_key].get('interleave', False):
+            raise NotImplementedError(
+                f"{slopec_key}: interleaved slopes (interleave: true) are not"
+                f" supported by SynIM, which orders the slopes of {wfs_key} as"
+                f" two blocks (one axis, then the other)")
+
         # Load SubapData for valid subapertures
         idx_valid_sa = find_subapdata(
             self.cm,
@@ -1142,7 +1155,7 @@ class ParamsManager:
 
                 # Generate filename
                 im_filename = generate_im_filename(
-                    self.params_file,
+                    self.params,
                     wfs_type=source_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
@@ -1472,7 +1485,7 @@ class ParamsManager:
         first_wfs_idx = int(wfs_list[0]['index'])
         first_comp_idx = component_indices[0]
         first_im_filename = generate_im_filename(
-            self.params_file,
+            self.params,
             wfs_type=wfs_type,
             wfs_index=first_wfs_idx,
             dm_index=first_comp_idx if component_type == 'dm' else None,
@@ -1497,7 +1510,7 @@ class ParamsManager:
 
                 # Generate and load the interaction matrix file
                 im_filename = generate_im_filename(
-                    self.params_file,
+                    self.params,
                     wfs_type=wfs_type,
                     wfs_index=wfs_idx,
                     dm_index=comp_ind if component_type == 'dm' else None,
@@ -1516,8 +1529,10 @@ class ParamsManager:
                 if self.verbose:
                     print(f"    IM shape: {intmat_obj.intmat.shape}")
 
-                # Use intmat_obj.intmat as base (on CPU: SPECULA may restore it on GPU)
-                im = cpuArray(intmat_obj.intmat)
+                # Filter and select the modes on the compute device (SPECULA may
+                # already have restored the IM there): only the final block is
+                # copied to the host
+                im = to_xp(xp, intmat_obj.intmat)
 
                 # *** APPLY FILTER HERE (after loading) ***
                 if apply_filter:
@@ -1554,10 +1569,18 @@ class ParamsManager:
                 else:
                     idx_start = sum(n_slopes_list[:ii])
 
+                # A contiguous range of modes (the usual case) is a slice, not a
+                # gather of columns
+                if relative_mode_idx == list(range(relative_mode_idx[0],
+                                                   relative_mode_idx[-1] + 1)):
+                    mode_sel = slice(relative_mode_idx[0], relative_mode_idx[-1] + 1)
+                else:
+                    mode_sel = relative_mode_idx
+
                 try:
                     im_full[idx_start:idx_start+n_slopes_list[ii],
                         start_col_in_full:start_col_in_full+n_modes_this_comp] = \
-                        im[:, relative_mode_idx]
+                        cpuArray(im[:, mode_sel])
                 except Exception as e:
                     print(f"Error assembling IM for WFS {ii+1}, Component {comp_ind}: {e}")
                     print(f"  IM shape: {im.shape}")
@@ -1659,8 +1682,16 @@ class ParamsManager:
                 print(f"    Warning: Filter file not found: {filtmat_path}")
             return im
 
-        with fits.open(filtmat_path) as hdul:
-            filtmat = hdul[0].data  # Shape: (2, n_slopes, n_modes)
+        # The filter matrices are read once per file and kept, with the dtype
+        # of the file (native byte order), on the array module of the IM
+        array_module = np if isinstance(im, np.ndarray) else xp
+        cache = self._filtmat_cache
+        cache_key = (filtmat_path, array_module.__name__)
+        if cache_key not in cache:
+            with fits.open(filtmat_path) as hdul:
+                filtmat = hdul[0].data  # Shape: (2, n_slopes, n_modes)
+            cache[cache_key] = array_module.asarray(filtmat.astype(filtmat.dtype.newbyteorder('=')))
+        filtmat = cache[cache_key]
 
         debug_verbose = False
         if debug_verbose:
@@ -1811,7 +1842,7 @@ class ParamsManager:
                 source_idx = source['index']
 
                 pm_filename = generate_pm_filename(
-                    self.params_file, opt_index=source_idx,
+                    self.params, opt_index=source_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
                     layer_index=comp_idx if comp_type == 'layer' else None
                 )
@@ -1871,7 +1902,7 @@ class ParamsManager:
                 source_config = source['config']
 
                 pm_filename = generate_pm_filename(
-                    self.params_file, opt_index=source_idx,
+                    self.params, opt_index=source_idx,
                     dm_index=comp_idx if comp_type == 'dm' else None,
                     layer_index=comp_idx if comp_type == 'layer' else None
                 )
@@ -2024,7 +2055,7 @@ class ParamsManager:
                     opt_index = opt_source['index']
 
                     pm_filename = generate_pm_filename(
-                        self.params_file, opt_index=opt_index, dm_index=dm_index
+                        self.params, opt_index=opt_index, dm_index=dm_index
                     )
 
                     if pm_filename is None:
@@ -2078,7 +2109,7 @@ class ParamsManager:
                     opt_index = opt_source['index']
 
                     pm_filename = generate_pm_filename(
-                        self.params_file, opt_index=opt_index, layer_index=layer_index
+                        self.params, opt_index=opt_index, layer_index=layer_index
                     )
 
                     if pm_filename is None:
@@ -3072,7 +3103,7 @@ class ParamsManager:
                             timestamp=False, verbose=False):
         """Generate the interaction matrix filename for a given WFS-DM/Layer combination."""
         return generate_im_filename(
-            self.params_file,
+            self.params,
             wfs_type=wfs_type,
             wfs_index=wfs_index,
             dm_index=dm_index,
@@ -3794,7 +3825,11 @@ class ParamsManager:
                 )
                 # fill with 1e-6 to avoid division by zero
                 illumination[illumination < 1e-6] = 1e-6
-                illumination_list.append(np.repeat(illumination, 2).astype(cpu_float_dtype))
+                # one weight per slope: the slopes of a WFS are two blocks,
+                # all the subapertures of one axis and then all of the other
+                # (as in the interaction matrices and calc_noise_cov_elong),
+                # not interleaved, so the weights are tiled, not repeated
+                illumination_list.append(np.tile(illumination, 2).astype(cpu_float_dtype))
 
                 if verbose_flag:
                     print(f"    WFS {i+1}: {n_slopes_this_wfs} slopes, "
@@ -3829,9 +3864,10 @@ class ParamsManager:
                 verbose=verbose_flag
             )
 
-            # scale by illumination
-            illumination_inv_array = np.diag(illumination_concat)
-            C_noise_inv = illumination_inv_array @ C_noise_inv
+            # scale by illumination: diag(illumination) @ C_noise_inv, as a
+            # row scaling in place (same values, no dense n_slopes^3 product
+            # and no second n_slopes x n_slopes array)
+            C_noise_inv *= illumination_concat[:, np.newaxis]
 
             if verbose_flag:
                 diag_vals = np.diag(C_noise_inv)
