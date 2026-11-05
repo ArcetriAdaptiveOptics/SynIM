@@ -1686,7 +1686,11 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     if not xp.all(xp.isfinite(H)):
         raise ValueError("H contains NaN or Inf values!")
 
-    # Solve H W = B, H and B overwritten
+    # Solve H W = B, H and B overwritten. Cholesky is chosen from the symmetry
+    # of Cz^(-1) only: potrf reads only the lower triangle of H, so a slightly
+    # asymmetric H (e.g. from a float32 Cx^(-1), or the rounding of the
+    # products) is implicitly symmetrized. This is fine for an H that is
+    # symmetric positive definite up to rounding.
     if verbose:
         print(f"Computing W = H^(-1) A' Cz^(-1)"
               f" ({'Cholesky' if symmetric_noise else 'LU'} solve)")
