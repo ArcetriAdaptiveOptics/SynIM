@@ -3792,7 +3792,11 @@ class ParamsManager:
                 )
                 # fill with 1e-6 to avoid division by zero
                 illumination[illumination < 1e-6] = 1e-6
-                illumination_list.append(np.repeat(illumination, 2).astype(cpu_float_dtype))
+                # one weight per slope: the slopes of a WFS are two blocks,
+                # all the subapertures of one axis and then all of the other
+                # (as in the interaction matrices and calc_noise_cov_elong),
+                # not interleaved, so the weights are tiled, not repeated
+                illumination_list.append(np.tile(illumination, 2).astype(cpu_float_dtype))
 
                 if verbose_flag:
                     print(f"    WFS {i+1}: {n_slopes_this_wfs} slopes, "
