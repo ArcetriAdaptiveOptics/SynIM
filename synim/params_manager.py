@@ -2358,7 +2358,8 @@ class ParamsManager:
                                         inverse_cov_output_dir=None,
                                         inverse_cov_prefix=None,
                                         verbose=None,
-                                        in_memory_ims=False):
+                                        in_memory_ims=False,
+                                        mmse_on_device=False):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
         
@@ -2390,7 +2391,13 @@ class ParamsManager:
             in_memory_ims (bool, optional): If True, the interaction matrices are
                 kept in memory (on the compute device) and not written to / read
                 from self.im_dir (existing files are then not reused)
-            
+            mmse_on_device (bool, optional): If True (MMSE only), the assembled
+                interaction matrix, the noise covariance and the MMSE are computed
+                on the compute device (xp), and only the reconstructor is copied to
+                the host. Faster on GPU, but it needs more GPU memory (for MORFEO LGS
+                ~35 GB peak instead of ~29 GB). 'im_full' and 'C_noise' in the
+                result are then xp arrays.
+
         Returns:
             dict: Dictionary with:
                 - 'reconstructor': Reconstructor matrix (MMSE or pseudo-inverse)
@@ -2445,7 +2452,8 @@ class ParamsManager:
                 component_type=component_type,
                 save=False,  # Don't save assembled IM
                 slope_method=slope_method,
-                im_arrays=ims if in_memory_ims else None
+                im_arrays=ims if in_memory_ims else None,
+                to_host=not (mmse_on_device and reconstructor_method == 'mmse')
             )
         del ims
 
@@ -2548,7 +2556,8 @@ class ParamsManager:
                 use_elongation=recon_params['noise_elong_model'],
                 active_wfs_mask=active_wfs_mask,
                 return_diagnostics=save_inverse_covariances,
-                verbose=verbose_flag
+                verbose=verbose_flag,
+                to_host=not mmse_on_device
             )
 
             if save_inverse_covariances:
@@ -2638,7 +2647,7 @@ class ParamsManager:
                 noise_variance=None,  # Already in C_noise
                 C_noise=C_noise_inv,
                 cinverse=True,
-                xp=np,
+                xp=xp if mmse_on_device else np,
                 dtype=cpu_float_dtype,
                 verbose=verbose_flag
             )
