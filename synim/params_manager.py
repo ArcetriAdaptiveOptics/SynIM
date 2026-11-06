@@ -1304,7 +1304,8 @@ class ParamsManager:
     def assemble_interaction_matrices(self, wfs_type='ngs', output_im_dir=None,
                                     component_type='dm', save=False,
                                     apply_filter=True, active_wfs_mask=None,
-                                    slope_method='derivatives', im_arrays=None):
+                                    slope_method='derivatives', im_arrays=None,
+                                    to_host=True):
         """
         Assemble interaction matrices for a specific type of WFS into
         a single full interaction matrix.
@@ -1323,7 +1324,9 @@ class ParamsManager:
             im_arrays (dict, optional): Interaction matrices in memory, keyed by
                 filename, as returned by compute_interaction_matrices(in_memory=True):
                 used instead of the files in output_im_dir
-            
+            to_host (bool, optional): If True (default), the assembled matrix is a
+                numpy array; if False it stays on the compute device (xp array)
+
         Returns:
             tuple: (im_full, n_slopes_per_wfs, mode_indices, component_indices) -
                 Assembled matrix and associated parameters
@@ -1523,7 +1526,7 @@ class ParamsManager:
             im_dtype = first_intmat_obj.intmat.dtype
 
         # Create the full interaction matrix
-        im_full = np.zeros((n_tot_slopes, n_tot_modes), dtype=im_dtype)
+        im_full = (np if to_host else xp).zeros((n_tot_slopes, n_tot_modes), dtype=im_dtype)
 
         # ==================== ASSEMBLE MATRICES ====================
         # Load and assemble the interaction matrices
@@ -1608,7 +1611,7 @@ class ParamsManager:
                 try:
                     im_full[idx_start:idx_start+n_slopes_list[ii],
                         start_col_in_full:start_col_in_full+n_modes_this_comp] = \
-                        cpuArray(im[:, mode_sel])
+                        (cpuArray(im[:, mode_sel]) if to_host else im[:, mode_sel])
                 except Exception as e:
                     print(f"Error assembling IM for WFS {ii+1}, Component {comp_ind}: {e}")
                     print(f"  IM shape: {im.shape}")
