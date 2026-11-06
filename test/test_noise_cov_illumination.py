@@ -20,6 +20,7 @@ from unittest import mock
 import numpy as np
 
 # SynIM (and SPECULA) are initialized by test/__init__.py, on CPU or GPU
+import synim
 import synim.synim as synim_mod  # the module referenced as `synim` in params_manager
 from synim.params_manager import ParamsManager
 
@@ -57,7 +58,7 @@ def _make_pm(n_valid_per_wfs, low_idx_per_wfs):
     return pm
 
 
-def _run(pm, n_valid, use_elongation, elong_blocks=None):
+def _run(pm, n_valid, use_elongation, elong_blocks=None, to_host=True):
     ill_iter = iter(pm._ills)
     n_total = 2 * sum(n_valid)
     with contextlib.ExitStack() as stack:
@@ -65,12 +66,14 @@ def _run(pm, n_valid, use_elongation, elong_blocks=None):
             synim_mod, 'compute_subaperture_illumination',
             side_effect=lambda **kw: next(ill_iter).copy()))
         if elong_blocks is not None:
+            full = _blockdiag(elong_blocks)
+            # like the real builder: on the compute device when to_host is False
             stack.enter_context(mock.patch.object(
-                pm, '_build_elongated_noise_covariance',
-                create=True, return_value=_blockdiag(elong_blocks)))
+                pm, '_build_elongated_noise_covariance', create=True,
+                side_effect=lambda **kw: full if kw['to_host'] else synim.to_xp(synim.xp, full)))
         return pm._build_noise_covariance_impl(
             False, 'lgs', None, n_total, None, None, use_elongation,
-            None, True)
+            None, True, to_host)
 
 
 def _blockdiag(blocks):
@@ -115,6 +118,16 @@ class TestNoiseCovIllumination(unittest.TestCase):
         np.testing.assert_allclose(C, C.T, atol=1e-12)
         w = np.tile(pm._ills[0], 2)
         np.testing.assert_allclose(C, w[:, None] * P)
+
+    def test_elongated_on_device(self):
+        n = 5
+        pm = _make_pm([n], [[1, 3]])
+        P = _elong_block(n)
+        expected, _ = _run(pm, [n], use_elongation=True, elong_blocks=[P])
+        pm = _make_pm([n], [[1, 3]])
+        C, _ = _run(pm, [n], use_elongation=True, elong_blocks=[P], to_host=False)
+        self.assertIsInstance(C, synim.xp.ndarray)
+        np.testing.assert_array_equal(synim.cpuArray(C), expected)
 
     def test_multi_wfs_different_sizes(self):
         n_valid = [4, 6]
