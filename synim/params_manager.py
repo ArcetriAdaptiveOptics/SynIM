@@ -3572,8 +3572,9 @@ class ParamsManager:
             # Place in full matrix
             idx_full = slice(current_idx, current_idx + len(valid_modes))
             if return_inverse:
-                C_atm_full[idx_full, idx_full] = \
-                    np.linalg.pinv(C_atm_sub * weight * conversion_factor)
+                # Cholesky inverse on the compute device (pinv if it fails)
+                C_atm_full[idx_full, idx_full] = cpuArray(
+                    invert_spd(C_atm_sub * weight * conversion_factor, xp=xp))
             else:
                 C_atm_full[idx_full, idx_full] = C_atm_sub * weight * conversion_factor
 

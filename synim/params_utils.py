@@ -1829,6 +1829,27 @@ def _symmetric_matmul(a, b, xp, n_tiles=8):
     return out
 
 
+def invert_spd(A, xp=np):
+    """
+    Inverse of a symmetric positive definite matrix with a Cholesky
+    factorization (only the lower triangle of A is read), on the device of xp.
+    Falls back to the pseudo-inverse if the factorization fails (A singular or
+    not positive definite). A is not modified.
+
+    Much faster than pinv (an SVD), also on GPUs with slow float64, and more
+    accurate for covariance matrices: their condition number comes mostly from
+    the different variances of the modes, which the Cholesky factorization
+    handles well.
+    """
+    A = to_xp(xp, A)
+    n = A.shape[0]
+    inv = _solve_inplace(xp.array(A, order='F', copy=True),
+                         xp.eye(n, dtype=A.dtype, order='F'), xp, positive_definite=True)
+    if inv is None:
+        return xp.linalg.pinv(A)
+    return inv
+
+
 def _solve_inplace(H, B, xp, positive_definite):
     """
     Solve H W = B in place: H (F-contiguous, n x n) is overwritten by its
@@ -2628,6 +2649,7 @@ __all__ = [
     'generate_cov_filename',
     'compute_layer_weights_from_turbulence',
     'compute_mmse_reconstructor',
+    'invert_spd',
     'update_component_calibration_metadata',
     'compute_influence_functions_and_modalbases',
     'generate_filter_matrix_from_intmat',
