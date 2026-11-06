@@ -150,6 +150,13 @@ class TestNoiseCovAxes(unittest.TestCase):
         self.assertGreater(cov[launcher_block, launcher_block],
                            cov[1 - launcher_block, 1 - launcher_block])
 
+    def test_assembled_on_device(self):
+        pm = _make_pm(self.idx_valid_sa, (LAUNCHER_OFFSET_M, 0.0))
+        expected = pm._build_elongated_noise_covariance('lgs')
+        on_device = pm._build_elongated_noise_covariance('lgs', to_host=False)
+        self.assertIsInstance(on_device, synim.xp.ndarray)
+        np.testing.assert_array_equal(synim.cpuArray(on_device), expected)
+
     def test_launcher_on_x(self):
         self._check('x', (LAUNCHER_OFFSET_M, 0.0))
 
