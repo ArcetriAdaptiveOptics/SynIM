@@ -12,9 +12,14 @@ versions keep working.
 Physical check: rotating the WFS by +90 deg maps a launcher at +x of the
 telescope onto +y of the WFS, so the precision matrix must equal the one of a
 launcher at +y given in the WFS frame (no flag). No SPECULA simulation is run.
+
+The tests that call the real calc_noise_cov_elong with a rotation need a
+SPECULA version with wfs_rotation_in_deg (SPECULA #892): they are skipped
+with an older one. The others replace calc_noise_cov_elong and always run.
 """
 import contextlib
 import functools
+import inspect
 import unittest
 from unittest import mock
 
@@ -22,7 +27,11 @@ import numpy as np
 
 import synim.params_manager as pm_module
 from synim.params_manager import ParamsManager
-from specula.data_objects.laser_launch_telescope import launcher_in_wfs_frame
+
+SPECULA_HAS_ROTATION = 'wfs_rotation_in_deg' in \
+    inspect.signature(pm_module.calc_noise_cov_elong).parameters
+needs_rotation = unittest.skipUnless(
+    SPECULA_HAS_ROTATION, 'SPECULA calc_noise_cov_elong() without wfs_rotation_in_deg (#892)')
 
 N_PIX = 48
 N_SUBAPS = 8
@@ -78,21 +87,39 @@ def _recording_wrapper(real, calls):
     return wrapper
 
 
+def _recording_new_specula(calls):
+    """
+    calc_noise_cov_elong of a SPECULA with wfs_rotation_in_deg (in its
+    signature), recording its kwargs: the rotation is not applied, the
+    result is the one of the installed function without it.
+    """
+    real = pm_module.calc_noise_cov_elong
+
+    def new_calc_noise_cov_elong(*args, wfs_rotation_in_deg=None, **kwargs):
+        calls.append(dict(kwargs, wfs_rotation_in_deg=wfs_rotation_in_deg))
+        return real(*args, **kwargs)
+    return new_calc_noise_cov_elong
+
+
 class TestNoiseCovAbsoluteLauncher(unittest.TestCase):
 
+    @needs_rotation
     def test_rotation_90_equals_launcher_on_y(self):
         absolute = _precision((OFFSET_M, 0.0), True, {'rotAnglePhInDeg': 90.0})
         in_wfs_frame = _precision((0.0, OFFSET_M))
         np.testing.assert_allclose(absolute, in_wfs_frame, rtol=1e-5,
                                    atol=1e-6 * np.abs(in_wfs_frame).max())
 
+    @needs_rotation
     def test_rotation_30_equals_launcher_in_wfs_frame(self):
+        from specula.data_objects.laser_launch_telescope import launcher_in_wfs_frame
         pos, _ = launcher_in_wfs_frame([OFFSET_M, 0.0, 0.0], [0.0, 0.0], 30.0)
         absolute = _precision((OFFSET_M, 0.0), True, {'rotAnglePhInDeg': 30.0})
         in_wfs_frame = _precision((pos[0], pos[1]))
         np.testing.assert_allclose(absolute, in_wfs_frame, rtol=1e-5,
                                    atol=1e-6 * np.abs(in_wfs_frame).max())
 
+    @needs_rotation
     def test_rotation_key_has_priority_over_rotAnglePhInDeg(self):
         absolute = _precision((OFFSET_M, 0.0), True,
                               {'rotation': 90.0, 'rotAnglePhInDeg': 0.0})
@@ -100,6 +127,7 @@ class TestNoiseCovAbsoluteLauncher(unittest.TestCase):
         np.testing.assert_allclose(absolute, in_wfs_frame, rtol=1e-5,
                                    atol=1e-6 * np.abs(in_wfs_frame).max())
 
+    @needs_rotation
     def test_not_vacuous(self):
         """The rotation changes the result: absolute != unrotated launcher."""
         absolute = _precision((OFFSET_M, 0.0), True, {'rotAnglePhInDeg': 90.0})
@@ -107,6 +135,7 @@ class TestNoiseCovAbsoluteLauncher(unittest.TestCase):
         scale = np.abs(unrotated).max()
         self.assertGreater(np.abs(absolute - unrotated).max(), 0.1 * scale)
 
+    @needs_rotation
     def test_rotation_0_equals_no_flag(self):
         for extra in ({'rotAnglePhInDeg': 0.0}, {}):
             with self.subTest(extra=extra):
@@ -126,7 +155,7 @@ class TestNoiseCovAbsoluteLauncher(unittest.TestCase):
 
     def test_flag_passes_wfs_rotation(self):
         calls = []
-        wrapper = _recording_wrapper(pm_module.calc_noise_cov_elong, calls)
+        wrapper = _recording_new_specula(calls)
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(pm_module, 'calc_noise_cov_elong', wrapper))
             _precision((OFFSET_M, 0.0), True, {'rotAnglePhInDeg': 30.0})
@@ -135,7 +164,7 @@ class TestNoiseCovAbsoluteLauncher(unittest.TestCase):
 
     def test_flag_default_rotation_is_zero(self):
         calls = []
-        wrapper = _recording_wrapper(pm_module.calc_noise_cov_elong, calls)
+        wrapper = _recording_new_specula(calls)
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(pm_module, 'calc_noise_cov_elong', wrapper))
             _precision((OFFSET_M, 0.0), True)
