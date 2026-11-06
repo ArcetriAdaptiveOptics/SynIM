@@ -34,7 +34,7 @@ def _on(to_host, a):
 
 class TestTomographicReconstructorOnDevice(unittest.TestCase):
 
-    def _run(self, **kwargs):
+    def _run(self, n_low_modes_cut=0, **kwargs):
         im, c_atm_inv, c_noise_inv = _matrices()
         pm = ParamsManager.__new__(ParamsManager)
         pm.verbose = False
@@ -50,7 +50,7 @@ class TestTomographicReconstructorOnDevice(unittest.TestCase):
             'assemble_covariance_matrix': mock.Mock(return_value=c_atm_inv.copy()),
             'build_noise_covariance': mock.Mock(
                 side_effect=lambda **kw: _on(kw.get('to_host', True), c_noise_inv.copy())),
-            '_get_low_modes_cut_if_applicable': mock.Mock(return_value=0),
+            '_get_low_modes_cut_if_applicable': mock.Mock(return_value=n_low_modes_cut),
         }
         for name, m in mocks.items():
             setattr(pm, name, m)
@@ -59,11 +59,20 @@ class TestTomographicReconstructorOnDevice(unittest.TestCase):
         return result, mocks
 
     def test_same_reconstructor_as_cpu_path(self):
-        expected, mocks = self._run()
+        self._check(n_low_modes_cut=0)
+
+    def test_low_mode_cut(self):
+        # columns selected on the device, dropped modes restored as zero rows
+        R = self._check(n_low_modes_cut=2)
+        np.testing.assert_array_equal(R[:2], 0)
+        self.assertTrue(np.all(np.any(R[2:] != 0, axis=1)))
+
+    def _check(self, n_low_modes_cut):
+        expected, mocks = self._run(n_low_modes_cut)
         self.assertTrue(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'])
         self.assertTrue(mocks['build_noise_covariance'].call_args.kwargs['to_host'])
 
-        result, mocks = self._run(mmse_on_device=True)
+        result, mocks = self._run(n_low_modes_cut, mmse_on_device=True)
         self.assertFalse(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'])
         self.assertFalse(mocks['build_noise_covariance'].call_args.kwargs['to_host'])
         self.assertIsInstance(result['im_full'], synim.xp.ndarray)
@@ -72,7 +81,9 @@ class TestTomographicReconstructorOnDevice(unittest.TestCase):
         R = result['reconstructor']
         self.assertIsInstance(R, np.ndarray)
         R_ref = expected['reconstructor']
+        self.assertEqual(R.shape, (N_MODES, N_SLOPES))
         np.testing.assert_allclose(R, R_ref, rtol=0, atol=1e-4 * np.abs(R_ref).max())
+        return R
 
 
 if __name__ == '__main__':
