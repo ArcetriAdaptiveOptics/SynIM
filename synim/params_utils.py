@@ -1616,13 +1616,16 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
                 noise_variance[i] * xp.eye(n_slopes_per_wfs, dtype=dtype)
     elif C_noise is None and noise_variance is None:
         C_noise = xp.eye(A.shape[0], dtype=dtype)
-    else:
+    elif not cinverse or not hasattr(C_noise, 'shape'):
         C_noise = to_xp(xp, C_noise, dtype=dtype)
+    # With cinverse, Cz^(-1) and Cx^(-1) stay where they are (e.g. on the
+    # host): Cz^(-1) is copied to the device only if it is not sparse, and
+    # Cx^(-1) a block of columns at a time when it is added to H
 
-    if C_atm is not None:
-        C_atm = to_xp(xp, C_atm, dtype=dtype)
-    else:
+    if C_atm is None:
         raise ValueError("C_atm (atmospheric covariance matrix) must be provided")
+    if not cinverse or not hasattr(C_atm, 'shape'):
+        C_atm = to_xp(xp, C_atm, dtype=dtype)
 
     # Check dimensions
     if A.shape[1] != C_atm.shape[0]:
@@ -1679,11 +1682,11 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     if verbose:
         print("Computing X = Cz^(-1) A and A' Cz^(-1)")
     if scalar_noise:
-        X = A * C_noise_inv
+        X = A * A.dtype.type(C_noise_inv.item() if hasattr(C_noise_inv, 'item') else C_noise_inv)
         B = X.T
         symmetric_noise = True
     else:
-        sparse = _sparse_rows(C_noise_inv, xp)
+        sparse = _sparse_rows(C_noise_inv, xp, dtype=dtype)
         if sparse is not None:
             cols, vals, symmetric_noise = sparse
             if verbose:
@@ -1693,10 +1696,11 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
             if symmetric_noise:
                 B = X.T
             else:
-                cols, vals, _ = _sparse_rows(C_noise_inv.T, xp)
+                cols, vals, _ = _sparse_rows(C_noise_inv.T, xp, dtype=dtype)
                 B = _sparse_rows_matmul(cols, vals, A, xp).T
             del cols, vals
         else:
+            C_noise_inv = to_xp(xp, C_noise_inv, dtype=dtype)
             symmetric_noise = bool(xp.array_equal(C_noise_inv, C_noise_inv.T))
             X = xp.dot(C_noise_inv, A)
             B = X.T if symmetric_noise else xp.dot(C_noise_inv.T, A).T
@@ -1707,7 +1711,7 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     H_t = xp.dot(X.T, A)
     if not symmetric_noise:
         del X
-    H_t += C_atm_inv.T
+    _add_transposed(H_t, C_atm_inv, xp, dtype)
     H = H_t.T
     del H_t
 
@@ -1738,8 +1742,8 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
         if verbose:
             print("    Factorization failed, using the pseudo-inverse of H")
         # H was overwritten by the factorization; B is unchanged
-        H = xp.dot(A.T, B.T if symmetric_noise else xp.dot(C_noise_inv, A))
-        H += C_atm_inv
+        H = xp.dot(A.T, B.T if symmetric_noise else xp.dot(to_xp(xp, C_noise_inv, dtype=dtype), A))
+        _add_transposed(H.T, C_atm_inv, xp, dtype)
         try:
             H_inv = xp.linalg.inv(H) if symmetric_noise else xp.linalg.pinv(H, rcond=1e-14)
         except Exception:
@@ -1754,20 +1758,47 @@ def compute_mmse_reconstructor(interaction_matrix, C_atm,
     return cpuArray(W_mmse) if to_host else W_mmse
 
 
-def _sparse_rows(matrix, xp, max_nnz_per_row=8):
+def _add_transposed(out, matrix, xp, dtype, block_elements=2**26):
+    """
+    out += matrix.T, with matrix on the host or on the device: copied to the
+    device a block of rows at a time, so that a host matrix (e.g. Cx^(-1),
+    4.9 GB for MORFEO LGS) is never on the device whole.
+    """
+    step = max(1, block_elements // max(1, matrix.shape[1]))
+    for start in range(0, matrix.shape[0], step):
+        out[:, start:start + step] += to_xp(xp, matrix[start:start + step], dtype=dtype).T
+
+
+def _sparse_rows(matrix, xp, max_nnz_per_row=8, dtype=None, block_elements=2**26):
     """
     Row-wise sparse form of a square matrix with at most max_nnz_per_row
     non-zeros per row (else None): (cols, vals, symmetric), with cols and
-    vals of shape (n_rows, k). Rows with fewer than k non-zeros are padded
-    with zero values (column 0).
+    vals of shape (n_rows, k), on the device of xp (vals in dtype, if given).
+    Rows with fewer than k non-zeros are padded with zero values (column 0).
+    The matrix may be on the host or on the device: it is read in blocks of
+    rows, copied to the device one block at a time, so that a dense host
+    matrix (e.g. the 37736 x 37736 LGS noise covariance, 5.7 GB) is never
+    copied whole.
     """
-    nnz_per_row = xp.count_nonzero(matrix, axis=1)
-    k = int(nnz_per_row.max()) if matrix.shape[0] > 0 else 0
-    if k == 0 or k > max_nnz_per_row:
-        return None
     n = matrix.shape[0]
-    rows, cols = xp.nonzero(matrix)          # row-major order
-    vals = matrix[rows, cols]
+    step = max(1, block_elements // max(1, matrix.shape[1]))
+    rows, cols, vals = [], [], []
+    for start in range(0, n, step):
+        block = to_xp(xp, matrix[start:start + step], dtype=dtype)
+        if int(xp.count_nonzero(block, axis=1).max()) > max_nnz_per_row:
+            return None
+        r, c = xp.nonzero(block)          # row-major order
+        rows.append(r + start)
+        cols.append(c)
+        vals.append(block[r, c])
+        del block
+    if n == 0 or sum(int(r.size) for r in rows) == 0:
+        return None
+    rows = xp.concatenate(rows)
+    cols = xp.concatenate(cols)
+    vals = xp.concatenate(vals)
+    nnz_per_row = xp.bincount(rows, minlength=n)
+    k = int(nnz_per_row.max())
 
     # symmetric: same pattern and values as the transpose
     key = rows.astype(xp.int64) * n + cols
@@ -1779,7 +1810,7 @@ def _sparse_rows(matrix, xp, max_nnz_per_row=8):
     row_start = xp.cumsum(nnz_per_row) - nnz_per_row
     pos = xp.arange(rows.size) - row_start[rows]
     ell_cols = xp.zeros((n, k), dtype=xp.int64)
-    ell_vals = xp.zeros((n, k), dtype=matrix.dtype)
+    ell_vals = xp.zeros((n, k), dtype=vals.dtype)
     ell_cols[rows, pos] = cols
     ell_vals[rows, pos] = vals
     return ell_cols, ell_vals, symmetric

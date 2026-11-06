@@ -49,14 +49,18 @@ class TestMMSESolve(unittest.TestCase):
     def _check(self, cz_inv, rtol=2e-4, **kwargs):
         expected = self._reference(cz_inv)
         for xp in self.modules:
-            with self.subTest(xp=xp.__name__):
-                W = compute_mmse_reconstructor(
-                    xp.asarray(self.A), xp.asarray(self.cx_inv), C_noise=xp.asarray(cz_inv),
-                    cinverse=True, xp=xp, dtype=np.float32, **kwargs)
-                self.assertIsInstance(W, np.ndarray)
-                self.assertEqual(W.shape, (self.n_modes, 2 * self.n_sa))
-                np.testing.assert_allclose(W, expected, rtol=0,
-                                           atol=rtol * np.abs(expected).max())
+            # covariances on the device, and (GPU) on the host: copied to the
+            # device only in blocks (Cx^-1) or as sparse rows (Cz^-1)
+            for cov_xp in {xp, np}:
+                with self.subTest(xp=xp.__name__, covariances=cov_xp.__name__):
+                    W = compute_mmse_reconstructor(
+                        xp.asarray(self.A), cov_xp.asarray(self.cx_inv),
+                        C_noise=cov_xp.asarray(cz_inv),
+                        cinverse=True, xp=xp, dtype=np.float32, **kwargs)
+                    self.assertIsInstance(W, np.ndarray)
+                    self.assertEqual(W.shape, (self.n_modes, 2 * self.n_sa))
+                    np.testing.assert_allclose(W, expected, rtol=0,
+                                               atol=rtol * np.abs(expected).max())
 
     def test_sparse_noise(self):
         self._check(self.cz_inv)
@@ -87,6 +91,37 @@ class TestMMSESolve(unittest.TestCase):
                 out = _sparse_rows_matmul(cols, vals, A, xp, block_elements=7 * self.n_modes)
                 np.testing.assert_allclose(synim.cpuArray(out), self.cz_inv @ self.A, rtol=1e-12)
                 self.assertIsNone(_sparse_rows(xp.ones((10, 10)), xp))
+
+    def test_sparse_rows_in_blocks(self):
+        """Same result when the matrix is read in blocks of rows, also from the host."""
+        for xp in self.modules:
+            for src in {xp, np}:
+                with self.subTest(xp=xp.__name__, source=src.__name__):
+                    ref = _sparse_rows(xp.asarray(self.cz_inv), xp)
+                    out = _sparse_rows(src.asarray(self.cz_inv), xp, dtype=np.float32,
+                                       block_elements=7 * 2 * self.n_sa)
+                    self.assertEqual(out[2], ref[2])
+                    np.testing.assert_array_equal(synim.cpuArray(out[0]), synim.cpuArray(ref[0]))
+                    np.testing.assert_array_equal(synim.cpuArray(out[1]),
+                                                  synim.cpuArray(ref[1]).astype(np.float32))
+                    self.assertEqual(out[1].dtype, np.float32)
+                    self.assertIsInstance(out[0], xp.ndarray)
+                    # a row with too many non-zeros in a later block
+                    dense = self.cz_inv.copy()
+                    dense[-1] = 1.0
+                    self.assertIsNone(_sparse_rows(src.asarray(dense), xp,
+                                                   block_elements=7 * 2 * self.n_sa))
+
+    def test_add_transposed(self):
+        rng = np.random.default_rng(4)
+        m = rng.standard_normal((50, 50))
+        for xp in self.modules:
+            for src in {xp, np}:
+                with self.subTest(xp=xp.__name__, source=src.__name__):
+                    out = xp.asarray(np.ones((50, 50)))
+                    params_utils._add_transposed(out, src.asarray(m), xp, np.float64,
+                                                 block_elements=7 * 50)
+                    np.testing.assert_array_equal(synim.cpuArray(out), 1 + m.T)
 
 
 if __name__ == '__main__':
