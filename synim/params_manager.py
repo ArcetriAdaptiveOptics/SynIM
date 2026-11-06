@@ -2391,14 +2391,16 @@ class ParamsManager:
             in_memory_ims (bool, optional): If True, the interaction matrices are
                 kept in memory (on the compute device) and not written to / read
                 from self.im_dir (existing files are then not reused)
-            mmse_on_device (bool, optional): If True (MMSE only), the assembled
-                interaction matrix, the noise covariance and the MMSE are computed
-                on the compute device (xp), and only the reconstructor is copied to
-                the host. Faster on GPU, but it needs more GPU memory (~34 GB peak
-                for MORFEO LGS), and in float32 it is less accurate than the CPU
-                MMSE: for MORFEO LGS the relative error of the reconstructor against
-                float64 is ~7e-4 on the GPU and ~1e-4 on the CPU. 'im_full' and
-                'C_noise' in the result are then xp arrays.
+            mmse_on_device (bool, optional): If True (MMSE only), the interaction
+                matrix is assembled and the MMSE computed on the compute device
+                (xp); the noise covariance and, with the low-mode cut, the full
+                interaction matrix stay on the host, so that only the arrays the
+                MMSE uses are on the device. The reconstructor and the matrices in
+                the result are numpy arrays, as without the option. Faster on GPU,
+                but it needs more GPU memory (~21 GB peak for MORFEO LGS), and in
+                float32 it is less accurate than the CPU MMSE: for MORFEO LGS the
+                relative error of the reconstructor against float64 is ~7e-4 on
+                the GPU and ~1e-4 on the CPU.
 
         Returns:
             dict: Dictionary with:
@@ -2522,6 +2524,9 @@ class ParamsManager:
                     n_low_modes_cut=n_low_modes_cut,
                     verbose=verbose_flag,
                 )
+            if mmse_on_device and im_for_recon is not im_full:
+                # the MMSE uses the reduced matrix: the full one waits on the host
+                im_full = cpuArray(im_full)
         else:
             # For pinv, skip covariance computation
             if verbose_flag:
@@ -2558,8 +2563,7 @@ class ParamsManager:
                 use_elongation=recon_params['noise_elong_model'],
                 active_wfs_mask=active_wfs_mask,
                 return_diagnostics=save_inverse_covariances,
-                verbose=verbose_flag,
-                to_host=not mmse_on_device
+                verbose=verbose_flag
             )
 
             if save_inverse_covariances:
@@ -2653,6 +2657,8 @@ class ParamsManager:
                 dtype=cpu_float_dtype,
                 verbose=verbose_flag
             )
+            del im_for_recon
+            im_full = cpuArray(im_full)
         else:
             # Compute pseudo-inverse reconstructor
             from synim.params_utils import compute_pseudoinverse_reconstructor

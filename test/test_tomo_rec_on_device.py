@@ -1,7 +1,8 @@
 """
-compute_tomographic_reconstructor(mmse_on_device=True): the assembled IM and the
-noise covariance are requested on the compute device, the MMSE runs there, and
-the reconstructor (back on the host) matches the default CPU path.
+compute_tomographic_reconstructor(mmse_on_device=True): the assembled IM is
+requested on the compute device and the MMSE runs there, the noise covariance
+stays on the host, and the reconstructor and the matrices of the result (on the
+host) match the default CPU path.
 
 The IMs, covariances and noise covariance are mocked with small random
 matrices; compute_mmse_reconstructor is the real one.
@@ -70,13 +71,16 @@ class TestTomographicReconstructorOnDevice(unittest.TestCase):
     def _check(self, n_low_modes_cut):
         expected, mocks = self._run(n_low_modes_cut)
         self.assertTrue(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'])
-        self.assertTrue(mocks['build_noise_covariance'].call_args.kwargs['to_host'])
+        self.assertTrue(mocks['build_noise_covariance'].call_args.kwargs.get('to_host', True))
 
         result, mocks = self._run(n_low_modes_cut, mmse_on_device=True)
         self.assertFalse(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'])
-        self.assertFalse(mocks['build_noise_covariance'].call_args.kwargs['to_host'])
-        self.assertIsInstance(result['im_full'], synim.xp.ndarray)
-        self.assertIsInstance(result['C_noise'], synim.xp.ndarray)
+        # the noise covariance stays on the host (its sparse rows go to the device)
+        self.assertTrue(mocks['build_noise_covariance'].call_args.kwargs.get('to_host', True))
+        # the matrices in the result are numpy arrays, as without the option
+        self.assertIsInstance(result['im_full'], np.ndarray)
+        self.assertIsInstance(result['C_noise'], np.ndarray)
+        np.testing.assert_array_equal(result['im_full'], expected['im_full'])
 
         R = result['reconstructor']
         self.assertIsInstance(R, np.ndarray)
