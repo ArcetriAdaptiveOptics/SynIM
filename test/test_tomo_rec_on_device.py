@@ -68,8 +68,15 @@ class TestTomographicReconstructorOnDevice(unittest.TestCase):
         np.testing.assert_array_equal(R[:2], 0)
         self.assertTrue(np.all(np.any(R[2:] != 0, axis=1)))
 
+    def test_default(self):
+        # None: on the device when SynIM runs on a GPU, on the CPU otherwise
+        _, mocks = self._run()
+        on_gpu = synim.xp is not np
+        self.assertEqual(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'],
+                         not on_gpu)
+
     def _check(self, n_low_modes_cut):
-        expected, mocks = self._run(n_low_modes_cut)
+        expected, mocks = self._run(n_low_modes_cut, mmse_on_device=False)
         self.assertTrue(mocks['assemble_interaction_matrices'].call_args.kwargs['to_host'])
         self.assertTrue(mocks['build_noise_covariance'].call_args.kwargs.get('to_host', True))
 

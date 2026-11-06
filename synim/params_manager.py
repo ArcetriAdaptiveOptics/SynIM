@@ -2359,7 +2359,7 @@ class ParamsManager:
                                         inverse_cov_prefix=None,
                                         verbose=None,
                                         in_memory_ims=False,
-                                        mmse_on_device=False):
+                                        mmse_on_device=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
         
@@ -2396,11 +2396,14 @@ class ParamsManager:
                 (xp); the noise covariance and, with the low-mode cut, the full
                 interaction matrix stay on the host, so that only the arrays the
                 MMSE uses are on the device. The reconstructor and the matrices in
-                the result are numpy arrays, as without the option. Faster on GPU,
-                but it needs more GPU memory (~21 GB peak for MORFEO LGS), and in
-                float32 it is less accurate than the CPU MMSE: for MORFEO LGS the
+                the result are numpy arrays in both cases. None (default): True
+                when SynIM runs on a GPU, False on the CPU. On GPU it is much
+                faster than the CPU MMSE, but it needs GPU memory (~21 GB peak for
+                MORFEO LGS), and in float32 it is less accurate: for MORFEO LGS the
                 relative error of the reconstructor against float64 is ~7e-4 on
-                the GPU and ~1e-4 on the CPU.
+                the GPU and ~1e-4 on the CPU. False keeps the CPU MMSE (e.g. to
+                compare with reconstructors computed before, or on a GPU with
+                less memory).
 
         Returns:
             dict: Dictionary with:
@@ -2415,6 +2418,8 @@ class ParamsManager:
                 - 'reconstructor_method': Method used ('mmse' or 'pinv')
         """
         verbose_flag = self.verbose if verbose is None else verbose
+        if mmse_on_device is None:
+            mmse_on_device = xp is not np
 
         # Validate reconstructor_method
         if reconstructor_method not in ['mmse', 'pinv']:
