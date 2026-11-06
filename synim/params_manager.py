@@ -2394,9 +2394,11 @@ class ParamsManager:
             mmse_on_device (bool, optional): If True (MMSE only), the assembled
                 interaction matrix, the noise covariance and the MMSE are computed
                 on the compute device (xp), and only the reconstructor is copied to
-                the host. Faster on GPU, but it needs more GPU memory (for MORFEO LGS
-                ~35 GB peak instead of ~29 GB). 'im_full' and 'C_noise' in the
-                result are then xp arrays.
+                the host. Faster on GPU, but it needs more GPU memory (~34 GB peak
+                for MORFEO LGS), and in float32 it is less accurate than the CPU
+                MMSE: for MORFEO LGS the relative error of the reconstructor against
+                float64 is ~7e-4 on the GPU and ~1e-4 on the CPU. 'im_full' and
+                'C_noise' in the result are then xp arrays.
 
         Returns:
             dict: Dictionary with:
