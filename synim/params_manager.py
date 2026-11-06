@@ -3587,7 +3587,7 @@ class ParamsManager:
         return C_atm_full
 
     def _build_elongated_noise_covariance(self, wfs_type,
-                                          verbose=False):
+                                          verbose=False, to_host=True):
         """
         Build noise covariance matrix considering LGS spot elongation.
         
@@ -3597,9 +3597,12 @@ class ParamsManager:
         Args:
             wfs_type (str): WFS type ('lgs')
             verbose (bool): Whether to print information
-            
+            to_host (bool): If False, the full matrix is assembled on the
+                compute device (only the per-WFS blocks are copied there)
+
         Returns:
-            np.ndarray: Full noise covariance matrix (inverse)
+            np.ndarray: Full noise covariance matrix (inverse), xp array if
+                to_host is False
         """
 
         params = self.params
@@ -3633,7 +3636,8 @@ class ParamsManager:
 
         # Initialize full covariance matrix with correct total size
         n_slopes_total = sum(n_slopes_list)
-        C_noise_inv_full = np.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
+        xp_full = np if to_host else xp
+        C_noise_inv_full = xp_full.zeros((n_slopes_total, n_slopes_total), dtype=cpu_float_dtype)
 
         for i in range(n_wfs):
             wfs_params = self.get_wfs_params(wfs_type, i+1, xp_local=np)
@@ -3770,12 +3774,14 @@ class ParamsManager:
                 start_idx = sum(n_slopes_list[:i])
             end_idx = start_idx + C_noise_inv_wfs.shape[0]
 
-            C_noise_inv_full[start_idx:end_idx, start_idx:end_idx] = C_noise_inv_wfs
+            C_noise_inv_full[start_idx:end_idx, start_idx:end_idx] = \
+                C_noise_inv_wfs if to_host else to_xp(xp, C_noise_inv_wfs)
 
         if verbose:
             print(f"\n  Full elongated C_noise^(-1) assembled: {C_noise_inv_full.shape}")
-            print(f"  Min/Max diagonal: {np.min(np.diag(C_noise_inv_full)):.2e} / "
-                f"{np.max(np.diag(C_noise_inv_full)):.2e}")
+            diag_full = cpuArray(C_noise_inv_full.diagonal())
+            print(f"  Min/Max diagonal: {np.min(diag_full):.2e} / "
+                f"{np.max(diag_full):.2e}")
 
         return C_noise_inv_full
 
@@ -3783,7 +3789,7 @@ class ParamsManager:
                             n_slopes_total=None, noise_variance=None,
                             C_noise=None, use_elongation=False,
                             active_wfs_mask=None, return_diagnostics=False,
-                            verbose=None):
+                            verbose=None, to_host=True):
         """
         Build noise covariance matrix with multiple strategies:
         1. Use provided C_noise (highest priority)
@@ -3801,7 +3807,10 @@ class ParamsManager:
             active_wfs_mask (array-like, optional): Mask to indicate active WFS
             return_diagnostics (bool): If True, also return debug diagnostics dict
             verbose (bool, optional): Override the class's verbose setting
-            
+            to_host (bool, optional): If True (default), the matrix is a numpy
+                array; if False it is on the compute device (xp array). With the
+                elongation model it is then assembled there directly.
+
         Returns:
             np.ndarray or tuple: Noise covariance matrix (inverse, ready for MMSE),
                 optionally ``(C_noise_inv, diagnostics)`` when ``return_diagnostics=True``
@@ -3813,18 +3822,24 @@ class ParamsManager:
 
         self._monitor.start_section("build_noise_covariance")
         try:
-            return self._build_noise_covariance_impl(
+            result = self._build_noise_covariance_impl(
                 verbose_flag, wfs_type, n_wfs, n_slopes_total,
                 noise_variance, C_noise, use_elongation,
-                active_wfs_mask, return_diagnostics
+                active_wfs_mask, return_diagnostics, to_host
             )
+            if to_host:
+                return result
+            # the elongation model is already on the device: to_xp is a no-op there
+            if return_diagnostics:
+                return to_xp(xp, result[0]), result[1]
+            return to_xp(xp, result)
         finally:
             self._monitor.end_section()
 
     def _build_noise_covariance_impl(
             self, verbose_flag, wfs_type, n_wfs, n_slopes_total,
             noise_variance, C_noise, use_elongation,
-            active_wfs_mask, return_diagnostics):
+            active_wfs_mask, return_diagnostics, to_host=True):
 
         if verbose_flag:
             print(f"\n{'='*60}")
@@ -3971,16 +3986,18 @@ class ParamsManager:
 
             C_noise_inv = self._build_elongated_noise_covariance(
                 wfs_type=wfs_type,
-                verbose=verbose_flag
+                verbose=verbose_flag,
+                to_host=to_host
             )
 
             # scale by illumination: diag(illumination) @ C_noise_inv, as a
             # row scaling in place (same values, no dense n_slopes^3 product
             # and no second n_slopes x n_slopes array)
-            C_noise_inv *= illumination_concat[:, np.newaxis]
+            illum = illumination_concat if to_host else to_xp(xp, illumination_concat)
+            C_noise_inv *= illum[:, None]
 
             if verbose_flag:
-                diag_vals = np.diag(C_noise_inv)
+                diag_vals = cpuArray(C_noise_inv.diagonal())
                 non_zero = diag_vals[diag_vals > 0]
                 if len(non_zero) > 0:
                     print(f"\n  Noise covariance (inverse) built: {C_noise_inv.shape}")
