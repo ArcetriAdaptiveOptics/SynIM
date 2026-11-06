@@ -62,6 +62,13 @@ class TestInteractionMatricesInMemory(unittest.TestCase):
         np.testing.assert_array_equal(result[0], expected[0])
         self.assertEqual(result[1:], expected[1:])
 
+        # Assembled matrix kept on the compute device
+        on_device = pm.assemble_interaction_matrices(wfs_type=wfs, component_type='dm',
+                                                     im_arrays=ims, to_host=False)
+        self.assertIsInstance(on_device[0], synim.xp.ndarray)
+        np.testing.assert_array_equal(synim.cpuArray(on_device[0]), expected[0])
+        self.assertEqual(on_device[1:], expected[1:])
+
     def test_missing_matrix(self):
         pm, wfs = self._pm()
         with self.assertRaises(KeyError):
