@@ -10,7 +10,8 @@ import numpy as np
 
 import synim
 import synim.params_utils as params_utils
-from synim.params_utils import compute_mmse_reconstructor, _sparse_rows, _sparse_rows_matmul
+from synim.params_utils import (compute_mmse_reconstructor, _sparse_rows, _sparse_rows_matmul,
+                                 _symmetric_matmul)
 
 
 def _elongated_noise_inv(n_sa, rng):
@@ -87,6 +88,22 @@ class TestMMSESolve(unittest.TestCase):
                 out = _sparse_rows_matmul(cols, vals, A, xp, block_elements=7 * self.n_modes)
                 np.testing.assert_allclose(synim.cpuArray(out), self.cz_inv @ self.A, rtol=1e-12)
                 self.assertIsNone(_sparse_rows(xp.ones((10, 10)), xp))
+
+
+
+class TestSymmetricMatmul(unittest.TestCase):
+
+    def test_tiles(self):
+        """X' A (symmetric) from the lower tiles equals the full product."""
+        xp = synim.xp
+        rng = np.random.default_rng(12)
+        for n in (100, 1100, 4100):  # 1 (single product), 2 and 8 tiles
+            a = rng.standard_normal((200, n))
+            x = a * rng.uniform(0.5, 2.0, 200)[:, None]  # diagonal Cz^-1
+            out = synim.cpuArray(_symmetric_matmul(xp.asarray(x).T, xp.asarray(a), xp))
+            np.testing.assert_allclose(out, x.T @ a, rtol=1e-12, atol=1e-12 * 200)
+            if n >= 1024:  # tiles: exactly symmetric
+                np.testing.assert_array_equal(out, out.T)
 
 
 if __name__ == '__main__':
