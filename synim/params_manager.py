@@ -2358,7 +2358,8 @@ class ParamsManager:
                                         inverse_cov_output_dir=None,
                                         inverse_cov_prefix=None,
                                         verbose=None,
-                                        in_memory_ims=False):
+                                        in_memory_ims=False,
+                                        mmse_on_device=None):
         """
         Compute full tomographic reconstructor from interaction matrices and covariances.
         
@@ -2390,7 +2391,20 @@ class ParamsManager:
             in_memory_ims (bool, optional): If True, the interaction matrices are
                 kept in memory (on the compute device) and not written to / read
                 from self.im_dir (existing files are then not reused)
-            
+            mmse_on_device (bool, optional): If True (MMSE only), the interaction
+                matrix is assembled and the MMSE computed on the compute device
+                (xp); the noise covariance and, with the low-mode cut, the full
+                interaction matrix stay on the host, so that only the arrays the
+                MMSE uses are on the device. The reconstructor and the matrices in
+                the result are numpy arrays in both cases. None (default): True
+                when SynIM runs on a GPU, False on the CPU. On GPU it is much
+                faster than the CPU MMSE, but it needs GPU memory (~21 GB peak for
+                MORFEO LGS), and in float32 it is less accurate: for MORFEO LGS the
+                relative error of the reconstructor against float64 is ~7e-4 on
+                the GPU and ~1e-4 on the CPU. False keeps the CPU MMSE (e.g. to
+                compare with reconstructors computed before, or on a GPU with
+                less memory).
+
         Returns:
             dict: Dictionary with:
                 - 'reconstructor': Reconstructor matrix (MMSE or pseudo-inverse)
@@ -2404,6 +2418,8 @@ class ParamsManager:
                 - 'reconstructor_method': Method used ('mmse' or 'pinv')
         """
         verbose_flag = self.verbose if verbose is None else verbose
+        if mmse_on_device is None:
+            mmse_on_device = xp is not np
 
         # Validate reconstructor_method
         if reconstructor_method not in ['mmse', 'pinv']:
@@ -2445,7 +2461,8 @@ class ParamsManager:
                 component_type=component_type,
                 save=False,  # Don't save assembled IM
                 slope_method=slope_method,
-                im_arrays=ims if in_memory_ims else None
+                im_arrays=ims if in_memory_ims else None,
+                to_host=not (mmse_on_device and reconstructor_method == 'mmse')
             )
         del ims
 
@@ -2512,6 +2529,9 @@ class ParamsManager:
                     n_low_modes_cut=n_low_modes_cut,
                     verbose=verbose_flag,
                 )
+            if mmse_on_device and im_for_recon is not im_full:
+                # the MMSE uses the reduced matrix: the full one waits on the host
+                im_full = cpuArray(im_full)
         else:
             # For pinv, skip covariance computation
             if verbose_flag:
@@ -2638,10 +2658,12 @@ class ParamsManager:
                 noise_variance=None,  # Already in C_noise
                 C_noise=C_noise_inv,
                 cinverse=True,
-                xp=np,
+                xp=xp if mmse_on_device else np,
                 dtype=cpu_float_dtype,
                 verbose=verbose_flag
             )
+            del im_for_recon
+            im_full = cpuArray(im_full)
         else:
             # Compute pseudo-inverse reconstructor
             from synim.params_utils import compute_pseudoinverse_reconstructor
