@@ -800,6 +800,407 @@ def make_orto_modes(array):
     return Q
 
 
+def extract_spider_arms(pup_mask, closing_radius=5, radial_margin_px=2.0,
+                        min_radial_fraction=0.4, max_svd_ratio=0.2,
+                        min_pixels=10):
+    """
+    Isolate spider arms from a pupil mask as separate labeled connected components.
+
+    Uses padded morphological closing to bridge across spider arms inside the
+    pupil annulus, filters connected components by radial extent and linearity
+    (rejecting segmented-pupil edge concavities), and extends each valid arm
+    label locally to adjacent spider pixels.
+
+    Args:
+        pup_mask (ndarray): 2D pupil mask (1 inside pupil, 0 on spider/outside).
+        closing_radius (int): Disk radius in pixels for morphological closing
+            (must be larger than half the spider width in pixels).
+        radial_margin_px (float): Radial margin in pixels from the inner and
+            outer pupil circles used when labeling separate arms.
+        min_radial_fraction (float): Minimum fraction of ``(r_out - r_in)``
+            spanned radially by a valid spider arm.
+        max_svd_ratio (float): Maximum allowed ratio ``sigma_min / sigma_max``
+            of coordinate singular values for a valid linear arm.
+        min_pixels (int): Minimum pixel count in the core region of an arm.
+
+    Returns:
+        tuple: ``(labeled_arms, n_arms, closed_pupil)``
+            - ``labeled_arms``: 2D int array with labels ``1..n_arms`` on each arm
+              (0 elsewhere).
+            - ``n_arms``: Number of detected spider arms.
+            - ``closed_pupil``: 2D boolean array of the pupil annulus with spider
+              arms closed.
+    """
+    from scipy.ndimage import binary_closing, distance_transform_edt, label
+
+    mask_bin = np.asarray(cpuArray(pup_mask)) > 0.5
+    if not np.any(mask_bin):
+        return np.zeros_like(mask_bin, dtype=np.int32), 0, mask_bin
+
+    yy, xx = np.mgrid[:mask_bin.shape[0], :mask_bin.shape[1]]
+    valid_y, valid_x = np.where(mask_bin)
+    cy = 0.5 * (valid_y.min() + valid_y.max())
+    cx = 0.5 * (valid_x.min() + valid_x.max())
+    r = np.hypot(xx - cx, yy - cy)
+    r_valid = r[mask_bin]
+    r_in, r_out = float(r_valid.min()), float(r_valid.max())
+    radial_span = max(1.0, r_out - r_in)
+
+    r_disk = int(max(1, round(closing_radius)))
+    yd, xd = np.ogrid[-r_disk:r_disk + 1, -r_disk:r_disk + 1]
+    disk = (xd * xd + yd * yd) <= (r_disk * r_disk)
+
+    # Pad before closing so pupils touching the array border are not eroded
+    padded = np.pad(mask_bin, r_disk, mode='constant', constant_values=False)
+    closed_pupil = binary_closing(padded, structure=disk)[r_disk:-r_disk, r_disk:-r_disk]
+    spider_all = closed_pupil & (~mask_bin)
+    if not np.any(spider_all):
+        return np.zeros_like(mask_bin, dtype=np.int32), 0, closed_pupil
+
+    r_min_core = max(r_in + radial_margin_px, 0.08 * r_out)
+    r_max_core = r_out - radial_margin_px
+    annulus = (r > r_min_core) & (r < r_max_core)
+    spider_core = spider_all & annulus
+
+    labeled_raw, n_raw = label(spider_core)
+    if n_raw == 0:
+        return np.zeros_like(mask_bin, dtype=np.int32), 0, closed_pupil
+
+    # Filter out segmented-mirror edge concavities by pixel count, radial span, and linearity
+    labeled_core = np.zeros_like(labeled_raw, dtype=np.int32)
+    n_arms = 0
+    for k in range(1, n_raw + 1):
+        comp = (labeled_raw == k)
+        if int(np.count_nonzero(comp)) < min_pixels:
+            continue
+        r_comp = r[comp]
+        if float(r_comp.max() - r_comp.min()) < min_radial_fraction * radial_span:
+            continue
+        ay, ax = np.where(comp)
+        coords = np.column_stack([ay - ay.mean(), ax - ax.mean()])
+        _, s, _ = np.linalg.svd(coords, full_matrices=False)
+        if s[0] <= 0 or (s[1] / s[0]) > max_svd_ratio:
+            continue
+        n_arms += 1
+        labeled_core[comp] = n_arms
+
+    if n_arms == 0:
+        return np.zeros_like(mask_bin, dtype=np.int32), 0, closed_pupil
+
+    # Extend labels only locally to arm tips, never to distant edge concavities
+    dist_to_core, nearest_idx = distance_transform_edt(labeled_core == 0, return_indices=True)
+    max_ext_dist = max(float(r_disk) + 1.0, 3.0)
+    within_arm = spider_all & (dist_to_core <= max_ext_dist)
+    labeled_arms = np.where(within_arm, labeled_core[tuple(nearest_idx)], 0).astype(np.int32)
+    return labeled_arms, int(n_arms), closed_pupil
+
+
+def compute_spider_subaperture_weights_and_normals(
+    pup_mask,
+    wfs_nsubaps,
+    wfs_rotation=0.0,
+    wfs_translation=(0.0, 0.0),
+    wfs_magnification=(1.0, 1.0),
+    wfs_anamorphosis_90=1.0,
+    wfs_anamorphosis_45=1.0,
+    idx_valid_sa=None,
+    dilation_px=2.0,
+    smooth_sigma_px=3.0,
+    closing_radius=5,
+    radial_margin_px=2.0,
+    normalize_per_arm=False,
+    specula_convention=True,
+):
+    """
+    Compute per-subaperture weights and unit normal vectors for each spider arm
+    in the WFS reference frame.
+
+    The unit normal ``normal = (n_0, n_1)`` for each arm is returned in the exact
+    slope block ordering of SynIM (where block 0 is the first half of the WFS
+    slopes and block 1 is the second half):
+    - With ``specula_convention=True``, ``pup_mask`` is transposed before the WFS
+      transformation and SynIM concatenates ``(signal_y, signal_x)`` where
+      ``signal_y`` is the derivative along ``axis=0`` (row) and ``signal_x`` is
+      the derivative along ``axis=1`` (col) of the transformed array. Therefore
+      ``n_0 = n_row`` and ``n_1 = n_col``.
+    - With ``specula_convention=False``, ``n_0 = n_col`` and ``n_1 = n_row``.
+
+    Args:
+        pup_mask (ndarray): 2D pupil mask (n_pup, n_pup).
+        wfs_nsubaps (int): Number of subapertures across the pupil diameter.
+        wfs_rotation (float): WFS rotation angle in degrees.
+        wfs_translation (tuple): WFS translation ``(dx, dy)`` in pixels.
+        wfs_magnification (tuple or float): WFS magnification ``(mx, my)`` or scalar.
+        wfs_anamorphosis_90 (float): WFS 90-deg anamorphosis factor (applied if
+            ``wfs_magnification`` is scalar).
+        wfs_anamorphosis_45 (float): WFS 45-deg anamorphosis factor.
+        idx_valid_sa (ndarray, optional): Valid subaperture indices.
+        dilation_px (float): Flat plateau half-width in pupil pixels around each
+            spider arm before Gaussian roll-off.
+        smooth_sigma_px (float): Gaussian roll-off standard deviation in pupil
+            pixels beyond ``dilation_px`` (0 for a sharp step).
+        closing_radius (int): Morphological closing radius in pixels to bridge
+            across spider arms.
+        radial_margin_px (float): Radial margin in pixels for arm separation.
+        normalize_per_arm (bool): If True, normalize each arm's subaperture
+            weights so that the maximum weight along the arm is 1.0. Default is
+            False so that coarse WFSs (e.g. 1x1, 8x8) are not inflated to 1.0.
+        specula_convention (bool): Whether to follow SPECULA axis conventions.
+
+    Returns:
+        list of dict: One dictionary per detected spider arm with keys:
+            - ``'arm_index'`` (int): 1-based arm index.
+            - ``'normal'`` (np.ndarray): Unit normal ``(n_0, n_1)`` in WFS slope
+              ordering.
+            - ``'angle_deg'`` (float): Line orientation angle in degrees in the
+              WFS slope frame.
+            - ``'weights'`` (np.ndarray): 1D array of weights for valid
+              subapertures, shape ``(n_valid_sa,)``.
+            - ``'weights_2d'`` (np.ndarray): 2D array of weights on the
+              ``(wfs_nsubaps, wfs_nsubaps)`` grid.
+    """
+    from scipy.ndimage import distance_transform_edt
+    from synim.geometry import _transform_mask, _valid_sa_indices
+
+    labeled_arms, n_arms, closed_pupil = extract_spider_arms(
+        pup_mask, closing_radius=closing_radius, radial_margin_px=radial_margin_px
+    )
+    if n_arms == 0:
+        return []
+
+    if not hasattr(wfs_magnification, '__len__'):
+        wfs_mag_tuple = (
+            float(wfs_magnification),
+            float(wfs_magnification) * float(wfs_anamorphosis_90),
+        )
+    else:
+        wfs_mag_tuple = (float(wfs_magnification[0]), float(wfs_magnification[1]))
+
+    if specula_convention:
+        closed_t = np.transpose(closed_pupil).astype(np.float64)
+        wfs_translation_local = (-1.0 * float(wfs_translation[1]),
+                                 -1.0 * float(wfs_translation[0]))
+    else:
+        closed_t = closed_pupil.astype(np.float64)
+        wfs_translation_local = (float(wfs_translation[0]), float(wfs_translation[1]))
+
+    transform_kwargs = dict(
+        dm_translation=(0.0, 0.0),
+        dm_rotation=0.0,
+        dm_magnification=(1.0, 1.0),
+        wfs_translation=wfs_translation_local,
+        wfs_rotation=float(wfs_rotation),
+        wfs_magnification=wfs_mag_tuple,
+        wfs_anamorphosis_45=float(wfs_anamorphosis_45),
+        output_size=closed_t.shape,
+    )
+
+    trans_closed = _transform_mask(closed_t, transform_kwargs, threshold=0.5) > 0
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+
+    arms_info = []
+    for k in range(1, n_arms + 1):
+        arm_mask = (labeled_arms == k).astype(np.float64)
+        if specula_convention:
+            arm_mask = np.transpose(arm_mask)
+
+        trans_arm = _transform_mask(arm_mask, transform_kwargs, threshold=0.25)
+        arm_bin = (trans_arm > 0) & trans_closed
+        if np.count_nonzero(arm_bin) < 2:
+            continue
+
+        rows, cols = np.where(arm_bin)
+        coords = np.column_stack([rows - rows.mean(), cols - cols.mean()])
+        _, _, vt = np.linalg.svd(coords, full_matrices=False)
+        n_row, n_col = float(vt[-1, 0]), float(vt[-1, 1])
+
+        if specula_convention:
+            normal = np.array([n_row, n_col], dtype=np.float64)
+            tangent = np.array([float(vt[0, 0]), float(vt[0, 1])], dtype=np.float64)
+        else:
+            normal = np.array([n_col, n_row], dtype=np.float64)
+            tangent = np.array([float(vt[0, 1]), float(vt[0, 0])], dtype=np.float64)
+
+        norm_val = np.linalg.norm(normal)
+        if norm_val > 0:
+            normal /= norm_val
+        angle_deg = float(np.degrees(np.arctan2(tangent[1], tangent[0])) % 180.0)
+
+        dist = distance_transform_edt(~arm_bin)
+        if smooth_sigma_px > 0:
+            arm_profile = np.exp(
+                -0.5 * (np.maximum(0.0, dist - float(dilation_px)) / float(smooth_sigma_px)) ** 2
+            )
+            arm_profile[arm_profile < 1e-4] = 0.0
+        else:
+            arm_profile = (dist <= float(dilation_px)).astype(np.float64)
+
+        arm_profile *= trans_closed
+        w_2d = cpuArray(rebin(arm_profile, (wfs_nsubaps, wfs_nsubaps), method='average'))
+        w_flat = w_2d.flatten()
+        w_sa = w_flat if idx is None else w_flat[idx]
+        w_sa = np.asarray(w_sa, dtype=np.float64)
+
+        if normalize_per_arm:
+            max_w = float(np.max(w_sa)) if w_sa.size > 0 else 0.0
+            if max_w > 0:
+                w_sa = w_sa / max_w
+                w_2d = w_2d / max_w
+
+        arms_info.append({
+            'arm_index': k,
+            'normal': normal,
+            'angle_deg': angle_deg,
+            'weights': w_sa,
+            'weights_2d': w_2d,
+        })
+
+    return arms_info
+
+
+def update_wfs_noise_cov_inv_for_spider(
+    C_noise_inv_wfs,
+    arms_info,
+    alpha=10.0,
+    sigma_noise2_base=None,
+    weight_threshold=1e-3,
+    in_place=False,
+    check_block_diagonal=True,
+):
+    """
+    Update a single WFS inverse noise covariance matrix with a directional
+    spider/LWE penalty using the vectorized 2x2 Sherman-Morrison formula.
+
+    Models an additional slope variance ``sigma_{j,k}^2 * n_k @ n_k.T`` along the
+    unit normal ``n_k`` to spider arm ``k`` for each subaperture ``j``, where
+    ``sigma_{j,k}^2 = alpha * w_{j,k} * sigma_noise2_base``.
+
+    Preserves exact bit-for-bit symmetry and the 2x2 block-diagonal sparsity
+    pattern (at most 2 non-zeros per row) required by ``_sparse_rows`` in
+    ``compute_mmse_reconstructor``. Only subapertures touched by at least one
+    arm (``w > weight_threshold``) are modified.
+
+    Args:
+        C_noise_inv_wfs (ndarray): Inverse noise covariance for one WFS, shape
+            ``(2 * n_sub, 2 * n_sub)``.
+        arms_info (list of dict): Output of
+            ``compute_spider_subaperture_weights_and_normals``.
+        alpha (float): Dimensionless penalty factor relative to
+            ``sigma_noise2_base``. If ``alpha <= 0``, returns a copy (or the
+            input if ``in_place=True``) unchanged.
+        sigma_noise2_base (float, optional): Base noise variance in slope^2
+            units. If ``None``, inferred automatically as ``1.0 / max(lambda_max)``
+            across all 2x2 subaperture blocks.
+        weight_threshold (float): Minimum subaperture weight to apply update.
+        in_place (bool): If True, modify ``C_noise_inv_wfs`` in place.
+        check_block_diagonal (bool): If True, verify that ``C_noise_inv_wfs``
+            only has non-zeros on the 2x2 subaperture blocks ``(j, j + n_sub)``.
+
+    Returns:
+        ndarray: Updated inverse noise covariance matrix for the WFS.
+    """
+    out = C_noise_inv_wfs if in_place else C_noise_inv_wfs.copy()
+    if alpha <= 0 or not arms_info:
+        return out
+
+    n_slopes = out.shape[0]
+    if n_slopes % 2 != 0 or out.shape[1] != n_slopes:
+        raise ValueError(f"Expected square (2*n_sub, 2*n_sub) matrix, got {out.shape}")
+
+    n_sub = n_slopes // 2
+    out_dtype = out.dtype
+
+    idx_0 = np.arange(n_sub)
+    idx_1 = idx_0 + n_sub
+
+    a = np.asarray(cpuArray(out[idx_0, idx_0]), dtype=np.float64).copy()
+    d = np.asarray(cpuArray(out[idx_1, idx_1]), dtype=np.float64).copy()
+    b01 = np.asarray(cpuArray(out[idx_0, idx_1]), dtype=np.float64)
+    b10 = np.asarray(cpuArray(out[idx_1, idx_0]), dtype=np.float64)
+
+    if check_block_diagonal:
+        # Check that no non-zero entries exist outside the 2x2 blocks (j, j + n_sub)
+        module = np if isinstance(out, np.ndarray) else _synim.xp
+        total_nnz = int(module.count_nonzero(out))
+        block_nnz = (
+            int(np.count_nonzero(a)) + int(np.count_nonzero(d)) +
+            int(np.count_nonzero(b01)) + int(np.count_nonzero(b10))
+        )
+        if total_nnz != block_nnz:
+            raise ValueError(
+                "C_noise_inv_wfs has non-zero entries outside the 2x2 subaperture "
+                "blocks (j, j + n_sub); Sherman-Morrison 2x2 update requires a "
+                "2x2 block-diagonal precision matrix."
+            )
+
+    b = 0.5 * (b01 + b10)
+
+    if sigma_noise2_base is None:
+        if n_sub == 0:
+            return out
+        # Maximum eigenvalue of each 2x2 block M_j = [[a_j, b_j], [b_j, d_j]]
+        lambda_max = 0.5 * ((a + d) + np.hypot(a - d, 2.0 * b))
+        max_prec = float(np.max(lambda_max))
+        if max_prec <= 0:
+            return out
+        sigma_noise2_base = 1.0 / max_prec
+    else:
+        sigma_noise2_base = float(sigma_noise2_base)
+
+    modified = np.zeros(n_sub, dtype=bool)
+    for arm in arms_info:
+        n0, n1 = float(arm['normal'][0]), float(arm['normal'][1])
+        w = np.asarray(arm['weights'], dtype=np.float64)
+        if w.shape[0] != n_sub:
+            raise ValueError(
+                f"Arm weights length ({w.shape[0]}) does not match n_sub ({n_sub})"
+            )
+
+        active = w > weight_threshold
+        if not np.any(active):
+            continue
+
+        modified |= active
+        sigma2_add = float(alpha) * w[active] * sigma_noise2_base
+        a_act = a[active]
+        b_act = b[active]
+        d_act = d[active]
+
+        v0 = a_act * n0 + b_act * n1
+        v1 = b_act * n0 + d_act * n1
+        den = 1.0 + sigma2_add * (n0 * v0 + n1 * v1)
+        scale = sigma2_add / den
+
+        a[active] = a_act - scale * (v0 * v0)
+        d[active] = d_act - scale * (v1 * v1)
+        b[active] = b_act - scale * (v0 * v1)
+
+    if not np.any(modified):
+        return out
+
+    m_idx0 = idx_0[modified]
+    m_idx1 = idx_1[modified]
+    a_cast = a[modified].astype(out_dtype)
+    d_cast = d[modified].astype(out_dtype)
+    b_cast = b[modified].astype(out_dtype)
+
+    if isinstance(out, np.ndarray):
+        out[m_idx0, m_idx0] = a_cast
+        out[m_idx1, m_idx1] = d_cast
+        out[m_idx0, m_idx1] = b_cast
+        out[m_idx1, m_idx0] = b_cast
+    else:
+        m_idx0_dev = to_xp(_synim.xp, m_idx0)
+        m_idx1_dev = to_xp(_synim.xp, m_idx1)
+        out[m_idx0_dev, m_idx0_dev] = to_xp(_synim.xp, a_cast, dtype=out_dtype)
+        out[m_idx1_dev, m_idx1_dev] = to_xp(_synim.xp, d_cast, dtype=out_dtype)
+        b_dev = to_xp(_synim.xp, b_cast, dtype=out_dtype)
+        out[m_idx0_dev, m_idx1_dev] = b_dev
+        out[m_idx1_dev, m_idx0_dev] = b_dev
+
+    return out
+
+
 __all__ = [
     # Mask creation and manipulation
     'make_orto_modes',
@@ -820,5 +1221,10 @@ __all__ = [
 
     # Extrapolation functions
     'apply_extrapolation',
-    'calculate_extrapolation_indices_coeffs'
+    'calculate_extrapolation_indices_coeffs',
+
+    # Spider / LWE noise covariance functions
+    'extract_spider_arms',
+    'compute_spider_subaperture_weights_and_normals',
+    'update_wfs_noise_cov_inv_for_spider',
 ]

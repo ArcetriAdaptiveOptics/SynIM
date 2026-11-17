@@ -3879,8 +3879,8 @@ class ParamsManager:
             if verbose_flag:
                 print(f"  Using provided C_noise: {C_noise.shape}")
 
-            # Ensure correct dtype
-            C_noise = np.array(C_noise, dtype=cpu_float_dtype)
+            # Ensure correct dtype without unnecessary 5.7 GB copy if already matching
+            C_noise = np.asarray(C_noise, dtype=cpu_float_dtype)
 
             if verbose_flag:
                 print(f"{'='*60}\n")

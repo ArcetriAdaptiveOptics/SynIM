@@ -2650,6 +2650,184 @@ def generate_filter_matrix_from_intmat_file(
     return intmat_subset, recmat_subset
 
 
+def apply_spider_to_noise_covariance(
+    pm,
+    C_noise_inv=None,
+    wfs_type='lgs',
+    alpha=10.0,
+    dilation_px=2.0,
+    smooth_sigma_px=3.0,
+    closing_radius=5,
+    radial_margin_px=2.0,
+    active_wfs_mask=None,
+    normalize_per_arm=False,
+    weight_threshold=1e-3,
+    in_place=False,
+    return_diagnostics=False,
+    verbose=False,
+):
+    """
+    Build (if not provided) and modify the full inverse noise covariance matrix
+    ``C_noise_inv`` to down-weight slopes perpendicular to the spider arms
+    (e.g. to mitigate Low Wind Effect steps across the spider).
+
+    The resulting matrix can be passed directly as ``C_noise=...`` to
+    ``pm.compute_tomographic_reconstructor(...)``.
+
+    Note:
+        Because the LWE phase step is common to all WFSs on the pupil (up to WFS
+        rotation), modeling it as independent directional noise per WFS lets the
+        MMSE reconstructor average across ``n_wfs`` WFSs, effectively scaling the
+        penalty by ``~1 / n_wfs`` compared to a single WFS. Choose ``alpha``
+        accordingly (e.g. ``alpha ~ 10-100`` for 6 LGS WFSs).
+
+    Args:
+        pm (ParamsManager): Initialized ``ParamsManager`` instance.
+        C_noise_inv (ndarray, optional): Pre-computed inverse noise covariance
+            matrix from ``pm.build_noise_covariance(...)``. If ``None``, it is
+            computed automatically via ``pm.build_noise_covariance``.
+        wfs_type (str): WFS type (``'lgs'``, ``'ngs'``, ``'ref'``).
+        alpha (float): Dimensionless penalty factor for the directional variance
+            added perpendicular to each spider arm (relative to each WFS's base
+            noise variance).
+        dilation_px (float): Flat plateau half-width in pupil pixels around each
+            spider arm.
+        smooth_sigma_px (float): Gaussian roll-off sigma in pupil pixels beyond
+            ``dilation_px``.
+        closing_radius (int): Morphological closing radius in pixels to bridge
+            across spider arms in ``pm.pup_mask``.
+        radial_margin_px (float): Radial margin in pixels for arm separation.
+        active_wfs_mask (sequence of bool, optional): Active WFS mask.
+        normalize_per_arm (bool): Normalize per-arm subaperture weights to max 1.
+            Default is False so coarse WFSs (e.g. 1x1, 8x8) are not inflated.
+        weight_threshold (float): Minimum subaperture weight to apply update.
+        in_place (bool): If True and ``C_noise_inv`` is provided, update in place.
+        return_diagnostics (bool): If True, return ``(C_noise_inv_mod, diag_dict)``.
+        verbose (bool): Print summary diagnostics per WFS.
+
+    Returns:
+        ndarray or tuple: Modified ``C_noise_inv`` (or
+        ``(C_noise_inv, diagnostics)`` if ``return_diagnostics=True``).
+    """
+    wfs_list_full = [wfs for wfs in pm.wfs_list if wfs_type in wfs['name']]
+    if active_wfs_mask is not None:
+        if len(active_wfs_mask) != len(wfs_list_full):
+            raise ValueError(
+                f"active_wfs_mask length ({len(active_wfs_mask)}) does not match "
+                f"number of {wfs_type.upper()} WFS ({len(wfs_list_full)})"
+            )
+        active_indices = [i for i, mask in enumerate(active_wfs_mask) if mask]
+    else:
+        active_indices = list(range(len(wfs_list_full)))
+
+    n_slopes_list = []
+    wfs_params_list = []
+    for original_idx in active_indices:
+        actual_wfs_idx = int(wfs_list_full[original_idx]['index'])
+        wfs_params_i = pm.get_wfs_params(wfs_type, actual_wfs_idx, xp_local=np)
+        if wfs_params_i['idx_valid_sa'] is not None:
+            n_slopes_this_wfs = len(wfs_params_i['idx_valid_sa']) * 2
+        else:
+            n_slopes_this_wfs = wfs_params_i['wfs_nsubaps'] ** 2 * 2
+        n_slopes_list.append(n_slopes_this_wfs)
+        wfs_params_list.append((actual_wfs_idx, wfs_params_i))
+
+    n_slopes_total = sum(n_slopes_list)
+
+    if C_noise_inv is None:
+        if wfs_type == 'lgs':
+            recon_params = pm.lgs_recon_params
+        elif wfs_type == 'ngs':
+            recon_params = pm.ngs_recon_params
+        elif wfs_type == 'ref':
+            recon_params = pm.ref_recon_params
+        else:
+            raise ValueError(f"Invalid wfs_type: {wfs_type}")
+
+        C_noise_inv = pm.build_noise_covariance(
+            wfs_type=wfs_type,
+            n_wfs=len(active_indices),
+            n_slopes_total=n_slopes_total,
+            use_elongation=recon_params['noise_elong_model'],
+            active_wfs_mask=active_wfs_mask,
+            verbose=verbose,
+        )
+        in_place = True
+
+    out = C_noise_inv if in_place else C_noise_inv.copy()
+    if out.shape != (n_slopes_total, n_slopes_total):
+        raise ValueError(
+            f"C_noise_inv shape {out.shape} does not match expected "
+            f"({n_slopes_total}, {n_slopes_total})"
+        )
+
+    wfs_diagnostics = []
+    start_idx = 0
+    for i, (actual_wfs_idx, wfs_params_i) in enumerate(wfs_params_list):
+        n_slopes_wfs = n_slopes_list[i]
+        end_idx = start_idx + n_slopes_wfs
+        if n_slopes_wfs == 0:
+            wfs_diagnostics.append({
+                'wfs_index': actual_wfs_idx,
+                'wfs_rotation': wfs_params_i['wfs_rotation'],
+                'n_subaps_valid': 0,
+                'arms_info': [],
+            })
+            continue
+
+        arms_info = compute_spider_subaperture_weights_and_normals(
+            pup_mask=pm.pup_mask,
+            wfs_nsubaps=wfs_params_i['wfs_nsubaps'],
+            wfs_rotation=wfs_params_i['wfs_rotation'],
+            wfs_translation=wfs_params_i['wfs_translation'],
+            wfs_magnification=wfs_params_i['wfs_magnification'],
+            wfs_anamorphosis_90=wfs_params_i.get('wfs_anamorphosis_90', 1.0),
+            wfs_anamorphosis_45=wfs_params_i.get('wfs_anamorphosis_45', 1.0),
+            idx_valid_sa=wfs_params_i['idx_valid_sa'],
+            dilation_px=dilation_px,
+            smooth_sigma_px=smooth_sigma_px,
+            closing_radius=closing_radius,
+            radial_margin_px=radial_margin_px,
+            normalize_per_arm=normalize_per_arm,
+            specula_convention=True,
+        )
+
+        block_view = out[start_idx:end_idx, start_idx:end_idx]
+        update_wfs_noise_cov_inv_for_spider(
+            block_view,
+            arms_info=arms_info,
+            alpha=alpha,
+            sigma_noise2_base=None,
+            weight_threshold=weight_threshold,
+            in_place=True,
+        )
+
+        if verbose:
+            max_w = np.zeros(n_slopes_wfs // 2, dtype=np.float64)
+            for arm in arms_info:
+                max_w = np.maximum(max_w, arm['weights'])
+            n_affected = int(np.count_nonzero(max_w > weight_threshold))
+            angles_str = ", ".join(f"{arm['angle_deg']:.1f}deg" for arm in arms_info)
+            print(
+                f"  WFS {actual_wfs_idx} (rot={wfs_params_i['wfs_rotation']} deg): "
+                f"{len(arms_info)} arms [{angles_str}], "
+                f"{n_affected}/{n_slopes_wfs // 2} subaps weighted (alpha={alpha})"
+            )
+
+        wfs_diagnostics.append({
+            'wfs_index': actual_wfs_idx,
+            'wfs_rotation': wfs_params_i['wfs_rotation'],
+            'n_subaps_valid': n_slopes_wfs // 2,
+            'arms_info': arms_info,
+        })
+        start_idx = end_idx
+
+    if return_diagnostics:
+        return out, {'wfs': wfs_diagnostics, 'alpha': alpha,
+                     'dilation_px': dilation_px, 'smooth_sigma_px': smooth_sigma_px}
+    return out
+
+
 # Update __all__ at the end
 __all__ = [
     'parse_params_file',
@@ -2687,4 +2865,8 @@ __all__ = [
     'save_filter_matrix',
     'load_filter_matrix',
     'generate_filter_matrix_from_intmat_file',
+    'extract_spider_arms',
+    'compute_spider_subaperture_weights_and_normals',
+    'update_wfs_noise_cov_inv_for_spider',
+    'apply_spider_to_noise_covariance',
 ]
