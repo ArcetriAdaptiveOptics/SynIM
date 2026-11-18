@@ -1,5 +1,6 @@
 import os
 import re
+import inspect
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -3672,6 +3673,7 @@ class ParamsManager:
             h_in_m = None
             launcher_coord_in_m = None
             spot_size_arcsec = None
+            launcher_absolute = False
 
             # Find the launcher reference from sh_lgsN
             wfs_key = f'sh_{wfs_type}{i+1}'
@@ -3698,6 +3700,8 @@ class ParamsManager:
                     h_in_m = launcher.get('beacon_focus', None)
                     # Spot size (arcsec)
                     spot_size_arcsec = launcher.get('spot_size', launcher.get('sizeArcsec', None))
+                    # Position in the telescope frame (SPECULA LaserLaunchTelescope)
+                    launcher_absolute = bool(launcher.get('absolute_coordinates', False))
 
             if launcher_coord_in_m is None:
                 raise ValueError(f"Launcher position not defined for WFS {i+1} ({wfs_type})")
@@ -3763,6 +3767,22 @@ class ParamsManager:
                 print(f"    Na layer thickness (FWHM): {na_thickness_in_m}")
                 print(f"    tGparameter: {t_g_parameter}")
 
+            # A launcher in the telescope frame is rotated into the frame of
+            # this WFS, as the SPECULA SH does with its rotAnglePhInDeg.
+            # Otherwise its position is already in the WFS frame.
+            rotation_kwargs = {}
+            if launcher_absolute:
+                if 'wfs_rotation_in_deg' not in inspect.signature(calc_noise_cov_elong).parameters:
+                    raise ValueError(
+                        f"Launcher of WFS {i+1} ({wfs_type}) has absolute_coordinates: it needs"
+                        " a SPECULA version whose calc_noise_cov_elong() accepts"
+                        " wfs_rotation_in_deg (SPECULA #892)")
+                rotation_kwargs['wfs_rotation_in_deg'] = float(
+                    wfs_config.get('rotation', wfs_config.get('rotAnglePhInDeg', 0.0)))
+                if verbose:
+                    print(f"    Launcher in the telescope frame, WFS rotation:"
+                          f" {rotation_kwargs['wfs_rotation_in_deg']} deg")
+
             # Call calc_noise_cov_elong
             try:
                 C_noise_inv_wfs = calc_noise_cov_elong(
@@ -3781,7 +3801,8 @@ class ParamsManager:
                     theta=None,
                     only_diag=False,
                     eta_is_not_one=False,
-                    display=False
+                    display=False,
+                    **rotation_kwargs
                 )
 
                 if verbose:
