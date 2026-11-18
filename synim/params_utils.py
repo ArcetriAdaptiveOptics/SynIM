@@ -229,6 +229,50 @@ def load_pupilstop(cm, pupilstop_params, pixel_pupil, pixel_pitch, verbose=False
         # *** Returns numpy ***
         return pupilstop.A
 
+def check_base_mask_matches_pupil(base_mask, pup_mask) -> None:
+    """
+    Check that a projection basis was defined on the same pupil as the pupil mask.
+
+    The rows of an inverse basis are mapped onto the valid pixels (> 0) of the
+    pupil mask in row-major order (see dm2d_to_3d), so the two sets of valid
+    pixels must have the same shape. Their position in the frame does not
+    matter: the masks are compared after cropping each one to its bounding box,
+    so e.g. the same pupil padded to a larger frame is accepted.
+
+    Parameters
+    ----------
+    base_mask : array_like
+        2D mask stored with the basis (mask_inf_func).
+    pup_mask : array_like
+        2D pupil mask used for the projection.
+
+    Raises
+    ------
+    ValueError
+        If the cropped valid-pixel patterns differ.
+    """
+    def _crop(mask):
+        valid = np.asarray(cpuArray(mask)) > 0
+        rows = np.flatnonzero(valid.any(axis=1))
+        cols = np.flatnonzero(valid.any(axis=0))
+        if rows.size == 0:
+            return valid[:0, :0]
+        return valid[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+
+    base_crop = _crop(base_mask)
+    pup_crop = _crop(pup_mask)
+    if base_crop.shape == pup_crop.shape and np.array_equal(base_crop, pup_crop):
+        return
+    detail = ''
+    if base_crop.shape == pup_crop.shape:
+        detail = f', {int(np.sum(base_crop != pup_crop))} pixels differ'
+    raise ValueError(
+        f'Projection basis mask does not match the pupil mask: basis mask '
+        f'{np.shape(base_mask)} with {int(base_crop.sum())} valid pixels '
+        f'(bounding box {base_crop.shape}), pupil mask {np.shape(pup_mask)} with '
+        f'{int(pup_crop.sum())} valid pixels (bounding box {pup_crop.shape}){detail}')
+
+
 def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                              is_inverse_basis=False, full_config=None,
                              xp_local=np, float_dtype_local=cpu_float_dtype,
@@ -2969,6 +3013,7 @@ __all__ = [
     'extract_opt_list',
     'validate_opt_sources',
     'load_pupilstop',
+    'check_base_mask_matches_pupil',
     'load_influence_functions',
     'find_slopec_key',
     'find_subapdata',
