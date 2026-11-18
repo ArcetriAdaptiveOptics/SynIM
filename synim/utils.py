@@ -800,6 +800,599 @@ def make_orto_modes(array):
     return Q
 
 
+def detect_spider_arms_azimuthal(
+    pup_mask,
+    n_bins=None,
+    min_radial_fill=0.35,
+    radial_range=None,
+):
+    """
+    Detect radial spider arms from a 2D pupil mask using a 1D azimuthal profile
+    in the mid-annulus (avoiding inner obstruction and outer boundary notches).
+
+    Args:
+        pup_mask (ndarray): 2D pupil mask (1 inside pupil, 0 on spider/outside).
+        n_bins (int, optional): Number of azimuthal bins over ``[0, 360)``
+            degrees. If ``None`` (default), chosen adaptively so each bin spans
+            ~1 pixel of arc at the mid-annulus radius (detecting even 1-px thin
+            spiders).
+        min_radial_fill (float): Minimum radial obscuration fraction in the
+            mid-annulus to classify an azimuthal bin as part of a spider arm.
+        radial_range (tuple of float or None): Fractional radial interval
+            ``(f_min, f_max)`` within ``[r_in, r_out]`` used to build the
+            azimuthal profile, where ``r = r_in + f * (r_out - r_in)``. If
+            ``None``, the full-transmission radial plateau is estimated
+            automatically from the 1D radial profile of ``pup_mask``.
+
+    Returns:
+        tuple: ``(arms_geometry, center_yx, (r_in, r_out))``
+            - ``arms_geometry``: List of dicts, sorted by ``azimuth_deg``, with:
+                - ``'arm_index'`` (int): 1-based arm index.
+                - ``'azimuth_deg'`` (float): Arm angle in degrees ``[0, 360)`` in
+                  ``pup_mask`` coordinates ``atan2(row - cy, col - cx)``.
+                - ``'u_yx'`` (tuple): Unit radial direction ``(uy, ux)`` in
+                  ``(row, col)`` coordinates.
+                - ``'n_yx'`` (tuple): Unit normal ``(ny, nx) = (-ux, uy)`` in
+                  ``(row, col)`` coordinates.
+                - ``'center_yx'`` (tuple): Arm centroid offset ``(y0, x0)``
+                  relative to ``center_yx`` in pixels.
+                - ``'half_width_px'`` (float): Estimated half-width in pixels.
+                - ``'width_px'`` (float): Estimated full width in pixels.
+            - ``center_yx``: ``(cy, cx)`` array center in pixels.
+            - ``(r_in, r_out)``: Inner and outer pupil radii in pixels.
+    """
+    mask_bin = np.asarray(cpuArray(pup_mask)) > 0.5
+    h, w = mask_bin.shape
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    if not np.any(mask_bin) or np.all(mask_bin):
+        return [], (cy, cx), (0.0, 0.0)
+
+    yy, xx = np.mgrid[:h, :w]
+    dy, dx = yy - cy, xx - cx
+    r = np.hypot(dx, dy)
+    r_valid = r[mask_bin]
+    r_in, r_out = float(r_valid.min()), float(r_valid.max())
+    radial_span = r_out - r_in
+    if radial_span < 4.0:
+        return [], (cy, cx), (r_in, r_out)
+
+    if radial_range is None:
+        # Automatically find the radial plateau free of inner/outer boundary notches
+        n_rbins = max(16, int(round(radial_span / 2.0)))
+        rbins = np.linspace(r_in, r_out, n_rbins + 1)
+        in_ring = (r >= r_in) & (r <= r_out)
+        r_tot, _ = np.histogram(r[in_ring], bins=rbins)
+        r_val, _ = np.histogram(r[mask_bin], bins=rbins)
+        r_fill = r_val / np.maximum(1, r_tot)
+        plateau = np.where(r_fill >= 0.85 * float(np.max(r_fill)))[0]
+        if plateau.size >= 3:
+            r_low = float(rbins[plateau[0] + 1])
+            r_high = float(rbins[plateau[-1]])
+        else:
+            r_low = r_in + 0.15 * radial_span
+            r_high = r_out - 0.15 * radial_span
+        r_low = max(r_low, 0.08 * r_out)
+    else:
+        f_min, f_max = float(radial_range[0]), float(radial_range[1])
+        if not (0.0 <= f_min < f_max <= 1.0):
+            raise ValueError(
+                f"radial_range must satisfy 0.0 <= f_min < f_max <= 1.0, got {radial_range}"
+            )
+        r_low = max(r_in + f_min * radial_span, f_min * r_out)
+        r_high = r_in + f_max * radial_span
+    if r_high <= r_low:
+        return [], (cy, cx), (r_in, r_out)
+
+    mid_ann = (r >= r_low) & (r <= r_high)
+    spider_mid = mid_ann & (~mask_bin)
+    if not np.any(spider_mid):
+        return [], (cy, cx), (r_in, r_out)
+
+    if n_bins is None:
+        r_mid_ann = 0.5 * (r_low + r_high)
+        n_bins = int(np.clip(round(2.0 * np.pi * r_mid_ann), 360, 2880))
+    else:
+        n_bins = int(n_bins)
+
+    angles_all = np.degrees(np.arctan2(dy[mid_ann], dx[mid_ann])) % 360.0
+    angles_sp = np.degrees(np.arctan2(dy[spider_mid], dx[spider_mid])) % 360.0
+
+    bins = np.linspace(0.0, 360.0, n_bins + 1)
+    tot_hist, _ = np.histogram(angles_all, bins=bins)
+    sp_hist, _ = np.histogram(angles_sp, bins=bins)
+    fill = sp_hist / np.maximum(1, tot_hist)
+
+    # Bridge 1-bin discretization hops without diluting thin 1-px spider peaks:
+    # sum of adjacent bin pair (for arms split across a bin boundary)
+    fill_pair = fill + np.maximum(np.roll(fill, 1), np.roll(fill, -1))
+    active = (fill >= float(min_radial_fill)) | (fill_pair >= 1.2 * float(min_radial_fill))
+    # Close single-bin holes inside an arm peak
+    active = active | (np.roll(active, 1) & np.roll(active, -1))
+    if not np.any(active) or np.all(active):
+        return [], (cy, cx), (r_in, r_out)
+
+    first_inactive = int(np.argmin(active))
+    active_rot = np.roll(active, -first_inactive)
+    padded = np.concatenate([[False], active_rot, [False]])
+    starts = np.where(padded[1:] & ~padded[:-1])[0]
+    ends = np.where(~padded[1:] & padded[:-1])[0]
+
+    bin_step = 360.0 / float(n_bins)
+    margin_deg = max(1.0, 2.0 * bin_step)
+    sp_y, sp_x = dy[spider_mid], dx[spider_mid]
+
+    arms = []
+    for s, e in zip(starts, ends):
+        ang_start = ((s + first_inactive) * bin_step - margin_deg) % 360.0
+        ang_end = ((e + first_inactive) * bin_step + margin_deg) % 360.0
+        in_sector = ((angles_sp - ang_start) % 360.0) <= ((ang_end - ang_start) % 360.0)
+        n_pix_sector = int(np.count_nonzero(in_sector))
+        if n_pix_sector < 3:
+            continue
+
+        yk, xk = sp_y[in_sector], sp_x[in_sector]
+        rk = np.hypot(xk, yk)
+        if float(rk.max() - rk.min()) < 0.5 * (r_high - r_low):
+            continue
+
+        r_mid = 0.5 * (rk.min() + rk.max())
+        if not np.any(rk >= r_mid) or not np.any(rk < r_mid):
+            continue
+
+        # Translation-invariant radial unit vector from inner half to outer half
+        uy = float(yk[rk >= r_mid].mean() - yk[rk < r_mid].mean())
+        ux = float(xk[rk >= r_mid].mean() - xk[rk < r_mid].mean())
+        norm_u = np.hypot(ux, uy)
+        if norm_u <= 0:
+            continue
+        uy, ux = uy / norm_u, ux / norm_u
+        ny, nx = -ux, uy
+        y0, x0 = float(yk.mean()), float(xk.mean())
+
+        width_px = max(0.5, float(n_pix_sector) / (r_high - r_low))
+        half_width = 0.5 * width_px
+        ang_deg = float(np.degrees(np.arctan2(uy, ux)) % 360.0)
+
+        arms.append({
+            'azimuth_deg': ang_deg,
+            'u_yx': (uy, ux),
+            'n_yx': (ny, nx),
+            'center_yx': (y0, x0),
+            'half_width_px': half_width,
+            'width_px': width_px,
+        })
+
+    arms.sort(key=lambda a: a['azimuth_deg'])
+    for idx, arm in enumerate(arms, start=1):
+        arm['arm_index'] = idx
+    return arms, (cy, cx), (r_in, r_out)
+
+
+def _resolve_spider_widths(spider_width_px, n_arms, default=3.0):
+    """Expand scalar/None spider width or validate per-arm width sequence."""
+    if spider_width_px is None:
+        return [float(default)] * n_arms
+    if hasattr(spider_width_px, '__len__'):
+        widths = [float(w) for w in spider_width_px]
+        if len(widths) != n_arms:
+            raise ValueError(
+                f"spider_width_px length ({len(widths)}) must match number of arms ({n_arms})"
+            )
+        return widths
+    return [float(spider_width_px)] * n_arms
+
+
+def compute_spider_subaperture_weights_and_normals(
+    pup_mask,
+    wfs_nsubaps,
+    wfs_rotation=0.0,
+    wfs_translation=(0.0, 0.0),
+    wfs_magnification=(1.0, 1.0),
+    wfs_anamorphosis_90=1.0,
+    wfs_anamorphosis_45=1.0,
+    idx_valid_sa=None,
+    dilation_px=0.0,
+    smooth_sigma_px=0.0,
+    spider_angles_deg=None,
+    spider_width_px=None,
+    n_bins=None,
+    min_radial_fill=0.35,
+    radial_range=None,
+    arms_geometry=None,
+    normalize_per_arm=False,
+    specula_convention=True,
+):
+    """
+    Compute per-subaperture weights and unit normal vectors for each spider arm
+    in the WFS reference frame using the 1D azimuthal/angular spider model and
+    the analytical inverse affine matrix ``rotshiftzoom_matrix``.
+
+    The unit normal ``normal = (n_0, n_1)`` for each arm is returned in the exact
+    slope block ordering of SynIM (where block 0 is the first half of the WFS
+    slopes and block 1 is the second half):
+    - With ``specula_convention=True``, ``pup_mask`` is transposed before the WFS
+      transformation and SynIM concatenates ``(signal_y, signal_x)`` where
+      ``signal_y`` is the derivative along ``axis=0`` (row) and ``signal_x`` is
+      the derivative along ``axis=1`` (col) of the transformed array. Therefore
+      ``n_0 = n_row`` and ``n_1 = n_col``.
+    - With ``specula_convention=False``, ``n_0 = n_col`` and ``n_1 = n_row``.
+
+    Args:
+        pup_mask (ndarray): 2D pupil mask (n_pup, n_pup).
+        wfs_nsubaps (int): Number of subapertures across the pupil diameter.
+        wfs_rotation (float): WFS rotation angle in degrees.
+        wfs_translation (tuple): WFS translation ``(dx, dy)`` in pixels.
+        wfs_magnification (tuple or float): WFS magnification ``(mx, my)`` or scalar.
+        wfs_anamorphosis_90 (float): WFS 90-deg anamorphosis factor (applied if
+            ``wfs_magnification`` is scalar).
+        wfs_anamorphosis_45 (float): WFS 45-deg anamorphosis factor.
+        idx_valid_sa (ndarray, optional): Valid subaperture indices.
+        dilation_px (float): Flat plateau half-width in pupil pixels around each
+            spider arm before Gaussian roll-off (0 = strictly the spider bar).
+        smooth_sigma_px (float): Gaussian roll-off standard deviation in pupil
+            pixels beyond ``dilation_px`` (0 = sharp step on the spider bar).
+        spider_angles_deg (sequence of float, optional): Explicit radial arm
+            angles in degrees ``[0, 360)`` in the ``pup_mask`` frame
+            (``atan2(row - cy, col - cx)``). If ``None``, angles and widths are
+            detected automatically from the 1D azimuthal profile via
+            ``detect_spider_arms_azimuthal``.
+        spider_width_px (float or sequence of float, optional): Explicit spider
+            arm width(s) in pixels (scalar or one per arm).
+        n_bins (int, optional): Number of azimuthal bins for automatic detection.
+        min_radial_fill (float): Minimum radial fill for automatic detection.
+        radial_range (tuple of float or None): Fractional radial interval
+            ``(f_min, f_max)`` within ``[r_in, r_out]`` for automatic detection
+            (or ``None`` for automatic radial plateau estimation).
+        arms_geometry (tuple, optional): Pre-computed output
+            ``(arms, center_yx, (r_in, r_out))`` from
+            ``detect_spider_arms_azimuthal(pup_mask, ...)`` to avoid repeating
+            detection across multiple WFSs.
+        normalize_per_arm (bool): If True, normalize each arm's subaperture
+            weights so that the maximum weight along the arm is 1.0. Default is
+            False so that coarse WFSs (e.g. 1x1, 8x8) are not inflated to 1.0.
+        specula_convention (bool): Whether to follow SPECULA axis conventions.
+
+    Returns:
+        list of dict: One dictionary per spider arm with keys:
+            - ``'arm_index'`` (int): 1-based arm index.
+            - ``'normal'`` (np.ndarray): Unit normal ``(n_0, n_1)`` in WFS slope
+              ordering.
+            - ``'angle_deg'`` (float): Line orientation angle in degrees in the
+              WFS slope frame (orthogonal to ``normal``).
+            - ``'azimuth_deg'`` (float): Radial arm azimuth in the ``pup_mask``
+              frame.
+            - ``'width_px'`` (float): Arm full width in pupil pixels.
+            - ``'weights'`` (np.ndarray): 1D array of weights for valid
+              subapertures, shape ``(n_valid_sa,)``.
+            - ``'weights_2d'`` (np.ndarray): 2D array of weights on the
+              ``(wfs_nsubaps, wfs_nsubaps)`` grid.
+    """
+    from synim.geometry import _valid_sa_indices
+
+    mask_bin = np.asarray(cpuArray(pup_mask)) > 0.5
+    if specula_convention:
+        mask_in = np.transpose(mask_bin)
+        wfs_translation_local = (-1.0 * float(wfs_translation[1]),
+                                 -1.0 * float(wfs_translation[0]))
+    else:
+        mask_in = mask_bin
+        wfs_translation_local = (float(wfs_translation[0]), float(wfs_translation[1]))
+
+    # Detect (or construct) arms in the non-transposed pup_mask frame so
+    # azimuth_deg and arm_index are always consistent across conventions, then
+    # map (row, col) -> (col, row) when specula_convention=True.
+    if spider_angles_deg is not None:
+        h_orig, w_orig = mask_bin.shape
+        cy_orig, cx_orig = (h_orig - 1) / 2.0, (w_orig - 1) / 2.0
+        yy, xx = np.mgrid[:h_orig, :w_orig]
+        r_valid = np.hypot(xx[mask_bin] - cx_orig, yy[mask_bin] - cy_orig)
+        r_in = float(r_valid.min()) if r_valid.size else 0.0
+        r_out = float(r_valid.max()) if r_valid.size else min(h_orig, w_orig) / 2.0
+
+        angles_list = [float(a) for a in spider_angles_deg]
+        widths_list = _resolve_spider_widths(spider_width_px, len(angles_list), default=3.0)
+
+        arms_orig = []
+        for idx_a, (ang, w_px) in enumerate(zip(angles_list, widths_list), start=1):
+            rad = np.deg2rad(ang)
+            uy_orig, ux_orig = float(np.sin(rad)), float(np.cos(rad))
+            arms_orig.append({
+                'arm_index': idx_a,
+                'azimuth_deg': ang % 360.0,
+                'u_yx': (uy_orig, ux_orig),
+                'n_yx': (-ux_orig, uy_orig),
+                'center_yx': (0.0, 0.0),
+                'half_width_px': 0.5 * w_px,
+                'width_px': w_px,
+            })
+    else:
+        if arms_geometry is not None:
+            arms_orig_raw, (cy_orig, cx_orig), (r_in, r_out) = arms_geometry
+            arms_orig = [dict(a) for a in arms_orig_raw]
+        else:
+            arms_orig, (cy_orig, cx_orig), (r_in, r_out) = detect_spider_arms_azimuthal(
+                mask_bin,
+                n_bins=n_bins,
+                min_radial_fill=min_radial_fill,
+                radial_range=radial_range,
+            )
+        if spider_width_px is not None:
+            widths_list = _resolve_spider_widths(spider_width_px, len(arms_orig))
+            for arm, w_px in zip(arms_orig, widths_list):
+                arm['width_px'] = w_px
+                arm['half_width_px'] = 0.5 * w_px
+
+    if not arms_orig:
+        return []
+
+    cy, cx = (cx_orig, cy_orig) if specula_convention else (cy_orig, cx_orig)
+    arms_geom = []
+    for arm in arms_orig:
+        uy_o, ux_o = arm['u_yx']
+        y0_o, x0_o = arm['center_yx']
+        if specula_convention:
+            uy, ux = ux_o, uy_o
+            y0, x0 = x0_o, y0_o
+        else:
+            uy, ux = uy_o, ux_o
+            y0, x0 = y0_o, x0_o
+        arms_geom.append({
+            'arm_index': arm['arm_index'],
+            'azimuth_deg': arm['azimuth_deg'],
+            'u_yx': (uy, ux),
+            'n_yx': (-ux, uy),
+            'center_yx': (y0, x0),
+            'half_width_px': arm['half_width_px'],
+            'width_px': arm['width_px'],
+        })
+
+    if not hasattr(wfs_magnification, '__len__'):
+        wfs_mag_tuple = (
+            float(wfs_magnification),
+            float(wfs_magnification) * float(wfs_anamorphosis_90),
+        )
+    else:
+        wfs_mag_tuple = (float(wfs_magnification[0]), float(wfs_magnification[1]))
+
+    h, w = mask_in.shape
+    matrix, offset = rotshiftzoom_matrix(
+        (h, w),
+        (h, w),
+        dm_translation=(0.0, 0.0),
+        dm_rotation=0.0,
+        dm_magnification=(1.0, 1.0),
+        wfs_translation=wfs_translation_local,
+        wfs_rotation=float(wfs_rotation),
+        wfs_magnification=wfs_mag_tuple,
+        wfs_anamorphosis_45=float(wfs_anamorphosis_45),
+    )
+    A = np.asarray(cpuArray(matrix), dtype=np.float64)
+    b_off = np.asarray(cpuArray(offset), dtype=np.float64)
+    center_in = np.array([cy, cx], dtype=np.float64)
+    dc = b_off - center_in
+
+    # Input coordinates relative to pupil center: dx_in(r, c) = A @ [r, c] + dc
+    rows = np.arange(h, dtype=np.float64)[:, None]
+    cols = np.arange(w, dtype=np.float64)[None, :]
+    in_y = A[0, 0] * rows + A[0, 1] * cols + dc[0]
+    in_x = A[1, 0] * rows + A[1, 1] * cols + dc[1]
+    r_in_sq = in_y * in_y + in_x * in_x
+    in_annulus = (r_in_sq >= (r_in * r_in)) & (r_in_sq <= (r_out * r_out))
+
+    idx = _valid_sa_indices(idx_valid_sa, wfs_nsubaps, specula_convention)
+
+    arms_info = []
+    for arm in arms_geom:
+        u_in = np.array(arm['u_yx'], dtype=np.float64)
+        n_in = np.array(arm['n_yx'], dtype=np.float64)
+        p0_in = np.array(arm['center_yx'], dtype=np.float64)
+        hw = float(arm['half_width_px'])
+
+        # Analytical gradient of transverse coordinate in WFS (row, col)
+        g_rc = A.T @ n_in
+        g_norm = float(np.linalg.norm(g_rc))
+        if g_norm <= 0:
+            continue
+        n_rc = g_rc / g_norm
+        t_rc = A.T @ u_in
+
+        if specula_convention:
+            normal = np.array([n_rc[0], n_rc[1]], dtype=np.float64)
+        else:
+            normal = np.array([n_rc[1], n_rc[0]], dtype=np.float64)
+
+        # Tangent strictly orthogonal to normal in WFS slope coordinates
+        tangent = np.array([-normal[1], normal[0]], dtype=np.float64)
+        angle_deg = float(np.degrees(np.arctan2(tangent[1], tangent[0])) % 180.0)
+
+        # 1D outer sums for longitudinal and transverse coordinates (in pupil px)
+        s_par = (t_rc[0] * rows + t_rc[1] * cols) + float(u_in @ dc)
+        d_perp = np.abs(
+            (g_rc[0] * rows + g_rc[1] * cols) + float(n_in @ (dc - p0_in))
+        )
+        # Small 1e-3 px tolerance avoids float tie-breaking at half-integer pixel centers
+        d_strip = np.maximum(0.0, d_perp - (hw + 1e-3))
+        valid_half_plane = in_annulus & (s_par >= 0.0)
+
+        if smooth_sigma_px > 0:
+            arm_profile = np.where(
+                valid_half_plane,
+                np.exp(
+                    -0.5 * (np.maximum(0.0, d_strip - float(dilation_px)) / float(smooth_sigma_px)) ** 2
+                ),
+                0.0,
+            )
+            arm_profile[arm_profile < 1e-4] = 0.0
+        else:
+            arm_profile = (valid_half_plane & (d_strip <= float(dilation_px))).astype(np.float64)
+
+        w_2d = cpuArray(rebin(arm_profile, (wfs_nsubaps, wfs_nsubaps), method='average'))
+        w_flat = w_2d.flatten()
+        w_sa = w_flat if idx is None else w_flat[idx]
+        w_sa = np.asarray(w_sa, dtype=np.float64)
+
+        if normalize_per_arm:
+            max_w = float(np.max(w_sa)) if w_sa.size > 0 else 0.0
+            if max_w > 0:
+                w_sa = w_sa / max_w
+                w_2d = w_2d / max_w
+
+        arms_info.append({
+            'arm_index': arm['arm_index'],
+            'normal': normal,
+            'angle_deg': angle_deg,
+            'azimuth_deg': arm['azimuth_deg'],
+            'width_px': arm['width_px'],
+            'weights': w_sa,
+            'weights_2d': w_2d,
+        })
+
+    return arms_info
+
+
+def update_wfs_noise_cov_inv_for_spider(
+    C_noise_inv_wfs,
+    arms_info,
+    alpha=10.0,
+    sigma_noise2_base=None,
+    weight_threshold=1e-3,
+    in_place=False,
+    check_block_diagonal=True,
+):
+    """
+    Update a single WFS inverse noise covariance matrix with a directional
+    spider/LWE penalty using the vectorized 2x2 Sherman-Morrison formula.
+
+    Models an additional slope variance ``sigma_{j,k}^2 * n_k @ n_k.T`` along the
+    unit normal ``n_k`` to spider arm ``k`` for each subaperture ``j``, where
+    ``sigma_{j,k}^2 = alpha * w_{j,k} * sigma_noise2_base``.
+
+    Preserves exact bit-for-bit symmetry and the 2x2 block-diagonal sparsity
+    pattern (at most 2 non-zeros per row) required by ``_sparse_rows`` in
+    ``compute_mmse_reconstructor``. Only subapertures touched by at least one
+    arm (``w > weight_threshold``) are modified.
+
+    Args:
+        C_noise_inv_wfs (ndarray): Inverse noise covariance for one WFS, shape
+            ``(2 * n_sub, 2 * n_sub)``.
+        arms_info (list of dict): Output of
+            ``compute_spider_subaperture_weights_and_normals``.
+        alpha (float): Dimensionless penalty factor relative to
+            ``sigma_noise2_base``. If ``alpha <= 0``, returns a copy (or the
+            input if ``in_place=True``) unchanged.
+        sigma_noise2_base (float, optional): Base noise variance in slope^2
+            units. If ``None``, inferred automatically as ``1.0 / max(lambda_max)``
+            across all 2x2 subaperture blocks.
+        weight_threshold (float): Minimum subaperture weight to apply update.
+        in_place (bool): If True, modify ``C_noise_inv_wfs`` in place.
+        check_block_diagonal (bool): If True, verify that ``C_noise_inv_wfs``
+            only has non-zeros on the 2x2 subaperture blocks ``(j, j + n_sub)``.
+
+    Returns:
+        ndarray: Updated inverse noise covariance matrix for the WFS.
+    """
+    out = C_noise_inv_wfs if in_place else C_noise_inv_wfs.copy()
+    if alpha <= 0 or not arms_info:
+        return out
+
+    n_slopes = out.shape[0]
+    if n_slopes % 2 != 0 or out.shape[1] != n_slopes:
+        raise ValueError(f"Expected square (2*n_sub, 2*n_sub) matrix, got {out.shape}")
+
+    n_sub = n_slopes // 2
+    out_dtype = out.dtype
+
+    idx_0 = np.arange(n_sub)
+    idx_1 = idx_0 + n_sub
+
+    a = np.asarray(cpuArray(out[idx_0, idx_0]), dtype=np.float64).copy()
+    d = np.asarray(cpuArray(out[idx_1, idx_1]), dtype=np.float64).copy()
+    b01 = np.asarray(cpuArray(out[idx_0, idx_1]), dtype=np.float64)
+    b10 = np.asarray(cpuArray(out[idx_1, idx_0]), dtype=np.float64)
+
+    if check_block_diagonal:
+        # Check that no non-zero entries exist outside the 2x2 blocks (j, j + n_sub)
+        module = np if isinstance(out, np.ndarray) else _synim.xp
+        total_nnz = int(module.count_nonzero(out))
+        block_nnz = (
+            int(np.count_nonzero(a)) + int(np.count_nonzero(d)) +
+            int(np.count_nonzero(b01)) + int(np.count_nonzero(b10))
+        )
+        if total_nnz != block_nnz:
+            raise ValueError(
+                "C_noise_inv_wfs has non-zero entries outside the 2x2 subaperture "
+                "blocks (j, j + n_sub); Sherman-Morrison 2x2 update requires a "
+                "2x2 block-diagonal precision matrix."
+            )
+
+    b = 0.5 * (b01 + b10)
+
+    if sigma_noise2_base is None:
+        if n_sub == 0:
+            return out
+        # Maximum eigenvalue of each 2x2 block M_j = [[a_j, b_j], [b_j, d_j]]
+        lambda_max = 0.5 * ((a + d) + np.hypot(a - d, 2.0 * b))
+        max_prec = float(np.max(lambda_max))
+        if max_prec <= 0:
+            return out
+        sigma_noise2_base = 1.0 / max_prec
+    else:
+        sigma_noise2_base = float(sigma_noise2_base)
+
+    modified = np.zeros(n_sub, dtype=bool)
+    for arm in arms_info:
+        n0, n1 = float(arm['normal'][0]), float(arm['normal'][1])
+        w = np.asarray(arm['weights'], dtype=np.float64)
+        if w.shape[0] != n_sub:
+            raise ValueError(
+                f"Arm weights length ({w.shape[0]}) does not match n_sub ({n_sub})"
+            )
+
+        active = w > weight_threshold
+        if not np.any(active):
+            continue
+
+        modified |= active
+        sigma2_add = float(alpha) * w[active] * sigma_noise2_base
+        a_act = a[active]
+        b_act = b[active]
+        d_act = d[active]
+
+        v0 = a_act * n0 + b_act * n1
+        v1 = b_act * n0 + d_act * n1
+        den = 1.0 + sigma2_add * (n0 * v0 + n1 * v1)
+        scale = sigma2_add / den
+
+        a[active] = a_act - scale * (v0 * v0)
+        d[active] = d_act - scale * (v1 * v1)
+        b[active] = b_act - scale * (v0 * v1)
+
+    if not np.any(modified):
+        return out
+
+    m_idx0 = idx_0[modified]
+    m_idx1 = idx_1[modified]
+    a_cast = a[modified].astype(out_dtype)
+    d_cast = d[modified].astype(out_dtype)
+    b_cast = b[modified].astype(out_dtype)
+
+    if isinstance(out, np.ndarray):
+        out[m_idx0, m_idx0] = a_cast
+        out[m_idx1, m_idx1] = d_cast
+        out[m_idx0, m_idx1] = b_cast
+        out[m_idx1, m_idx0] = b_cast
+    else:
+        m_idx0_dev = to_xp(_synim.xp, m_idx0)
+        m_idx1_dev = to_xp(_synim.xp, m_idx1)
+        out[m_idx0_dev, m_idx0_dev] = to_xp(_synim.xp, a_cast, dtype=out_dtype)
+        out[m_idx1_dev, m_idx1_dev] = to_xp(_synim.xp, d_cast, dtype=out_dtype)
+        b_dev = to_xp(_synim.xp, b_cast, dtype=out_dtype)
+        out[m_idx0_dev, m_idx1_dev] = b_dev
+        out[m_idx1_dev, m_idx0_dev] = b_dev
+
+    return out
+
+
 __all__ = [
     # Mask creation and manipulation
     'make_orto_modes',
@@ -820,5 +1413,10 @@ __all__ = [
 
     # Extrapolation functions
     'apply_extrapolation',
-    'calculate_extrapolation_indices_coeffs'
+    'calculate_extrapolation_indices_coeffs',
+
+    # Spider / LWE noise covariance functions
+    'detect_spider_arms_azimuthal',
+    'compute_spider_subaperture_weights_and_normals',
+    'update_wfs_noise_cov_inv_for_spider',
 ]
