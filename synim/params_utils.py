@@ -2655,15 +2655,18 @@ def apply_spider_to_noise_covariance(
     C_noise_inv=None,
     wfs_type='lgs',
     alpha=10.0,
-    dilation_px=2.0,
-    smooth_sigma_px=3.0,
-    closing_radius=5,
-    radial_margin_px=2.0,
+    dilation_px=0.0,
+    smooth_sigma_px=0.0,
+    spider_angles_deg=None,
+    spider_width_px=None,
+    radial_range=None,
     active_wfs_mask=None,
     normalize_per_arm=False,
     weight_threshold=1e-3,
     in_place=False,
     return_diagnostics=False,
+    display=False,
+    display_save_path=None,
     verbose=False,
 ):
     """
@@ -2691,18 +2694,28 @@ def apply_spider_to_noise_covariance(
             added perpendicular to each spider arm (relative to each WFS's base
             noise variance).
         dilation_px (float): Flat plateau half-width in pupil pixels around each
-            spider arm.
+            spider arm (0.0 = strictly subapertures crossed by the spider).
         smooth_sigma_px (float): Gaussian roll-off sigma in pupil pixels beyond
-            ``dilation_px``.
-        closing_radius (int): Morphological closing radius in pixels to bridge
-            across spider arms in ``pm.pup_mask``.
-        radial_margin_px (float): Radial margin in pixels for arm separation.
+            ``dilation_px`` (0.0 = strictly subapertures crossed by the spider).
+        spider_angles_deg (sequence of float, optional): Explicit radial arm
+            angles in degrees ``[0, 360)`` in ``pm.pup_mask``. If ``None``,
+            detected automatically via ``detect_spider_arms_azimuthal``.
+        spider_width_px (float, optional): Explicit arm width in pixels when
+            ``spider_angles_deg`` is provided.
+        radial_range (tuple of float or None): Fractional radial interval
+            ``(f_min, f_max)`` within ``[r_in, r_out]`` used for azimuthal
+            spider detection (or ``None`` for automatic radial plateau estimation).
         active_wfs_mask (sequence of bool, optional): Active WFS mask.
         normalize_per_arm (bool): Normalize per-arm subaperture weights to max 1.
             Default is False so coarse WFSs (e.g. 1x1, 8x8) are not inflated.
         weight_threshold (float): Minimum subaperture weight to apply update.
         in_place (bool): If True and ``C_noise_inv`` is provided, update in place.
         return_diagnostics (bool): If True, return ``(C_noise_inv_mod, diag_dict)``.
+        display (bool or str): If True, display a figure with the weighted
+            subapertures and variance-increase directions (normal vectors) for
+            all active WFSs. Pass ``'first'`` to display only the first WFS.
+        display_save_path (str, optional): If provided (with ``display``), save
+            the figure to this path instead of calling ``plt.show()``.
         verbose (bool): Print summary diagnostics per WFS.
 
     Returns:
@@ -2761,6 +2774,21 @@ def apply_spider_to_noise_covariance(
             f"({n_slopes_total}, {n_slopes_total})"
         )
 
+    # Detect spider arms once on pm.pup_mask when using automatic detection
+    arms_geometry = None
+    if spider_angles_deg is None and n_slopes_total > 0:
+        arms_geometry = detect_spider_arms_azimuthal(
+            pm.pup_mask, radial_range=radial_range
+        )
+        if not arms_geometry[0]:
+            import warnings
+            warnings.warn(
+                "No spider arms detected in pm.pup_mask; "
+                "C_noise_inv will be returned unchanged.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     wfs_diagnostics = []
     start_idx = 0
     for i, (actual_wfs_idx, wfs_params_i) in enumerate(wfs_params_list):
@@ -2770,6 +2798,8 @@ def apply_spider_to_noise_covariance(
             wfs_diagnostics.append({
                 'wfs_index': actual_wfs_idx,
                 'wfs_rotation': wfs_params_i['wfs_rotation'],
+                'wfs_nsubaps': wfs_params_i['wfs_nsubaps'],
+                'idx_valid_sa': wfs_params_i['idx_valid_sa'],
                 'n_subaps_valid': 0,
                 'arms_info': [],
             })
@@ -2786,8 +2816,10 @@ def apply_spider_to_noise_covariance(
             idx_valid_sa=wfs_params_i['idx_valid_sa'],
             dilation_px=dilation_px,
             smooth_sigma_px=smooth_sigma_px,
-            closing_radius=closing_radius,
-            radial_margin_px=radial_margin_px,
+            spider_angles_deg=spider_angles_deg,
+            spider_width_px=spider_width_px,
+            radial_range=radial_range,
+            arms_geometry=arms_geometry,
             normalize_per_arm=normalize_per_arm,
             specula_convention=True,
         )
@@ -2817,15 +2849,114 @@ def apply_spider_to_noise_covariance(
         wfs_diagnostics.append({
             'wfs_index': actual_wfs_idx,
             'wfs_rotation': wfs_params_i['wfs_rotation'],
+            'wfs_nsubaps': wfs_params_i['wfs_nsubaps'],
+            'idx_valid_sa': wfs_params_i['idx_valid_sa'],
             'n_subaps_valid': n_slopes_wfs // 2,
             'arms_info': arms_info,
         })
         start_idx = end_idx
 
+    if display:
+        _plot_spider_diagnostics(
+            wfs_diagnostics,
+            alpha=alpha,
+            dilation_px=dilation_px,
+            smooth_sigma_px=smooth_sigma_px,
+            only_first=(display == 'first'),
+            save_path=display_save_path,
+        )
+
     if return_diagnostics:
         return out, {'wfs': wfs_diagnostics, 'alpha': alpha,
                      'dilation_px': dilation_px, 'smooth_sigma_px': smooth_sigma_px}
     return out
+
+
+def _plot_spider_diagnostics(
+    wfs_diagnostics,
+    alpha,
+    dilation_px,
+    smooth_sigma_px,
+    only_first=False,
+    save_path=None,
+):
+    """Plot weighted subapertures and normal directions for WFSs."""
+    import matplotlib.pyplot as plt
+    from synim.geometry import _valid_sa_indices
+
+    items = wfs_diagnostics[:1] if only_first else wfs_diagnostics
+    n_wfs = len(items)
+    if n_wfs == 0:
+        return
+
+    ncols = min(3, n_wfs)
+    nrows = int(np.ceil(n_wfs / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(5.0 * ncols, 4.5 * nrows), squeeze=False
+    )
+
+    for idx, wfs_info in enumerate(items):
+        ax = axes[idx // ncols, idx % ncols]
+        arms = wfs_info['arms_info']
+        n_sub = int(wfs_info['wfs_nsubaps'])
+        if not arms:
+            ax.set_title(f"WFS {wfs_info['wfs_index']} (no arms)")
+            continue
+
+        w_map = np.zeros((n_sub, n_sub), dtype=np.float64)
+        for arm in arms:
+            w_map = np.maximum(w_map, arm['weights_2d'])
+
+        # Mask out invalid subapertures so the pupil boundary is visible
+        valid_idx = _valid_sa_indices(wfs_info.get('idx_valid_sa'), n_sub, True)
+        if valid_idx is not None:
+            valid_mask = np.zeros(n_sub * n_sub, dtype=bool)
+            valid_mask[valid_idx] = True
+            valid_mask = valid_mask.reshape(n_sub, n_sub)
+            w_disp = np.where(valid_mask, w_map, np.nan)
+        else:
+            w_disp = w_map
+
+        cmap = plt.get_cmap('inferno').with_extremes(bad='#e6e6e6')
+        im_plot = ax.imshow(w_disp, origin='lower', cmap=cmap, vmin=0.0, vmax=1.0)
+        plt.colorbar(im_plot, ax=ax, fraction=0.046, pad=0.04)
+
+        # Draw bidirectional arrows along the variance-increase direction (normal)
+        arrow_len = max(2.5, 0.08 * n_sub)
+        for arm in arms:
+            w2d = arm['weights_2d']
+            if valid_idx is not None:
+                w2d = np.where(valid_mask, w2d, 0.0)
+            max_w = float(np.max(w2d)) if w2d.size else 0.0
+            if max_w <= 0:
+                continue
+            rr, cc = np.where(w2d > 0.5 * max_w)
+            if rr.size > 0:
+                r0, c0 = float(np.mean(rr)), float(np.mean(cc))
+                n0, n1 = arm['normal']  # (n_row, n_col) for specula_convention=True
+                ax.annotate(
+                    '', xy=(c0 + arrow_len * n1, r0 + arrow_len * n0),
+                    xytext=(c0 - arrow_len * n1, r0 - arrow_len * n0),
+                    arrowprops=dict(arrowstyle='<->', color='cyan', lw=1.6),
+                )
+
+        ax.set_title(f"WFS {wfs_info['wfs_index']} (rot={wfs_info['wfs_rotation']} deg)")
+        ax.set_xlabel("Subap col (slope block 1)")
+        ax.set_ylabel("Subap row (slope block 0)")
+
+    for idx in range(n_wfs, nrows * ncols):
+        axes[idx // ncols, idx % ncols].axis('off')
+
+    fig.suptitle(
+        f"Spider LWE weights & variance-increase directions "
+        f"(alpha={alpha:g}, dilation={dilation_px:g}px, sigma={smooth_sigma_px:g}px)"
+    )
+    plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150)
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 # Update __all__ at the end
@@ -2865,7 +2996,7 @@ __all__ = [
     'save_filter_matrix',
     'load_filter_matrix',
     'generate_filter_matrix_from_intmat_file',
-    'extract_spider_arms',
+    'detect_spider_arms_azimuthal',
     'compute_spider_subaperture_weights_and_normals',
     'update_wfs_noise_cov_inv_for_spider',
     'apply_spider_to_noise_covariance',

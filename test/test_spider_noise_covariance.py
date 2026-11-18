@@ -33,7 +33,7 @@ import synim.synim as synim_core
 from synim.params_utils import _sparse_rows, apply_spider_to_noise_covariance, compute_mmse_reconstructor
 from synim.utils import (
     compute_spider_subaperture_weights_and_normals,
-    extract_spider_arms,
+    detect_spider_arms_azimuthal,
     update_wfs_noise_cov_inv_for_spider,
 )
 
@@ -108,27 +108,140 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
         )
         cls.dm_mask = cls.annulus.astype(np.float32)
 
-    def test_extract_spider_arms_and_serrated_edges(self):
-        for mask, annulus in (
-            (self.pup_mask, self.annulus),
-            (self.serrated_mask, self.serrated_annulus),
-        ):
-            labeled_arms, n_arms, closed_pupil = extract_spider_arms(
-                mask, closing_radius=4
-            )
-            self.assertEqual(n_arms, 6)
-            self.assertEqual(labeled_arms.shape, mask.shape)
-            for k in range(1, 7):
-                self.assertGreater(np.count_nonzero(labeled_arms == k), 100)
-            overlap = np.count_nonzero(closed_pupil & annulus) / np.count_nonzero(annulus)
-            self.assertGreater(overlap, 0.99)
+    def test_detect_spider_arms_on_serrated_and_spiderless_masks(self):
+        for mask in (self.pup_mask, self.serrated_mask):
+            arms, _, _ = detect_spider_arms_azimuthal(mask)
+            self.assertEqual(len(arms), 6)
+            for arm, exp_ang in zip(arms, [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]):
+                diff_deg = abs((arm['azimuth_deg'] - exp_ang + 180.0) % 360.0 - 180.0)
+                self.assertLess(diff_deg, 0.4)
 
         # Spiderless mask returns 0 arms
-        labeled_empty, n_empty, _ = extract_spider_arms(
-            self.annulus.astype(np.float32), closing_radius=4
+        arms_empty, _, _ = detect_spider_arms_azimuthal(self.annulus.astype(np.float32))
+        self.assertEqual(len(arms_empty), 0)
+
+    def test_detect_spider_arms_azimuthal_unequal_widths_and_4arms(self):
+        """
+        1D azimuthal detector accurately recovers arm angles and widths even
+        when one arm is thicker (like E-ELT's 90-deg crane arm), the spider
+        center is shifted by 0.5 px, and edges are serrated; also works for
+        a 4-arm spider at arbitrary angles.
+        """
+        n = 320
+        yy, xx = np.mgrid[:n, :n]
+        # Shift spider origin by +0.5 px relative to (n-1)/2
+        cy, cx = n / 2.0, n / 2.0
+        dy, dx = yy - cy, xx - cx
+        r = np.hypot(dx, dy)
+        theta = np.arctan2(dy, dx)
+        r_max = n / 2.0 - 2.0 - 2.0 * np.abs(np.sin(18.0 * theta))
+        r_min = 0.283 * (n / 2.0) + 1.5 * np.abs(np.sin(12.0 * theta))
+        annulus = (r <= r_max) & (r >= r_min)
+
+        expected_angles = [30.0, 90.0, 150.0, 210.0, 270.0, 330.0]
+        expected_widths = [3.0, 7.0, 3.0, 3.0, 3.0, 3.0]
+        spider = np.zeros_like(annulus)
+        for ang_deg, w_px in zip(expected_angles, expected_widths):
+            ang = np.deg2rad(ang_deg)
+            s_par = np.sin(ang) * dy + np.cos(ang) * dx
+            d_perp = np.abs(-np.cos(ang) * dy + np.sin(ang) * dx)
+            spider |= (s_par > 0.0) & (d_perp <= 0.5 * w_px)
+
+        mask = (annulus & (~spider)).astype(np.float32)
+        arms, _, _ = detect_spider_arms_azimuthal(mask)
+        self.assertEqual(len(arms), 6)
+        for arm, exp_ang, exp_w in zip(arms, expected_angles, expected_widths):
+            self.assertAlmostEqual(arm['azimuth_deg'], exp_ang, delta=0.35)
+            self.assertAlmostEqual(arm['width_px'], exp_w, delta=0.45)
+
+        # 4-arm spider at [22.5, 112.5, 202.5, 292.5] deg
+        spider_4 = np.zeros_like(annulus)
+        angles_4 = [22.5, 112.5, 202.5, 292.5]
+        for ang_deg in angles_4:
+            ang = np.deg2rad(ang_deg)
+            s_par = np.sin(ang) * dy + np.cos(ang) * dx
+            d_perp = np.abs(-np.cos(ang) * dy + np.sin(ang) * dx)
+            spider_4 |= (s_par > 0.0) & (d_perp <= 1.8)
+        arms_4, _, _ = detect_spider_arms_azimuthal((annulus & (~spider_4)).astype(np.float32))
+        self.assertEqual(len(arms_4), 4)
+        for arm, exp_ang in zip(arms_4, angles_4):
+            self.assertAlmostEqual(arm['azimuth_deg'], exp_ang, delta=0.35)
+
+        # Automatic radial plateau (radial_range=None) and custom radial_range=(0.2, 0.8)
+        for r_range in (None, (0.2, 0.8)):
+            arms_rr, _, _ = detect_spider_arms_azimuthal(mask, radial_range=r_range)
+            self.assertEqual(len(arms_rr), 6)
+            for arm, exp_ang in zip(arms_rr, expected_angles):
+                self.assertAlmostEqual(arm['azimuth_deg'], exp_ang, delta=0.35)
+
+        # Invalid radial_range raises ValueError
+        with self.assertRaises(ValueError):
+            detect_spider_arms_azimuthal(mask, radial_range=(0.8, 0.2))
+
+        # Thin spider (1.2 px wide on 480x480 grid) is reliably detected with adaptive n_bins
+        thin_mask, _ = _make_six_arm_pupil_mask(
+            n_pix=480, obsratio=0.283, spider_width_px=1.2, serrated_edges=True
         )
-        self.assertEqual(n_empty, 0)
-        self.assertEqual(np.count_nonzero(labeled_empty), 0)
+        thin_arms, _, _ = detect_spider_arms_azimuthal(thin_mask)
+        self.assertEqual(len(thin_arms), 6)
+        for arm, exp_ang in zip(thin_arms, [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]):
+            diff_deg = abs((arm['azimuth_deg'] - exp_ang + 180.0) % 360.0 - 180.0)
+            self.assertLess(diff_deg, 0.5)
+
+    def test_explicit_spider_angles_match_auto_detection(self):
+        """
+        Explicitly passing spider_angles_deg and spider_width_px matches
+        automatic azimuthal detection for both specula_convention=True and False.
+        """
+        angles_6 = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
+        for spec_conv in (True, False):
+            for rot_deg in (0.0, 14.2, -6.2):
+                auto_arms = compute_spider_subaperture_weights_and_normals(
+                    pup_mask=self.pup_mask,
+                    wfs_nsubaps=self.n_subaps,
+                    wfs_rotation=rot_deg,
+                    dilation_px=1.0,
+                    smooth_sigma_px=2.0,
+                    specula_convention=spec_conv,
+                )
+                explicit_arms = compute_spider_subaperture_weights_and_normals(
+                    pup_mask=self.pup_mask,
+                    wfs_nsubaps=self.n_subaps,
+                    wfs_rotation=rot_deg,
+                    dilation_px=1.0,
+                    smooth_sigma_px=2.0,
+                    spider_angles_deg=angles_6,
+                    spider_width_px=3.2,
+                    specula_convention=spec_conv,
+                )
+                self.assertEqual(len(auto_arms), 6)
+                self.assertEqual(len(explicit_arms), 6)
+                for auto_a, exp_a in zip(auto_arms, explicit_arms):
+                    # Arm order and azimuth_deg are consistent in both conventions
+                    self.assertEqual(auto_a['arm_index'], exp_a['arm_index'])
+                    diff_az = abs((auto_a['azimuth_deg'] - exp_a['azimuth_deg'] + 180.0) % 360.0 - 180.0)
+                    self.assertLess(diff_az, 0.5)
+                    dot_n = abs(float(np.dot(exp_a['normal'], auto_a['normal'])))
+                    self.assertGreater(dot_n, 0.9995)
+                    np.testing.assert_allclose(
+                        exp_a['weights'], auto_a['weights'], rtol=0, atol=0.06
+                    )
+
+        # Sequence spider_width_px (one width per arm) and length mismatch check
+        arms_seq = compute_spider_subaperture_weights_and_normals(
+            pup_mask=self.pup_mask,
+            wfs_nsubaps=self.n_subaps,
+            spider_angles_deg=angles_6,
+            spider_width_px=[3.0, 7.0, 3.0, 3.0, 3.0, 3.0],
+        )
+        self.assertEqual([a['width_px'] for a in arms_seq], [3.0, 7.0, 3.0, 3.0, 3.0, 3.0])
+        with self.assertRaises(ValueError):
+            compute_spider_subaperture_weights_and_normals(
+                pup_mask=self.pup_mask,
+                wfs_nsubaps=self.n_subaps,
+                spider_angles_deg=angles_6,
+                spider_width_px=[3.0, 7.0],
+            )
 
     def test_zero_dilation_and_sigma_touches_only_spider_subapertures(self):
         """
@@ -138,8 +251,7 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
         """
         from synim.geometry import _transform_mask
 
-        labeled_arms, n_arms, _ = extract_spider_arms(self.pup_mask, closing_radius=4)
-        self.assertEqual(n_arms, 6)
+        spider_only = (self.annulus & (self.pup_mask <= 0.5)).astype(np.float64)
 
         for rot_deg in (0.0, 6.2, -6.2):
             arms_strict = compute_spider_subaperture_weights_and_normals(
@@ -148,7 +260,6 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
                 wfs_rotation=rot_deg,
                 dilation_px=0.0,
                 smooth_sigma_px=0.0,
-                closing_radius=4,
                 specula_convention=True,
             )
             arms_wide = compute_spider_subaperture_weights_and_normals(
@@ -157,7 +268,6 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
                 wfs_rotation=rot_deg,
                 dilation_px=2.0,
                 smooth_sigma_px=3.0,
-                closing_radius=4,
                 specula_convention=True,
             )
 
@@ -172,8 +282,7 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
                 output_size=self.pup_mask.shape,
             )
             # Combined transformed spider mask in the WFS frame (transposed for specula_convention)
-            all_arms_t = np.transpose((labeled_arms > 0).astype(np.float64))
-            trans_spider = _transform_mask(all_arms_t, transform_kwargs, threshold=0.25) > 0
+            trans_spider = _transform_mask(np.transpose(spider_only), transform_kwargs, threshold=0.25) > 0
             has_spider_sa = synim.cpuArray(
                 synim.utils.rebin(trans_spider.astype(np.float64),
                                   (self.n_subaps, self.n_subaps), method='sum')
@@ -196,7 +305,6 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
         arms_1x1 = compute_spider_subaperture_weights_and_normals(
             pup_mask=self.pup_mask,
             wfs_nsubaps=1,
-            closing_radius=4,
             dilation_px=1.0,
             smooth_sigma_px=1.5,
         )
@@ -255,7 +363,6 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
                     idx_valid_sa=case['valid_sa'],
                     dilation_px=0.0,
                     smooth_sigma_px=0.0,
-                    closing_radius=4,
                     specula_convention=case['spec_conv'],
                 )
                 self.assertEqual(len(arms_info), 6)
@@ -484,7 +591,6 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
                 alpha=alpha,
                 dilation_px=1.5,
                 smooth_sigma_px=2.0,
-                closing_radius=4,
                 in_place=False,
                 return_diagnostics=True,
             )
@@ -512,6 +618,25 @@ class TestSpiderNoiseCovariance(unittest.TestCase):
         self.assertGreater(petal_norms[1], petal_norms[2])
         # Smooth tilt modes remain well reconstructed
         self.assertGreater(tilt_norms[2] / tilt_norms[0], 0.99)
+
+        # Display option saves diagnostic plot for all WFSs and for 'first' only
+        import os
+        import tempfile
+        import matplotlib
+        matplotlib.use('Agg')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for disp_mode, fname in ((True, 'all.png'), ('first', 'first.png')):
+                out_png = os.path.join(tmpdir, fname)
+                apply_spider_to_noise_covariance(
+                    pm_mock,
+                    C_noise_inv=C_base,
+                    wfs_type='lgs',
+                    alpha=10.0,
+                    display=disp_mode,
+                    display_save_path=out_png,
+                )
+                self.assertTrue(os.path.exists(out_png))
+                self.assertGreater(os.path.getsize(out_png), 0)
 
 
 if __name__ == '__main__':
