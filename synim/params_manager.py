@@ -1776,17 +1776,25 @@ class ParamsManager:
                         print(f"Loading from {rec_key}.tag_ifunc4proj")
                     break
 
-        nmodes = self.projection_params['nmodes']
-        if nmodes is not None:
-            inv_params['nmodes'] = nmodes
-
         if inv_params is None:
             raise ValueError("No valid base_inv_array found in configuration")
 
-        base_inv_array, _ = load_influence_functions(
+        # projection_params is None without a 'projection' section (fallback paths above)
+        nmodes = self.projection_params['nmodes'] if self.projection_params else None
+        if nmodes is not None:
+            # new dict: do not modify self.params['modal_analysis']
+            inv_params = {**inv_params, 'nmodes': nmodes}
+
+        base_inv_array, base_mask = load_influence_functions(
             self.cm, inv_params, self.pixel_pupil,
             verbose=verbose, is_inverse_basis=True, full_config=self.params
         )
+        # A 2D basis (n_modes, n_valid_pixels) is mapped onto the pupil mask pixels
+        # in order: a basis built on another pupil with the same number of valid
+        # pixels would pass silently. A 3D basis (e.g. generated Zernike) is
+        # defined on the full frame and is not concerned.
+        if base_inv_array.ndim == 2:
+            check_base_mask_matches_pupil(base_mask, self.pup_mask)
 
         return to_xp(xp, base_inv_array, dtype=float_dtype)
 
