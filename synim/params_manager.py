@@ -3473,7 +3473,7 @@ class ParamsManager:
             if verbose_flag:
                 print(f"  Covariance computed: {C_atm_rad2.shape}")
                 print(f"    RMS (nm):"
-                      f" {np.sqrt(np.diag(C_atm_rad2*(500**2/2/np.pi**2))).mean():.2f}")
+                      f" {np.sqrt(np.diag(C_atm_rad2*(500 / 2 / np.pi)**2)).mean():.2f}")
                 print(f"    RMS (rad): {np.sqrt(np.diag(C_atm_rad2)).mean():.4f}")
 
             # ========== SAVE TO FITS (LIKE IDL) ==========
@@ -3486,7 +3486,7 @@ class ParamsManager:
             hdu.header['WAVELNM'] = (wavelengthInNm, 'Wavelength [nm]')
             hdu.header['STARTMOD'] = (0, 'Covariance includes ALL modes from 0')
             hdu.header['TOTMODES'] = (total_modes, 'Total modes in covariance')
-            hdu.header['COMPTAG'] = (base_tag, 'Component tag')
+            hdu.header['COMPTAG'] = base_tag  # no comment: long tags exceed the 80-character card
             hdu.header['COMPTYPE'] = (component_type, 'Component type (dm/layer)')
             hdu.header['COMPIDX'] = (comp_idx, 'Component index')
 
