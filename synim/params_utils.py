@@ -273,6 +273,53 @@ def check_base_mask_matches_pupil(base_mask, pup_mask) -> None:
         f'{int(pup_crop.sum())} valid pixels (bounding box {pup_crop.shape}){detail}')
 
 
+def _n_cols_on_disk(path, hdu_name):
+    """
+    Number of columns (FITS NAXIS1) of the array in HDU *hdu_name* (or HDU 1 if
+    there is no HDU with that name) of a FITS file, read from the header only.
+    Returns None if *path* is not an existing FITS file.
+    """
+    if os.path.splitext(path)[1].lower() != '.fits' or not os.path.exists(path):
+        return None
+    with fits.open(path, memmap=True) as hdul:
+        try:
+            header = hdul[hdu_name].header
+        except KeyError:
+            header = hdul[1].header
+        return int(header['NAXIS1'])
+
+
+def count_component_modes(cm, component_params, full_config=None):
+    """
+    Total number of modes of a DM/layer component defined by files:
+    columns of the M2C if there is one, otherwise rows of the influence function.
+
+    Same convention as load_influence_functions() (IFunc.restore() transposes the
+    array on disk, and M2C.m2c is [n_actuators, n_modes]), so in both cases it is
+    the number of columns of the array on disk. FITS files are read from the header
+    only, other formats are loaded.
+
+    Returns:
+        int or None: number of modes, None if the component has no influence function file
+    """
+    ifunc_tag = get_tag_or_object(component_params, 'ifunc', full_config=full_config)
+    if ifunc_tag is None:
+        return None
+
+    m2c_tag = get_tag_or_object(component_params, 'm2c', full_config=full_config)
+    if m2c_tag is not None:
+        path = cm.filename('m2c', m2c_tag)
+        n_modes = _n_cols_on_disk(path, 'M2C')
+        if n_modes is None:
+            n_modes = M2C.restore(path).m2c.shape[1]
+    else:
+        path = cm.filename('ifunc', ifunc_tag)
+        n_modes = _n_cols_on_disk(path, 'INFLUENCE_FUNCTION')
+        if n_modes is None:
+            n_modes = IFunc.restore(path).influence_function.shape[0]
+    return int(n_modes)
+
+
 def load_influence_functions(cm, dm_params, pixel_pupil, verbose=False,
                              is_inverse_basis=False, full_config=None,
                              xp_local=np, float_dtype_local=cpu_float_dtype,
@@ -3016,6 +3063,7 @@ __all__ = [
     'validate_opt_sources',
     'load_pupilstop',
     'check_base_mask_matches_pupil',
+    'count_component_modes',
     'load_influence_functions',
     'find_slopec_key',
     'find_subapdata',

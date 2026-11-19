@@ -128,6 +128,9 @@ class ParamsManager:
         self.wfs_list = extract_wfs_list(self.params)
         self.dm_list = extract_dm_list(self.params)
 
+        # As in SPECULA (DM nmodes=None): a component without nmodes uses all its modes
+        self._set_default_nmodes()
+
         # *** Extract and cache projection/reconstructor params ***
         self._extract_advanced_params()
 
@@ -148,6 +151,30 @@ class ParamsManager:
         self.wfs_cache = {}  # Key: (wfs_type, wfs_index), Value: dict with wfs params
         # Offline slopes filter matrices, read once: Key: (path, array module)
         self._filtmat_cache = {}
+
+    def _set_default_nmodes(self):
+        """
+        Set 'nmodes' to the total number of modes of the files (influence function,
+        or M2C if present) for the DM/layer components that do not specify it.
+
+        Done once here, so that every later use of 'nmodes' (interaction and
+        projection matrices, cached file names, mode slicing) sees the same explicit
+        value, as if it were written in the configuration. Components without
+        influence function files (e.g. generated from type_str) are not changed.
+        Note: self.params is modified in place.
+        """
+        components = [dm['name'] for dm in self.dm_list]
+        components += [layer['name'] for layer in extract_layer_list(self.params)]
+        for key in components:
+            config = self.params[key]
+            if not isinstance(config, dict) or 'nmodes' in config:
+                continue
+            n_modes = count_component_modes(self.cm, config, full_config=self.params)
+            if n_modes is None:
+                continue
+            config['nmodes'] = n_modes
+            if self.verbose:
+                print(f"  {key}: nmodes not specified, using all {n_modes} modes")
 
     def set_require_subapdata_file(self, value):
         """Set whether missing subapdata files should raise an error."""
