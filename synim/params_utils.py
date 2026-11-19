@@ -2414,7 +2414,7 @@ def generate_filter_matrix_from_intmat(
         n_modes (int): Number of modes to use for reconstruction
         n_modes_filtered (int): Number of modes to filter out (e.g., 3 for tip/tilt/focus)
         cut_modes (int, optional): Number of singular values to cut in SVD. Default: 0
-        w_vec (numpy.ndarray, optional): Weight vector for reconstruction. Default: None
+        w_vec (numpy.ndarray, optional): Not supported, must be None (NotImplementedError otherwise).
         smooth_tt (bool, optional): Whether to smooth tip/tilt slopes by replacing with median.
                                    Default: True
         verbose (bool, optional): Whether to print detailed information. Default: False
@@ -2448,12 +2448,14 @@ def generate_filter_matrix_from_intmat(
         print(f"  Using {n_modes} modes for reconstruction")
         print(f"  Filtering {n_modes_filtered} modes")
 
+    # SPECULA never applied w_vec, and removed it from Intmat.generate_rec() (SPECULA #873)
+    if w_vec is not None:
+        raise NotImplementedError("w_vec is not supported by Intmat.generate_rec()")
+
     # Generate reconstruction matrix using the first n_modes
     recmat_obj = intmat_obj.generate_rec(
         nmodes=n_modes,
         cut_modes=cut_modes,
-        w_vec=w_vec,
-        interactive=False
     )
 
     if verbose:
@@ -2629,7 +2631,7 @@ def generate_filter_matrix_from_intmat_file(
         n_modes_filtered (int): Number of modes to filter (e.g., 3 for tip/tilt/focus)
         output_filename (str or Path): Path for output filtmat FITS file
         cut_modes (int, optional): Number of singular values to cut. Default: 0
-        w_vec (numpy.ndarray, optional): Weight vector for reconstruction. Default: None
+        w_vec (numpy.ndarray, optional): Not supported, must be None (NotImplementedError otherwise).
         smooth_tt (bool, optional): Whether to smooth tip/tilt. Default: True
         overwrite (bool, optional): Whether to overwrite existing output file. Default: False
         verbose (bool, optional): Whether to print detailed information. Default: False
