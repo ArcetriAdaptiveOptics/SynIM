@@ -36,6 +36,7 @@ User Guide
    Basics <general>
    Configuration & Legacy Migration <configuration>
    Mis-registration Geometry <registration>
+   Performance <performance>
 
 Tutorials
 ---------

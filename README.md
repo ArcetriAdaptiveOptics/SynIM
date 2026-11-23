@@ -21,6 +21,10 @@ It also supports GPU acceleration. Some of its functionalities are provided by [
 - 🚀 **GPU acceleration** via CuPy for high-performance computation
 - 🧭 **Mis-registration geometry** (`synim.registration`): a geometric (not pixel-based) model of the relation between global (WFS/DM/guide-star) and local (per-pair) mis-registration in MCAO/GLAO systems, its inversion, and sensitivity/noise analysis - see the [documentation](https://synim.readthedocs.io/en/latest/registration.html)
 
+## Performance
+
+From version 1.2.1, used in the SynIM paper, to version 2.1, the calibration has become significantly faster and uses much less memory, both on CPU and on GPU. For example, the 72 MORFEO interaction matrices of the benchmark in the paper (numerical derivatives, NVIDIA L40S) take 93 s with version 2.1 instead of 265.6 s with version 1.2.1, with the same input and output: influence functions read from a local disk with no file cache, and matrices saved to FITS files. Most of the remaining time is spent reading the influence functions (about 41 GB): with the files already in the file cache and the matrices kept in GPU memory, the computation takes 13.5 s. The main changes are: interaction matrices computed as a sparse linear operator applied to the DM modes, so that the extra memory no longer grows with the number of modes; an MMSE reconstructor that exploits the sparsity of the noise covariance and solves a linear system instead of computing an explicit inverse; the whole reconstruction chain on the GPU; and projection matrices processed one optical source at a time. The measurements are in the [Performance](https://synim.readthedocs.io/en/latest/performance.html) page of the documentation.
+
 ## Documentation
 
 Full documentation available at: **[synim.readthedocs.io](https://synim.readthedocs.io)**
