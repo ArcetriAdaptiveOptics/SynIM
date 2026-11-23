@@ -63,6 +63,43 @@ def init_backends(device_idx: int):
     from synim.params_utils import update_component_calibration_metadata
 
 
+def command_vector_indices(dm_nmodes: List[int], dm_start_modes: List[int]) -> Dict:
+    """
+    Indices of the MORFEO LGS command vector for SPECULA.
+
+    The command vector is the concatenation of the commanded modes of the
+    three DMs: a DM with start_mode k does not command its first k modes, so
+    it has nmodes - k commanded modes. Modes 0-4 of every DM basis are
+    assumed to be tip, tilt, focus and the two astigmatisms (zern_modes=5).
+
+    Parameters
+    ----------
+    dm_nmodes : list of int
+        nmodes of DM1, DM2 and DM3.
+    dm_start_modes : list of int
+        start_mode of DM1, DM2 and DM3 (0 if not set).
+
+    Returns
+    -------
+    dict
+        'slices': slice_args of slicer1, slicer2 and slicer3;
+        'plate_scale_idx': first commanded DM3 mode (its focus with
+        start_mode 2), where LinearCombination writes the plate-scale modes;
+        'iir_n_modes': n_modes of iir_lgs, [3, N1 - 3 + N2, 3, N3 - 3]: the two
+        blocks of 3 modes are DM1 tip/tilt/focus (NGS and REF loops) and DM3
+        focus/astigmatisms (NGS plate scale), with zero LGS gain.
+    """
+    n1, n2, n3 = (int(n) - int(k) for n, k in zip(dm_nmodes, dm_start_modes))
+    if n1 < 3 or n3 < 3 or n2 < 0:
+        raise ValueError(f"Too few commanded modes for the MORFEO command vector: "
+                         f"DM1 {n1}, DM2 {n2}, DM3 {n3}")
+    return {
+        'slices': [[0, n1], [n1, n1 + n2], [n1 + n2, n1 + n2 + n3]],
+        'plate_scale_idx': n1 + n2,
+        'iir_n_modes': [3, n1 - 3 + n2, 3, n3 - 3],
+    }
+
+
 class MORFEOCalibrationWorkflow:
 
     def __init__(self,
@@ -316,6 +353,38 @@ class MORFEOCalibrationWorkflow:
         # Set the final value
         config[keys[-1]] = value
 
+    def _update_command_vector_indices(self):
+        """
+        Set the slicers, modal_combination.plate_scale_idx and iir_lgs.n_modes
+        from nmodes and start_mode of the three DMs (see command_vector_indices).
+        Nothing is changed if the configuration does not have this structure.
+        """
+        needed = ['dm1', 'dm2', 'dm3', 'slicer1', 'slicer2', 'slicer3',
+                  'modal_combination', 'iir_lgs']
+        missing = [key for key in needed if key not in self.config]
+        if missing:
+            self._log(f"  Command vector indices not updated: missing {missing}")
+            return
+        dms = [self.config[f'dm{i}'] for i in (1, 2, 3)]
+        if any(dm.get('nmodes') is None for dm in dms):
+            self._log("  Command vector indices not updated: DM nmodes not set")
+            return
+        if len(self.config['iir_lgs'].get('n_modes', [])) != 4:
+            self._log("  Command vector indices not updated: iir_lgs.n_modes "
+                      "does not have 4 blocks")
+            return
+
+        idx = command_vector_indices([dm['nmodes'] for dm in dms],
+                                     [dm.get('start_mode') or 0 for dm in dms])
+        for i, slice_args in enumerate(idx['slices'], start=1):
+            self.config[f'slicer{i}']['slice_args'] = slice_args
+        self.config['modal_combination']['plate_scale_idx'] = idx['plate_scale_idx']
+        self.config['iir_lgs']['n_modes'] = idx['iir_n_modes']
+
+        self._log(f"  Command vector indices: slicers {idx['slices']}, "
+                  f"plate_scale_idx {idx['plate_scale_idx']}, "
+                  f"iir_lgs.n_modes {idx['iir_n_modes']}")
+
     def _calib_link(self, specula_subdir: str, synim_subdir: str) -> Path:
         """
         Create the link root_dir/<specula_subdir>/<synim_subdir> -> root_dir/<synim_subdir>,
@@ -459,6 +528,9 @@ class MORFEOCalibrationWorkflow:
 
             if self.verbose:
                 self._log(f"  Updated modal_analysis.ifunc_inv_object: {result['ifunc_inv_tag']}")
+
+        # The closed-loop indices depend on the DM nmodes just set
+        self._update_command_vector_indices()
 
         # Count components
         n_dms = len([k for k in result['ifunc_tags'] if k.startswith('dm')])
@@ -1166,6 +1238,9 @@ class MORFEOCalibrationWorkflow:
         self._log("\n" + "="*70)
         self._log("STEP 9: UPDATE YAML CONFIGURATION")
         self._log("="*70)
+
+        # Again here: step 0 may have been skipped, or nmodes edited by hand
+        self._update_command_vector_indices()
 
         # Save final calibrated YAML. 'generated_metadata' (written in step 0
         # into the DM and layer sections) is used only by ParamsManager, and
