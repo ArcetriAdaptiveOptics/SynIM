@@ -202,12 +202,20 @@ Create a script ``step0_influence_functions.py``:
    meta_size_m  = fov_arcsec * ARCSEC2RAD * np.array(altitudes_m) + telescope_diameter_m
    meta_size_px = (np.ceil(meta_size_m / pixel_size / 2) * 2).astype(int)
 
-   # Pupil mask with petals (used as ground-layer mask)
-   pupil_mask = make_mask(pupil_pixels, obsratio=obsratio, spider=True,
-                          spider_width=1, n_petals=n_petals, xp=np)
-   simul_params = SimulParams(pixel_pupil=pupil_pixels, pixel_pitch=pixel_size)
-   Pupilstop(simul_params, input_mask=pupil_mask).save(
-       f'{CALIB_DIR}/pupilstop/mask_{pupil_pixels}px_{n_petals}petals.fits')
+   # Pupil mask with petals (used as ground-layer mask).
+   # None: analytic pupil from make_mask, saved as a new pupilstop.
+   # A tag: an existing pupilstop in CALIB_DIR/pupilstop/ (e.g. a measured ELT pupil),
+   # with pupil_pixels x pupil_pixels pixels.
+   pupilstop_tag = None
+   if pupilstop_tag is None:
+       pupil_mask = make_mask(pupil_pixels, obsratio=obsratio, spider=True,
+                              spider_width=1, n_petals=n_petals, xp=np)
+       simul_params = SimulParams(pixel_pupil=pupil_pixels, pixel_pitch=pixel_size)
+       Pupilstop(simul_params, input_mask=pupil_mask).save(
+           f'{CALIB_DIR}/pupilstop/mask_{pupil_pixels}px_{n_petals}petals.fits')
+   else:
+       pupil_mask = cpuArray(Pupilstop.restore(
+           f'{CALIB_DIR}/pupilstop/{pupilstop_tag}.fits').A)
 
    for alt, n_act, meta_px in zip(altitudes_m, nacts, meta_size_px):
        base_name = f"base_{meta_px}px_{n_act}acts"
@@ -245,6 +253,46 @@ Create a script ``step0_influence_functions.py``:
 After this step, update the ``ifunc_object``, ``m2c_object``, and ``nmodes`` fields for
 every DM and layer entry in your YAML, and set ``pupilstop.tag`` and
 ``projection.ifunc_inverse_tag`` accordingly.
+
+The pupilstop of the simulation, the ground-layer basis and the projection basis
+must be defined on the same pupil. To calibrate with an existing pupil, e.g. a
+measured ELT pupil, set ``pupilstop_tag`` above instead of using ``make_mask``.
+
+For MORFEO, DM1 is M4: build its basis with the ELT segmented DM tutorial of SPECULA
+(``zern_modes=5``) and remove DM1 from the lists above.
+
+Command vector indices
+~~~~~~~~~~~~~~~~~~~~~~
+A few closed-loop entries of the YAML depend on the number of modes of the DMs, and
+must be updated by hand when ``nmodes`` changes. The LGS command vector is the
+concatenation of the commanded modes of the three DMs. A DM with ``start_mode: k``
+does not command its first ``k`` modes, so it has ``nmodes - k`` commanded modes:
+
+* ``N1 = dm1.nmodes`` (DM1 commands all its modes);
+* ``N2 = dm2.nmodes - 5`` (``start_mode: 5``: tip, tilt, focus and the two
+  astigmatisms are not commanded on DM2);
+* ``N3 = dm3.nmodes - 2`` (``start_mode: 2``: tip and tilt are not commanded on DM3).
+
+Then:
+
+* ``slicer1``: ``[0, N1]``, ``slicer2``: ``[N1, N1 + N2]``, ``slicer3``:
+  ``[N1 + N2, N1 + N2 + N3]``;
+* ``modal_combination.plate_scale_idx``: ``N1 + N2``, the first commanded mode of
+  DM3, i.e. its focus;
+* ``iir_lgs.n_modes``: ``[3, N1 - 3 + N2, 3, N3 - 3]``, with gains ``[0, g, 0, g]``.
+  The two blocks of 3 modes with zero gain are tip, tilt and focus of DM1 (driven by
+  the NGS and REF loops) and focus and astigmatisms of DM3 (plate scale, driven by the
+  NGS loop).
+
+These indices assume that modes 0-4 of every DM basis are tip, tilt, focus and the
+two astigmatisms (``zern_modes=5``): ``LinearCombination`` writes the NGS tip/tilt
+into modes 0-1 and the focus into mode 2, and corrects the plate scale with modes
+2-4 of DM1 and DM3.
+
+For example, with ``dm1.nmodes: 4519`` and ``dm2.nmodes = dm3.nmodes = 1026``:
+``N1 = 4519``, ``N2 = 1021``, ``N3 = 1024``, slicers ``[0, 4519]``,
+``[4519, 5540]``, ``[5540, 6564]``, ``plate_scale_idx: 5540`` and
+``n_modes: [3, 5537, 3, 1021]``.
 
 Step A: Subaperture Calibration
 -------------------------------
@@ -469,7 +517,7 @@ Create a script ``step4_compute_reconstructors.py``:
        nmodes=n_focus_modes, cut_modes=0, interactive=False)
    Recmat(recmat=recmat_obj.recmat,
           norm_factor=recmat_obj.norm_factor).save(
-       rec_dir + f'focus_recmat_nmodes{n_focus_modes}_nwfs{len(ref_im_names)}',
+       rec_dir + f'focus_recmat_dm1_nmodes{n_focus_modes}_nwfs{len(ref_im_names)}',
        overwrite=True)
    print(f"Focus recmat: {recmat_obj.recmat.shape}")
 
